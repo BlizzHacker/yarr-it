@@ -1,4 +1,12 @@
 import { StreamEngine, classify, needsWebCodecs } from './engine.js';
+import { createRegistry, makeSource, isCollection } from './source.js';
+import { createTorrentResolver, normalizeMagnet } from './resolvers/torrent.js';
+import { urlResolver } from './resolvers/url.js';
+import { embedResolver } from './resolvers/embed.js';
+import { playlistResolver } from './resolvers/playlist.js';
+import { renderPlayable, detachAll } from './player.js';
+import { renderLibrary } from './library.js';
+import { PlaybackError } from './failures.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -13,6 +21,8 @@ const state = {
   facets: null,
   query: '',
   engine: null,
+  registry: null,
+  playable: null,
   active: null,
   filters: {
     seeders: 1, minSize: '', maxSize: '',
@@ -347,45 +357,67 @@ function closeDetail() {
 
 // ------------------------------------------------------------------ player --
 
-function play(card, src) {
-  $('#player').hidden = false;
-  $('#player-title').textContent = card.title + (card.year ? ` (${card.year})` : '');
-  $('#player-sub').textContent = src.title;
-  setPlayerStatus('Connecting to the swarm…');
+function playerElements() {
+  return {
+    video: $('#video'),
+    audio: $('#audio'),
+    image: $('#image'),
+    embed: $('#embed'),
+    canvas: null, // arrives with Ruffle and EmulatorJS
+  };
+}
 
-  const video = $('#video');
-  video.hidden = true;
-  video.removeAttribute('src');
-  $('#image').hidden = true;
-
+function buildRegistry() {
   if (!state.engine) state.engine = new StreamEngine({ onStats: renderStats });
   window.__engine = state.engine; // diagnostics
+  const registry = createRegistry()
+    .register(createTorrentResolver({ engine: state.engine, classify }))
+    .register(embedResolver)      // before url: a YouTube link is also an http URL
+    .register(playlistResolver)   // before url: .m3u8 is also an http URL
+    .register(urlResolver);
+  window.__registry = registry; // diagnostics
+  return registry;
+}
 
-  state.engine.add(src.magnet, {
-    onReady: (file) => {
-      const kind = classify(file.name);
-      setPlayerStatus(`Buffering ${file.name}…`);
+/**
+ * Resolve any source and render whatever comes back. `src.magnet` is still
+ * honoured so existing search results keep working unchanged.
+ */
+async function play(card, src) {
+  $('#player').hidden = false;
+  $('#player-title').textContent = card.title + (card.year ? ` (${card.year})` : '');
+  $('#player-sub').textContent = src.title ?? '';
+  setPlayerStatus('Resolving…');
 
-      if (kind === 'image') {
-        file.blob().then((b) => {
-          const img = $('#image');
-          img.src = URL.createObjectURL(b);
-          img.hidden = false;
-          setPlayerStatus('');
-        });
-        return;
-      }
-      if (needsWebCodecs(file.name)) {
-        setPlayerStatus(
-          `${file.name.split('.').pop().toUpperCase()} container — if this stalls, pick an MP4 source.`,
-        );
-      }
-      video.hidden = false;
-      attachMedia(video, file);
-      video.addEventListener('playing', () => setPlayerStatus(''), { once: true });
-    },
-    onError: (err) => setPlayerStatus(`Could not start: ${err.message}`),
-  });
+  const els = playerElements();
+  detachAll(els);
+
+  if (!state.registry) state.registry = buildRegistry();
+
+  const uri = src.magnet ?? src.uri;
+  try {
+    const out = await state.registry.resolve(makeSource({ kind: 'auto', uri }));
+
+    if (isCollection(out)) {
+      $('#player').hidden = true;
+      renderLibrary(out, {
+        mount: $('#library'),
+        onPick: (picked) => play({ title: picked.meta.title }, { uri: picked.uri }),
+      });
+      return;
+    }
+
+    if (needsWebCodecs(uri)) {
+      setPlayerStatus('Unusual container — if this stalls, pick an MP4 source.');
+    }
+    const el = renderPlayable(out, els);
+    state.playable = out;
+    el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
+    if (out.render === 'image' || out.render === 'embed') setPlayerStatus('');
+  } catch (err) {
+    const why = err instanceof PlaybackError ? err.message : `Could not start: ${err.message}`;
+    setPlayerStatus(why);
+  }
 }
 
 /**
@@ -436,35 +468,18 @@ function renderStats(s) {
 }
 
 function closePlayer() {
+  state.playable?.cleanup();
+  state.playable = null;
   $('#player').hidden = true;
-  const v = $('#video');
-  v.pause?.();
-  v.removeAttribute('src');
-  v.load?.();
-  $('#image').hidden = true;
-  $('#image').removeAttribute('src');
+  // detachAll pauses/loads every real media element (video, audio) and clears
+  // src on all of them, not just video+image -- with the audio and embed
+  // elements now in play, leaving those untouched would let a paused-looking
+  // player keep an <audio> element playing invisibly in the background.
+  detachAll(playerElements());
   state.engine?.destroyTorrent();
 }
 
 // ------------------------------------------------------------------ magnet --
-
-/** Accept a full magnet URI or a bare 40-character info hash. */
-function normalizeMagnet(input) {
-  const v = (input || '').trim();
-  if (/^magnet:\?/i.test(v)) return v;
-  if (/^[a-f0-9]{40}$/i.test(v)) {
-    const trackers = [
-      'udp://tracker.opentrackr.org:1337/announce',
-      'udp://open.demonii.com:1337/announce',
-      'udp://open.stealth.si:80/announce',
-      'udp://exodus.desync.com:6969/announce',
-      'udp://tracker.torrent.eu.org:451/announce',
-    ];
-    return `magnet:?xt=urn:btih:${v.toLowerCase()}` +
-      trackers.map((t) => `&tr=${encodeURIComponent(t)}`).join('');
-  }
-  return null;
-}
 
 function streamPasted() {
   const magnet = normalizeMagnet($('#magnet').value);
