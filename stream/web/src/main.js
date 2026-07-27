@@ -565,16 +565,62 @@ function closePlayer() {
 
 // ------------------------------------------------------------------ magnet --
 
+const PASTE_HINT =
+  'That is not something this can play. Paste a magnet link, an info hash, ' +
+  'a direct media URL, an .m3u/.m3u8 playlist, or a YouTube/Vimeo link.';
+
+/**
+ * Best-effort human title for a non-magnet paste: the URL's last path
+ * segment (e.g. "movie.mp4" or a playlist name), falling back to its
+ * hostname when the path is empty (e.g. a bare "https://example.com/").
+ */
+function titleFromUri(uri) {
+  try {
+    const u = new URL(uri);
+    const last = u.pathname.split('/').filter(Boolean).pop();
+    if (!last) return u.hostname;
+    try {
+      return decodeURIComponent(last);
+    } catch {
+      return last;
+    }
+  } catch {
+    return uri;
+  }
+}
+
 function streamPasted() {
-  const magnet = normalizeMagnet($('#magnet').value);
-  if (!magnet) {
-    showRetry('That is not a magnet link or a 40-character info hash.', () => {});
+  const raw = $('#magnet').value.trim();
+  if (!raw) {
+    showRetry(PASTE_HINT, () => {});
     return;
   }
-  const dn = /[?&]dn=([^&]+)/.exec(magnet);
+
+  // normalizeMagnet's real job: turn a bare 40-hex info hash into a magnet
+  // with trackers. If it doesn't recognize the input as a magnet/info hash,
+  // pass the raw trimmed input straight through -- the registry decides
+  // whether any resolver (url/embed/playlist) claims it.
+  const magnet = normalizeMagnet(raw);
+  const uri = magnet ?? raw;
+
+  if (!state.registry) state.registry = buildRegistry();
+  if (!state.registry.find(uri)) {
+    showRetry(PASTE_HINT, () => {});
+    return;
+  }
+
+  if (magnet) {
+    const dn = /[?&]dn=([^&]+)/.exec(magnet);
+    play(
+      { title: dn ? decodeURIComponent(dn[1]).replace(/\+/g, ' ') : 'Pasted magnet', year: 0 },
+      { magnet, title: magnet.slice(0, 90) },
+    );
+    return;
+  }
+
   play(
-    { title: dn ? decodeURIComponent(dn[1]).replace(/\+/g, ' ') : 'Pasted magnet', year: 0 },
-    { magnet, title: magnet.slice(0, 90) },
+    { title: titleFromUri(uri), year: 0 },
+    { uri, title: uri.slice(0, 90) },
   );
 }
 
