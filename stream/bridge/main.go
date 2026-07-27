@@ -88,6 +88,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/bridge/socket", s.handleSocket)
+	mux.HandleFunc("/bridge/announce", s.handleAnnounce)
 	mux.HandleFunc("/bridge/health", s.handleHealth)
 
 	srv := &http.Server{

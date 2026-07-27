@@ -14,7 +14,13 @@
 
 import { BridgePeerConn, isPublicPeer } from './bridge-peer.js';
 if (typeof window !== 'undefined') window.__bridgeStats = () => BridgePeerConn.stats;
-import { announceUdp, trackersFromMagnet, infoHashFromMagnet } from './tracker-udp.js';
+import {
+  announceUdp,
+  announceHttp,
+  trackersFromMagnet,
+  httpTrackersFromMagnet,
+  infoHashFromMagnet,
+} from './tracker-udp.js';
 
 // WebTorrent's prebuilt browser bundle is an ES module (`export {default}`), so
 // it must be imported rather than loaded as a global via <script>. It is marked
@@ -86,18 +92,25 @@ export class StreamEngine {
    */
   async _discoverViaBridge(torrent, magnet) {
     const infoHash = infoHashFromMagnet(magnet) || torrent.infoHash;
-    const trackers = trackersFromMagnet(magnet);
-    if (!infoHash || !trackers.length) return;
+    const udp = trackersFromMagnet(magnet);
+    const http = httpTrackersFromMagnet(magnet);
+    if (!infoHash || (!udp.length && !http.length)) return;
 
     // Dial as each tracker answers rather than awaiting all of them. Dead
     // trackers are common and a Promise.all would let the slowest one hold up
     // playback for its full timeout.
-    await Promise.all(
-      trackers.slice(0, 6).map(async (tr) => {
+    await Promise.all([
+      ...udp.slice(0, 6).map(async (tr) => {
         const peers = await announceUdp(tr, infoHash).catch(() => []);
         await this._dialInBatches(torrent, peers);
       }),
-    );
+      // http(s) trackers are reached through the relay's announce proxy; a
+      // browser cannot contact them directly at all.
+      ...http.slice(0, 4).map(async (tr) => {
+        const peers = await announceHttp(tr, infoHash).catch(() => []);
+        await this._dialInBatches(torrent, peers);
+      }),
+    ]);
   }
 
   /**

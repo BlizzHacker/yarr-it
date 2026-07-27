@@ -20,9 +20,16 @@ stream.moveweight.com {
 	@html path / /index.html
 	header @html Cache-Control "no-cache, must-revalidate"
 
-	# Hashed/versioned assets are safe to cache hard.
-	@assets path *.js *.png *.svg *.webmanifest
-	header @assets Cache-Control "public, max-age=604800"
+	# Only app.js carries a content hash in its URL, so only it is safe to cache
+	# hard. Caching the other modules pinned stale copies for a week.
+	@hashed path /app.js
+	header @hashed Cache-Control "public, max-age=604800, immutable"
+
+	@images path *.png *.svg *.webmanifest
+	header @images Cache-Control "public, max-age=86400"
+
+	@modules path /engine.js /bridge-peer.js /tracker-udp.js /sw.min.js /webtorrent.min.js
+	header @modules Cache-Control "no-cache, must-revalidate"
 
 	handle {
 		root * /srv/stream/www

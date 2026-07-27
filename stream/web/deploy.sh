@@ -37,6 +37,11 @@ push "app.js"              dist/app.js
 push "webtorrent.min.js"   dist/webtorrent.min.js
 push "sw.min.js"           dist/sw.min.js
 push "manifest.webmanifest" manifest.webmanifest
+# Raw modules, served for console diagnostics. Kept in the deploy so they can
+# never drift from the bundle the way they silently did once.
+push "tracker-udp.js"     src/tracker-udp.js
+push "engine.js"          src/engine.js
+push "bridge-peer.js"     src/bridge-peer.js
 push "icon-192.png"        dist/icon-192.png
 push "icon-512.png"        dist/icon-512.png
 

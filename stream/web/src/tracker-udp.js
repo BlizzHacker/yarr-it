@@ -171,16 +171,73 @@ export function decodeCompactPeers(bytes) {
   return out;
 }
 
-/** Pull every udp:// tracker out of a magnet link. */
+/** Pull every udp:// tracker out of a magnet, best-known-first. */
 export function trackersFromMagnet(magnet) {
   const out = [];
   const re = /[?&]tr=([^&]+)/g;
   let m;
   while ((m = re.exec(magnet)) !== null) {
     const url = decodeURIComponent(m[1]);
-    if (url.startsWith('udp://')) out.push(url);
+    if (url.startsWith("udp://")) out.push(url);
   }
-  return out;
+  return out.sort((a, b) => trackerRank(a) - trackerRank(b));
+}
+
+// Trackers known to answer. Magnets often lead with long-dead hosts, and only
+// the first few are tried, so without this the live ones at the end of the list
+// are never reached.
+const PREFERRED_HOSTS = [
+  'bt1.archive.org',
+  'bt2.archive.org',
+  'nyaa.tracker.wf',
+  'tracker.opentrackr.org',
+  'open.demonii.com',
+  'tracker.openbittorrent.com',
+];
+
+function trackerRank(url) {
+  const i = PREFERRED_HOSTS.findIndex((h) => url.includes(h));
+  return i === -1 ? PREFERRED_HOSTS.length : i;
+}
+
+/** Pull every http(s):// tracker out of a magnet, best-known-first. */
+export function httpTrackersFromMagnet(magnet) {
+  const out = [];
+  const re = /[?&]tr=([^&]+)/g;
+  let m;
+  while ((m = re.exec(magnet)) !== null) {
+    const url = decodeURIComponent(m[1]);
+    if (/^https?:\/\//i.test(url)) out.push(url);
+  }
+  return out.sort((a, b) => trackerRank(a) - trackerRank(b));
+}
+
+/**
+ * Announce to an http(s) tracker through the relay's announce proxy.
+ *
+ * A page served over https cannot fetch an http:// tracker at all — mixed
+ * content blocks it before CORS is even considered — and https trackers still
+ * fail CORS because trackers do not send the header. So a large slice of the
+ * tracker population is invisible to a browser without a server hop.
+ *
+ * @returns {Promise<{host:string,port:number}[]>}
+ */
+export async function announceHttp(trackerUrl, infoHashHex, { timeoutMs = 14000 } = {}) {
+  const url =
+    `/bridge/announce?ih=${encodeURIComponent(infoHashHex)}` +
+    `&tr=${encodeURIComponent(trackerUrl)}`;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctl.signal });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.peers) ? data.peers : [];
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function infoHashFromMagnet(magnet) {

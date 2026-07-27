@@ -18,6 +18,11 @@ var defaultTrackers = []string{
 	"udp://open.stealth.si:80/announce",
 	"udp://exodus.desync.com:6969/announce",
 	"udp://tracker.torrent.eu.org:451/announce",
+	// http trackers are unreachable from a browser directly, but the relay
+	// proxies announces to them, so they widen the peer pool at no extra cost.
+	"http://bt1.archive.org:6969/announce",
+	"http://bt2.archive.org:6969/announce",
+	"http://nyaa.tracker.wf:7777/announce",
 }
 
 var reInfoHash = regexp.MustCompile(`(?i)^[a-f0-9]{40}$`)
