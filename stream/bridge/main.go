@@ -57,11 +57,12 @@ type counters struct {
 }
 
 type server struct {
-	lim    limits
-	cnt    counters
-	mu     sync.Mutex
-	perIP  map[string]int
-	budget *budget
+	lim        limits
+	cnt        counters
+	mu         sync.Mutex
+	perIP      map[string]int
+	budget     *budget
+	iptvBudget *budget
 }
 
 // hello is the first frame a client sends. Keeping the target here rather than
@@ -77,13 +78,20 @@ func main() {
 	perIP := flag.Int("per-ip", 40, "max concurrent relayed sockets per client IP")
 	global := flag.Int("global", 800, "max concurrent relayed sockets overall")
 	budgetGiB := flag.Int64("budget-gib", 2600, "monthly relay budget in GiB before degrading")
+	iptvBudgetGiB := flag.Int64("iptv-budget-gib", 0,
+		"monthly IPTV proxy budget in GiB (0 = a quarter of -budget-gib)")
 	statePath := flag.String("state", "/var/lib/mw-bridge/budget.json", "budget state file")
 	flag.Parse()
 
+	if *iptvBudgetGiB == 0 {
+		*iptvBudgetGiB = defaultIPTVBudgetGiB(*budgetGiB)
+	}
+
 	s := &server{
-		lim:    limits{perIP: *perIP, global: *global},
-		perIP:  make(map[string]int),
-		budget: newBudget(*statePath, *budgetGiB<<30),
+		lim:        limits{perIP: *perIP, global: *global},
+		perIP:      make(map[string]int),
+		budget:     newBudget(*statePath, *budgetGiB<<30),
+		iptvBudget: newBudget(*statePath+".iptv", *iptvBudgetGiB<<30),
 	}
 
 	mux := http.NewServeMux()
@@ -119,16 +127,19 @@ func main() {
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	used, cap_ := s.budget.snapshot()
+	iptvUsed, iptvCap := s.iptvBudget.snapshot()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"active":       s.cnt.active.Load(),
-		"dialed":       s.cnt.dialed.Load(),
-		"refused":      s.cnt.refused.Load(),
-		"relayed_up":   s.cnt.bytesUp.Load(),
-		"relayed_down": s.cnt.bytesDown.Load(),
-		"budget_used":  used,
-		"budget_cap":   cap_,
-		"degraded":     s.budget.degraded(),
+		"active":           s.cnt.active.Load(),
+		"dialed":           s.cnt.dialed.Load(),
+		"refused":          s.cnt.refused.Load(),
+		"relayed_up":       s.cnt.bytesUp.Load(),
+		"relayed_down":     s.cnt.bytesDown.Load(),
+		"budget_used":      used,
+		"budget_cap":       cap_,
+		"iptv_budget_used": iptvUsed,
+		"iptv_budget_cap":  iptvCap,
+		"degraded":         s.budget.degraded(),
 	})
 }
 

@@ -96,3 +96,9 @@ func (b *budget) add(n int64) { b.used.Add(n) }
 func (b *budget) degraded() bool { return b.used.Load() >= b.cap_ }
 
 func (b *budget) snapshot() (int64, int64) { return b.used.Load(), b.cap_ }
+
+// defaultIPTVBudgetGiB caps continuous IPTV proxying at a quarter of the
+// monthly allowance. Torrent relaying is bursty and finite per file; IPTV is
+// continuous and unbounded, so a single viewer could otherwise drain the month
+// and take the mail edge on this box down with it.
+func defaultIPTVBudgetGiB(monthlyGiB int64) int64 { return monthlyGiB / 4 }
