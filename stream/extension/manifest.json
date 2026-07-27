@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "Stream — view before you download",
-  "short_name": "Stream",
+  "name": "Yarr.It — view before you download",
+  "short_name": "Yarr.It",
   "version": "1.0.0",
-  "description": "Stream any magnet link in your browser instead of downloading it. Adds a ▶ to torrent sites and hijacks magnet: links.",
+  "description": "Yarr.It streams any magnet link in your browser instead of downloading it. Adds a ▶ to torrent sites and hijacks magnet: links.",
   "minimum_chrome_version": "116",
   "icons": {
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "Stream this page's torrents",
+    "default_title": "Yarr.It — stream this page's torrents",
     "default_popup": "popup.html",
     "default_icon": {
       "48": "icons/icon-48.png",

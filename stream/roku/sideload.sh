@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sideload the Stream channel onto a Roku in developer mode.
+# Sideload the Yarr.It channel onto a Roku in developer mode.
 #
 #   ROKU_PASS=<dev password> ./sideload.sh [roku-ip]
 #
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROKU=${1:-192.168.0.126}
-ZIP=${ZIP:-$(dirname "$0")/Stream-roku.zip}
+ZIP=${ZIP:-$(dirname "$0")/Yarr.It-roku.zip}
 : "${ROKU_PASS:?set ROKU_PASS to the Roku developer password}"
 
 [ -f "$ZIP" ] || { echo "missing $ZIP -- run package.sh first"; exit 1; }

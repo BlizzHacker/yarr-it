@@ -6,7 +6,7 @@
     <Rectangle id="bg" width="1920" height="1080" color="0x0b0d11ff" />
 
     <!-- Header -->
-    <Label id="brand" text="STREAM" translation="[80,52]"
+    <Label id="brand" text="YARR.IT" translation="[80,52]"
            color="0x5eead4ff" >
       <Font role="font" uri="font:BoldSystemFontFile" size="42" />
     </Label>

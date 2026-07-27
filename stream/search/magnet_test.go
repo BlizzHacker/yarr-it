@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-const fakeKey = "PROWLARR_API_KEY_REDACTED"
+// Synthetic. It must not be a real key: a fixture that leaks is still a leak,
+// and this one is asserted against in TestBuildCardsOutputContainsNoSecrets.
+const fakeKey = "00000000000000000000000000000000"
 
 // Prowlarr fills magnetUrl/downloadUrl with links back to itself carrying the
 // API key in the query string. Emitting those on a public page would publish

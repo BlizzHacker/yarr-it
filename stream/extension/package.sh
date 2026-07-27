@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 VERSION=$(node -p "require('./manifest.json').version")
 mkdir -p dist
-OUT="dist/stream-extension-${VERSION}.zip"
+OUT="dist/yarrit-extension-${VERSION}.zip"
 rm -f "$OUT"
 
 # Only ship what the extension actually loads.

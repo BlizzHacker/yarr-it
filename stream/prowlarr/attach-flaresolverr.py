@@ -7,11 +7,18 @@ Cloudflare-protected tracker fails its connectivity test on add -- which is
 exactly what happened to 1337x, EZTV and friends.
 """
 import json
+import os
+import sys
 import urllib.error
 import urllib.request
 
-KEY = "PROWLARR_API_KEY_REDACTED"
-BASE = "http://localhost:9696/api/v1"
+# Never hardcode this: the repository is public. Prowlarr shows the key under
+# Settings -> General -> Security.
+KEY = os.environ.get("PROWLARR_API_KEY", "")
+if not KEY:
+    sys.exit("set PROWLARR_API_KEY (Prowlarr: Settings -> General -> Security)")
+
+BASE = os.environ.get("PROWLARR_URL", "http://localhost:9696") + "/api/v1"
 
 # LXC 112. Prowlarr had 192.168.0.126, which nothing answers on.
 FLARESOLVERR_URL = "http://192.168.0.146:8191"

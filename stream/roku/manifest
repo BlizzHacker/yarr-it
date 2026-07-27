@@ -1,11 +1,11 @@
-# Stream — Roku channel manifest.
+# Yarr.It — Roku channel manifest.
 #
 # This channel is a thin front end. It cannot join a BitTorrent swarm: Roku has
 # no browser engine, no WebRTC and no usable socket API, and its Video node
 # plays HLS/DASH/MP4 from a URL only. So it browses via the public search API
 # and asks the LAN gateway to turn a magnet into an HTTP stream it can play.
 
-title=Stream
+title=Yarr.It
 major_version=1
 minor_version=0
 build_version=1

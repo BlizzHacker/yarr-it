@@ -1,4 +1,4 @@
-// Build the Windows / Xbox MSIX for stream.moveweight.com.
+// Build the Windows / Xbox MSIX for Yarr.It (stream.moveweight.com).
 //
 // This is a *hosted web app* package: the MSIX contains no application code,
 // only a manifest whose start page is the live site. That matches how Cryptic
@@ -29,19 +29,27 @@ const STORE_IDENTITY = {
   publisherDisplayName: 'MOVE WEIGHT',
 };
 
-function findMakeAppx() {
-  if (process.env.MAKEAPPX_PATH) return process.env.MAKEAPPX_PATH;
+// Both makeappx and signtool ship in the same versioned SDK bin directory, so
+// one lookup serves both.
+function findSdkTool(exe) {
   const base = 'C:/Program Files (x86)/Windows Kits/10/bin';
-  if (!existsSync(base)) throw new Error('Windows SDK not found; set MAKEAPPX_PATH');
+  if (!existsSync(base)) return null;
   const versions = readdirSync(base)
     .filter((d) => /^10\./.test(d))
     .sort()
     .reverse();
   for (const v of versions) {
-    const p = join(base, v, 'x64', 'makeappx.exe');
+    const p = join(base, v, 'x64', exe);
     if (existsSync(p)) return p;
   }
-  throw new Error('makeappx.exe not found in the Windows SDK');
+  return null;
+}
+
+function findMakeAppx() {
+  if (process.env.MAKEAPPX_PATH) return process.env.MAKEAPPX_PATH;
+  const p = findSdkTool('makeappx.exe');
+  if (!p) throw new Error('makeappx.exe not found; set MAKEAPPX_PATH');
+  return p;
 }
 
 const manifest = `<?xml version="1.0" encoding="utf-8"?>
@@ -57,7 +65,7 @@ const manifest = `<?xml version="1.0" encoding="utf-8"?>
     ProcessorArchitecture="neutral" />
 
   <Properties>
-    <DisplayName>Stream</DisplayName>
+    <DisplayName>Yarr.It</DisplayName>
     <PublisherDisplayName>${STORE_IDENTITY.publisherDisplayName}</PublisherDisplayName>
     <Logo>images\\StoreLogo.png</Logo>
     <Description>Search every major torrent index and play the result in your browser. Nothing is downloaded, transcoded or stored on any server.</Description>
@@ -79,7 +87,7 @@ const manifest = `<?xml version="1.0" encoding="utf-8"?>
   <Applications>
     <Application Id="App" StartPage="${START_PAGE}">
       <uap:VisualElements
-        DisplayName="Stream"
+        DisplayName="Yarr.It"
         Description="View before you download — browser-native torrent streaming."
         BackgroundColor="#0b0d11"
         Square150x150Logo="images\\Square150x150Logo.png"
@@ -95,73 +103,32 @@ const manifest = `<?xml version="1.0" encoding="utf-8"?>
 `;
 
 // --- brand tiles -------------------------------------------------------------
-// Generated rather than checked in, so the mark stays in one place.
-
-import zlib from 'node:zlib';
-
-function pngTile(w, h) {
-  const bg = [0x0b, 0x0d, 0x11];
-  const fg = [0x5e, 0xea, 0xd4];
-  const rows = [];
-  for (let y = 0; y < h; y++) {
-    const row = [0];
-    for (let x = 0; x < w; x++) {
-      const s = Math.min(w, h);
-      const cx = w / 2 - s * 0.06;
-      const cy = h / 2;
-      const t = (x - (cx - s * 0.16)) / (s * 0.38);
-      const half = (1 - t) * s * 0.24;
-      const inTri = t >= 0 && t <= 1 && Math.abs(y - cy) <= half;
-      const c = inTri ? fg : bg;
-      row.push(c[0], c[1], c[2]);
-    }
-    rows.push(Buffer.from(row));
-  }
-  const idat = zlib.deflateSync(Buffer.concat(rows), { level: 9 });
-  const table = [...Array(256)].map((_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c >>> 0;
-  });
-  const chunk = (type, data) => {
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(data.length);
-    const td = Buffer.concat([Buffer.from(type), data]);
-    let crc = 0xffffffff;
-    for (const b of td) crc = table[(crc ^ b) & 0xff] ^ (crc >>> 8);
-    const cb = Buffer.alloc(4);
-    cb.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
-    return Buffer.concat([len, td, cb]);
-  };
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(w, 0);
-  ihdr.writeUInt32BE(h, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 2;
-  return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', idat),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
+// Copied from brand/msix-assets/, which brand/propagate.py generates from the
+// one master mark. These used to be drawn here procedurally as a bare teal
+// triangle, which quietly made Windows the only client not carrying the actual
+// logo.
 
 rmSync(staging, { recursive: true, force: true });
 mkdirSync(join(staging, 'images'), { recursive: true });
 mkdirSync(outDir, { recursive: true });
 
 writeFileSync(join(staging, 'AppxManifest.xml'), manifest, 'utf8');
-const tiles = {
-  'StoreLogo.png': [50, 50],
-  'Square44x44Logo.png': [44, 44],
-  'Square150x150Logo.png': [150, 150],
-  'SplashScreen.png': [620, 300],
-};
-for (const [name, [w, h]] of Object.entries(tiles)) {
-  writeFileSync(join(staging, 'images', name), pngTile(w, h));
+const assets = join(here, 'msix-assets');
+for (const name of ['StoreLogo.png', 'Square44x44Logo.png',
+                    'Square150x150Logo.png', 'SplashScreen.png']) {
+  const src = join(assets, name);
+  if (!existsSync(src)) {
+    throw new Error(`missing ${src} -- run: python ../brand/propagate.py`);
+  }
+  copyFileSync(src, join(staging, 'images', name));
 }
 
-const out = join(outDir, `Stream_${VERSION}_neutral.msix`);
+// The sideload installer is a tracked source file, not something written into
+// dist/ by hand -- dist/ is gitignored, so anything authored there is invisible
+// to the repo and cannot be reviewed or shipped.
+copyFileSync(join(here, 'Install-Windows.ps1'), join(outDir, 'Install-Windows.ps1'));
+
+const out = join(outDir, `Yarr.It_${VERSION}_neutral.msix`);
 rmSync(out, { force: true });
 
 const makeappx = findMakeAppx();
@@ -170,4 +137,27 @@ if (res.status !== 0) {
   throw new Error(`makeappx failed with exit code ${res.status}`);
 }
 console.log(`\nMSIX written -> ${out}`);
-console.log('Upload in Partner Center. The package is unsigned; the Store signs it on ingestion.');
+
+// Sign for sideloading.
+//
+// The Store re-signs on ingestion, so signing is irrelevant for the Partner
+// Center upload -- but an UNSIGNED msix cannot be installed at all, which makes
+// the tester build useless. The key lives in the CurrentUser\My certificate
+// store; signtool is pointed at it by thumbprint so no .pfx sits on disk.
+const THUMBPRINT = process.env.MSIX_THUMBPRINT ?? 'F09C9D34F205FD911836A0F554471E85A498C9CE';
+const signtool = findSdkTool('signtool.exe');
+
+if (signtool) {
+  const sign = spawnSync(signtool,
+    ['sign', '/fd', 'SHA256', '/sha1', THUMBPRINT, '/a', out],
+    { stdio: 'inherit' });
+  if (sign.status !== 0) {
+    console.warn('\n!! signing failed -- the package will NOT install by sideload.');
+  } else {
+    console.log('Signed for sideloading.');
+  }
+} else {
+  console.warn('\n!! signtool not found; package is unsigned and cannot be sideloaded.');
+}
+
+console.log('Upload in Partner Center. The Store re-signs on ingestion.');

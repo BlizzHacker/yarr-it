@@ -9,3 +9,9 @@ stream/installers/dist/
 stream/extension/dist/
 *.keystore
 keystore.properties
+
+# Compiled server binaries - built by CI/deploy, not committed
+stream/gateway/mw-gateway
+stream/search/mw-search
+stream/bridge/mw-bridge
+stream/brand/node_modules/
