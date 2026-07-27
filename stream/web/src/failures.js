@@ -14,7 +14,7 @@ export const FAILURE = {
   BUDGET_EXHAUSTED: 'BudgetExhausted',
 };
 
-const DESCRIPTIONS = {
+export const DESCRIPTIONS = {
   [FAILURE.MIXED_CONTENT]:
     'This stream is served over plain HTTP. Browsers refuse to load it on a secure page.',
   [FAILURE.CORS_BLOCKED]:
@@ -28,7 +28,7 @@ const DESCRIPTIONS = {
 };
 
 // Escalation is only meaningful for failures a different transport can fix.
-const ESCALATION = {
+export const ESCALATION = {
   [FAILURE.MIXED_CONTENT]: [TIER.GATEWAY, TIER.RELAY],
   [FAILURE.CORS_BLOCKED]: [TIER.GATEWAY, TIER.RELAY],
   [FAILURE.DEAD_STREAM]: [],
