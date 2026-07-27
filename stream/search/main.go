@@ -179,16 +179,24 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	f := parseFilters(r.URL.Query())
 	kind := f.Kind
+	// A set-top box cannot fall back to software decode the way a browser can,
+	// so unplayable sources are removed rather than shown and failed.
+	dev := deviceProfileFor(r.URL.Query().Get("device"))
 	cacheKey := kind + "\x00" + strings.ToLower(q)
 
 	// Filters are applied to the cached result set, so changing one is instant
 	// and costs no indexer traffic.
 	respond := func(cards []card, cacheState string, stale bool) {
+		visible := dev.applyDevice(cards)
 		body := map[string]any{
 			"query":  q,
-			"cards":  f.apply(cards),
-			"facets": buildFacets(cards),
-			"total":  len(cards),
+			"cards":  f.apply(visible),
+			"facets": buildFacets(visible),
+			"total":  len(visible),
+		}
+		if dev != nil {
+			body["device"] = dev.Name
+			body["filteredOut"] = len(cards) - len(visible)
 		}
 		if stale {
 			body["stale"] = true

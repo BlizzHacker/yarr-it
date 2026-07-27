@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  All network I/O happens here.
+
+  SceneGraph forbids blocking calls on the render thread — a roUrlTransfer on
+  the main thread freezes the UI and Roku will eventually kill the channel. So
+  every request the scene needs is dispatched to this task and the result comes
+  back through an observed field.
+-->
+<component name="ApiTask" extends="Task">
+  <interface>
+    <!-- discover | search | prepare -->
+    <field id="request" type="assocarray" alwaysNotify="true" />
+    <field id="response" type="assocarray" alwaysNotify="true" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/ApiTask.brs" />
+</component>
