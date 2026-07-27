@@ -100,7 +100,8 @@ type server struct {
 	flightMu sync.Mutex
 	inflight map[string]chan struct{}
 
-	tmdb *tmdbClient
+	tmdb     *tmdbClient
+	discover discoverCache
 }
 
 func main() {
@@ -126,6 +127,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/search", s.handleSearch)
+	mux.HandleFunc("/api/discover", s.handleDiscover)
 	mux.HandleFunc("/api/health", s.handleHealth)
 
 	srv := &http.Server{

@@ -155,6 +155,21 @@
   .stats { display:flex; gap:22px; padding:10px 18px; border-top:1px solid var(--line); font-size:12px; color:var(--dim); flex-wrap:wrap; }
   .stats b { color:var(--fg); font-weight:600; }
 
+  /* ---------- discover ---------- */
+  #discover { margin-top:34px; }
+  .shelf { margin-bottom:30px; }
+  .shelf h3 { font-size:16px; margin:0 0 12px; letter-spacing:-.01em; }
+  .rail {
+    display:grid; grid-auto-flow:column; grid-auto-columns:150px; gap:14px;
+    overflow-x:auto; overflow-y:hidden; padding-bottom:8px; scroll-snap-type:x proximity;
+    scrollbar-width:thin; scrollbar-color:var(--line) transparent;
+  }
+  .rail::-webkit-scrollbar { height:7px; }
+  .rail::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px; }
+  .rail .tile { scroll-snap-align:start; }
+  .rail .poster { aspect-ratio:2/3; }
+  .rail .tname { font-size:12.5px; }
+
   /* ---------- intro ---------- */
   #intro { padding:26px 0 8px; }
   #intro h2 { font-size:29px; margin:0 0 10px; letter-spacing:-.025em; }
@@ -257,6 +272,8 @@
     </div>
   </section>
 
+  <section id="discover"></section>
+
   <div id="resultbar" class="resultbar" hidden></div>
   <div id="grid"></div>
 </main>
@@ -308,6 +325,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=057d5cb4c22e"></script>
+<script type="module" src="/app.js?v=748b9645f9d1"></script>
 </body>
 </html>

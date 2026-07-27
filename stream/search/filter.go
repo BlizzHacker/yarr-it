@@ -19,7 +19,8 @@ type filters struct {
 	Codecs     []string // x264, x265, ...
 	Indexers   []string
 	WebSafe    bool   // only what the browser can play unaided
-	Sort       string // seeders | size | quality | recent | title
+	Sort       string // relevance | seeders | size | quality | recent | title
+	Query      string
 	Kind       string // video | audio | image
 }
 
@@ -34,6 +35,7 @@ func parseFilters(q url.Values) filters {
 		WebSafe:    q.Get("webSafe") == "1" || q.Get("webSafe") == "true",
 		Sort:       q.Get("sort"),
 		Kind:       q.Get("kind"),
+		Query:      q.Get("q"),
 	}
 	if f.Sort == "" {
 		f.Sort = "relevance"
@@ -130,6 +132,7 @@ func (f filters) apply(cards []card) []card {
 }
 
 func (f filters) sortCards(cards []card) {
+	terms := queryTerms(f.Query)
 	switch f.Sort {
 	case "size":
 		sort.SliceStable(cards, func(i, j int) bool {
@@ -160,7 +163,7 @@ func (f filters) sortCards(cards []card) {
 		})
 	default: // relevance
 		sort.SliceStable(cards, func(i, j int) bool {
-			ri, rj := relevance(cards[i]), relevance(cards[j])
+			ri, rj := relevance(cards[i], terms), relevance(cards[j], terms)
 			if ri != rj {
 				return ri > rj
 			}
@@ -174,10 +177,32 @@ func (f filters) sortCards(cards []card) {
 // Raw seeder count alone is a poor ranking: a search for a film puts language
 // packs, course recordings and porn rips above the film itself, because those
 // happen to be well seeded. A confirmed TMDB match is strong evidence that a
-// result *is* the work being searched for, so it dominates; seeders then break
-// ties among genuine matches.
-func relevance(c card) int {
+// result *is* a real work, so it counts heavily.
+//
+// But "is a real work" is not "is the work you asked for". Indexers return
+// loosely related junk, and a correctly-identified *different* film would
+// otherwise outrank the target purely for having artwork -- a search for
+// "inception" once put American Pie third. So the title is scored against the
+// query first, and anything sharing no query terms is pushed below everything
+// that does.
+func relevance(c card, queryTerms []string) int {
 	n := 0
+
+	matched := titleOverlap(c.Title, queryTerms)
+	switch {
+	case len(queryTerms) == 0:
+		// No query (discover/browse): nothing to match against.
+	case matched == 0:
+		n -= 2000
+	default:
+		n += 700 * matched / len(queryTerms)
+	}
+
+	// Only demote when the query did not itself ask for it.
+	if looksAdult(c.Title) && !queryWantsAdult(queryTerms) {
+		n -= 900
+	}
+
 	if c.Art.Found {
 		n += 1000
 		if c.Art.Poster != "" {

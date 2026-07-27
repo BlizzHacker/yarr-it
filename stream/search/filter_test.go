@@ -132,3 +132,100 @@ func TestExplicitSeedersSortStillPureSeeders(t *testing.T) {
 		t.Errorf("explicit seeders sort should be literal; got %v", titles(got))
 	}
 }
+
+// The exact failure seen live: searching "inception" ranked American Pie third,
+// because TMDB had correctly identified it and artwork dominated the score.
+// Being a real film is not the same as being the film that was asked for.
+func TestRelevanceKeepsUnrelatedFilmsBelowTheQuery(t *testing.T) {
+	cards := []card{
+		{Title: "American Pie", Year: 1999, Seeders: 11,
+			Art:     artwork{Found: true, Poster: "p.jpg", Rating: 6.6},
+			Sources: []source{{Seeders: 11}}},
+		{Title: "Inception", Year: 2010, Seeders: 285,
+			Art:     artwork{Found: true, Poster: "p.jpg", Rating: 8.4},
+			Sources: []source{{Seeders: 285}, {Seeders: 90}, {Seeders: 40}, {Seeders: 8}, {Seeders: 2}}},
+		{Title: "Inception Of Eternity - Nature Always Wins", Seeders: 12,
+			Sources: []source{{Seeders: 12}}},
+	}
+	got := filters{Sort: "relevance", Query: "inception"}.apply(cards)
+	if got[0].Title != "Inception" {
+		t.Fatalf("top = %q, want Inception (order: %v)", got[0].Title, titles(got))
+	}
+	// A well-rated, artwork-bearing film that shares no query term must fall
+	// below even an unmatched-but-on-topic result.
+	last := got[len(got)-1].Title
+	if last != "American Pie" {
+		t.Errorf("American Pie should rank last for this query; order: %v", titles(got))
+	}
+}
+
+func TestQueryTermsDropStopWordsAndNoise(t *testing.T) {
+	got := queryTerms("The Lord of the Rings!")
+	want := []string{"lord", "rings"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestTitleOverlapHandlesPunctuationAndJoining(t *testing.T) {
+	cases := []struct {
+		title string
+		terms []string
+		want  int
+	}{
+		{"Spider-Man: No Way Home", []string{"spiderman"}, 1},
+		{"The.Matrix.1999.1080p", []string{"matrix"}, 1},
+		{"Inception", []string{"inception"}, 1},
+		{"American Pie", []string{"inception"}, 0},
+		{"Breaking Bad", []string{"breaking", "bad"}, 2},
+	}
+	for _, c := range cases {
+		if got := titleOverlap(c.title, c.terms); got != c.want {
+			t.Errorf("titleOverlap(%q, %v) = %d, want %d", c.title, c.terms, got, c.want)
+		}
+	}
+}
+
+func TestRelevanceIgnoresQueryWhenBrowsing(t *testing.T) {
+	cards := []card{
+		{Title: "Alpha", Seeders: 5, Art: artwork{Found: true}, Sources: []source{{Seeders: 5}}},
+		{Title: "Beta", Seeders: 900, Sources: []source{{Seeders: 900}}},
+	}
+	// No query at all: nothing should be penalised for not matching.
+	got := filters{Sort: "relevance"}.apply(cards)
+	if got[0].Title != "Alpha" {
+		t.Errorf("with no query the TMDB-matched card should lead; got %v", titles(got))
+	}
+}
+
+// A porn parody sharing a word with the query legitimately matches the term,
+// so term scoring alone cannot separate it from the film people meant.
+func TestAdultParodyDoesNotOutrankTheFilm(t *testing.T) {
+	cards := []card{
+		{Title: "S3XUS E23 Laney Grey Inception XXX", Seeders: 36, Sources: []source{{Seeders: 36}}},
+		{Title: "Inception", Year: 2010, Seeders: 30,
+			Art: artwork{Found: true, Poster: "p.jpg", Rating: 8.4}, Sources: []source{{Seeders: 30}}},
+	}
+	got := filters{Sort: "relevance", Query: "inception"}.apply(cards)
+	if got[0].Title != "Inception" {
+		t.Errorf("top = %q, want the film; order %v", got[0].Title, titles(got))
+	}
+}
+
+// ...but if that is what was searched for, it must not be demoted.
+func TestAdultResultsNotDemotedWhenAskedFor(t *testing.T) {
+	cards := []card{
+		{Title: "Some Movie", Year: 2010, Seeders: 5,
+			Art: artwork{Found: true}, Sources: []source{{Seeders: 5}}},
+		{Title: "Brazzers Collection", Seeders: 40, Sources: []source{{Seeders: 40}}},
+	}
+	got := filters{Sort: "relevance", Query: "brazzers"}.apply(cards)
+	if got[0].Title != "Brazzers Collection" {
+		t.Errorf("top = %q, want the asked-for result; order %v", got[0].Title, titles(got))
+	}
+}

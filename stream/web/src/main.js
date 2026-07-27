@@ -34,6 +34,7 @@ function filterParams() {
 async function search({ showSpinner = true } = {}) {
   if (!state.query) return;
   $('#intro').hidden = true;
+  $('#discover').hidden = true;
   if (showSpinner) {
     $('#status').textContent = 'Searching every indexer…';
     $('#status').hidden = false;
@@ -165,6 +166,69 @@ function tile(card) {
   t.append(el('div', 'tmeta', bits.join(' · ')));
 
   t.addEventListener('click', () => openDetail(card));
+  return t;
+}
+
+// ---------------------------------------------------------------- discover --
+
+/**
+ * Browsable landing rows from TMDB.
+ *
+ * These are catalogue entries, not torrents — nothing here is indexed or
+ * hosted. Clicking one runs an ordinary search for its title, which is where
+ * any actual sources come from.
+ */
+async function loadDiscover() {
+  const host = $('#discover');
+  try {
+    const res = await fetch('/api/discover');
+    if (!res.ok) return;
+    const { rows } = await res.json();
+    if (!rows?.length) return;
+
+    host.replaceChildren();
+    for (const row of rows) {
+      const shelf = el('section', 'shelf');
+      shelf.append(el('h3', null, row.title));
+      const rail = el('div', 'rail');
+      for (const item of row.items) rail.append(discoverTile(item));
+      shelf.append(rail);
+      host.append(shelf);
+    }
+  } catch {
+    /* discovery is a nicety; a failure just leaves the intro copy in place */
+  }
+}
+
+function discoverTile(item) {
+  const t = el('button', 'tile');
+  t.type = 'button';
+  t.title = item.overview || item.title;
+
+  const p = el('div', 'poster');
+  if (item.poster) {
+    const img = el('img');
+    img.loading = 'lazy';
+    img.alt = item.title;
+    img.src = item.poster;
+    p.append(img);
+  } else {
+    p.append(el('div', 'noart', item.title));
+  }
+  if (item.rating) p.append(el('span', 'rating', item.rating.toFixed(1)));
+  if (item.mediaType === 'tv') p.append(el('span', 'best-q', 'TV'));
+  t.append(p);
+
+  t.append(el('div', 'tname', item.title));
+  t.append(el('div', 'tmeta', item.year ? String(item.year) : ''));
+
+  t.addEventListener('click', () => {
+    const q = item.year ? `${item.title} ${item.year}` : item.title;
+    $('#q').value = q;
+    state.query = q;
+    history.replaceState(null, '', `?q=${encodeURIComponent(q)}`);
+    search();
+  });
   return t;
 }
 
@@ -416,6 +480,7 @@ function init() {
 
   const params = new URLSearchParams(location.search);
   const initial = params.get('q');
+  if (!initial) loadDiscover();
   if (initial) {
     $('#q').value = initial;
     state.query = initial;
