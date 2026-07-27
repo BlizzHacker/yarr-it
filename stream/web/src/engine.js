@@ -13,6 +13,7 @@
 //                                  is used last and capped.
 
 import { BridgePeerConn, isPublicPeer } from './bridge-peer.js';
+if (typeof window !== 'undefined') window.__bridgeStats = () => BridgePeerConn.stats;
 import { announceUdp, trackersFromMagnet, infoHashFromMagnet } from './tracker-udp.js';
 
 // WebTorrent's prebuilt browser bundle is an ES module (`export {default}`), so
@@ -31,7 +32,13 @@ const WSS_TRACKERS = [
   'wss://tracker.webtorrent.dev',
 ];
 
-const MAX_BRIDGE_PEERS = 12;
+// Enough relayed peers to sustain playback without spending relay bandwidth
+// on a swarm we may abandon in seconds.
+const MAX_BRIDGE_PEERS = 8;
+// Kept well under the relay per-IP socket cap so dials are refused rarely.
+const MAX_INFLIGHT_DIALS = 6;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class StreamEngine {
   constructor({ onStats } = {}) {
@@ -39,6 +46,8 @@ export class StreamEngine {
     this.torrent = null;
     this.onStats = onStats || (() => {});
     this._bridgePeers = new Set();
+    this._bridgeTried = new Set();
+    this._bridgeInFlight = 0;
     this._statsTimer = null;
     this._serverReady = this._initServer();
 
@@ -83,42 +92,87 @@ export class StreamEngine {
     // Dial as each tracker answers rather than awaiting all of them. Dead
     // trackers are common and a Promise.all would let the slowest one hold up
     // playback for its full timeout.
-    const seen = new Set();
     await Promise.all(
       trackers.slice(0, 6).map(async (tr) => {
         const peers = await announceUdp(tr, infoHash).catch(() => []);
-        for (const peer of peers) {
-          const key = `${peer.host}:${peer.port}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          this._dialBridgePeer(torrent, peer);
-        }
+        await this._dialInBatches(torrent, peers);
       }),
     );
   }
 
-  /** Open one relayed TCP peer and hand it to the engine. */
+  /**
+   * Work through a peer list a few at a time.
+   *
+   * Most public-swarm addresses never answer, so this keeps a small number of
+   * dials in flight and moves on rather than waiting on each one. It stops
+   * early once enough peers are actually connected.
+   */
+  async _dialInBatches(torrent, peers) {
+    for (const peer of peers) {
+      if (this._bridgePeers.size >= MAX_BRIDGE_PEERS) return;
+      while (this._bridgeInFlight >= MAX_INFLIGHT_DIALS) {
+        await sleep(250);
+        if (this._bridgePeers.size >= MAX_BRIDGE_PEERS) return;
+      }
+      this._dialBridgePeer(torrent, peer);
+    }
+  }
+
+  /**
+   * Open one relayed TCP peer and hand it to the engine.
+   *
+   * Concurrency is the whole difficulty here. The relay caps concurrent sockets
+   * per client IP, and most public-swarm peers are dead or firewalled, so naive
+   * dialling opens hundreds at once, gets refused, and the failures free slots
+   * that instantly refill — a thrash loop in which no connection ever survives.
+   *
+   * So three separate counts are tracked: peers already tried (never retried),
+   * dials currently in flight (bounded), and peers actually connected (the
+   * thing we want). Only the last is allowed to stop the search.
+   */
   _dialBridgePeer(torrent, { host, port }) {
-    if (this._bridgePeers.size >= MAX_BRIDGE_PEERS) return;
     const key = `${host}:${port}`;
-    if (this._bridgePeers.has(key) || !isPublicPeer(host)) return;
-    this._bridgePeers.add(key);
+    if (this._bridgeTried.has(key) || !isPublicPeer(host)) return false;
+    if (this._bridgeInFlight >= MAX_INFLIGHT_DIALS) return false;
+    if (this._bridgePeers.size >= MAX_BRIDGE_PEERS) return false;
+
+    this._bridgeTried.add(key);
+    this._bridgeInFlight++;
+
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      this._bridgeInFlight--;
+    };
 
     try {
       const conn = new BridgePeerConn(host, port);
+
       conn.on('connect', () => {
+        settle();
+        this._bridgePeers.add(key);
         try {
-          // Hand the relayed socket to the engine as an ordinary peer.
+          // Hand the relayed socket over as an ordinary peer. The engine keys
+          // its peer map on conn.id, which BridgePeerConn sets to host:port.
           torrent._addPeer(conn, 'bridge');
         } catch {
-          conn.destroy();
           this._bridgePeers.delete(key);
+          conn.destroy();
         }
       });
-      conn.on('close', () => this._bridgePeers.delete(key));
-      conn.on('error', () => this._bridgePeers.delete(key));
-    } catch {
-      this._bridgePeers.delete(key);
+
+      const drop = () => {
+        settle();
+        this._bridgePeers.delete(key);
+      };
+      conn.on('close', drop);
+      conn.on('error', drop);
+      return true;
+    } catch (err) {
+      console.warn('[engine] bridge dial failed:', err?.message || err);
+      settle();
+      return false;
     }
   }
 
@@ -180,6 +234,8 @@ export class StreamEngine {
   destroyTorrent() {
     clearInterval(this._statsTimer);
     this._bridgePeers.clear();
+    this._bridgeTried.clear();
+    this._bridgeInFlight = 0;
     if (this.torrent) {
       try {
         this.torrent.destroy();

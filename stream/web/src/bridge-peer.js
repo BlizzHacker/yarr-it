@@ -16,6 +16,10 @@ import { Duplex } from 'streamx';
 const BRIDGE_URL = `wss://${location.host}/bridge/socket`;
 
 export class BridgePeerConn extends Duplex {
+  // Connection-attempt counters. Relay failures are otherwise invisible: a peer
+  // that never answers looks identical to a bug in the handover.
+  static stats = { created: 0, wsOpen: 0, relayOk: 0, wsClose: 0, wsError: 0, lastCode: null };
+
   /**
    * @param {string} host  peer IPv4/IPv6 literal (never a hostname -- the
    *                       bridge refuses names so it can't be used for DNS
@@ -26,14 +30,27 @@ export class BridgePeerConn extends Duplex {
     super();
     this.host = host;
     this.port = port;
+
+    // The engine keys its peer map on `conn.id` and rejects duplicates. Without
+    // a unique id every relayed peer collides on `undefined`, so exactly one
+    // could ever attach and the rest were silently dropped as duplicates.
+    this.id = `${host}:${port}`;
+    this.remoteAddress = host;
+    this.remotePort = port;
+
     this.connected = false;
-    this.destroyed = false;
+    // NOT `destroyed`: streamx defines that as a getter with no setter, so
+    // assigning to it throws and the whole constructor fails.
+    this._closed = false;
     this._pending = [];
+
+    BridgePeerConn.stats.created++;
 
     this._ws = new WebSocket(BRIDGE_URL);
     this._ws.binaryType = 'arraybuffer';
 
     this._ws.onopen = () => {
+      BridgePeerConn.stats.wsOpen++;
       this._ws.send(JSON.stringify({ proto: 'tcp', host, port }));
     };
 
@@ -42,6 +59,7 @@ export class BridgePeerConn extends Duplex {
         // Control frame. Only two exist: {"ok":true} on connect, or nothing.
         try {
           if (JSON.parse(ev.data).ok) {
+            BridgePeerConn.stats.relayOk++;
             this.connected = true;
             for (const chunk of this._pending) this._ws.send(chunk);
             this._pending = [];
@@ -55,12 +73,12 @@ export class BridgePeerConn extends Duplex {
       this.push(new Uint8Array(ev.data));
     };
 
-    this._ws.onclose = () => this._cleanup();
-    this._ws.onerror = () => this._cleanup();
+    this._ws.onclose = (e) => { BridgePeerConn.stats.wsClose++; BridgePeerConn.stats.lastCode = e?.code; this._cleanup(); };
+    this._ws.onerror = () => { BridgePeerConn.stats.wsError++; this._cleanup(); };
   }
 
   _write(chunk, cb) {
-    if (this.destroyed) return cb();
+    if (this._closed) return cb();
     const buf = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
     if (!this.connected) {
       this._pending.push(buf);
@@ -76,8 +94,8 @@ export class BridgePeerConn extends Duplex {
   }
 
   _cleanup() {
-    if (this.destroyed) return;
-    this.destroyed = true;
+    if (this._closed) return;
+    this._closed = true;
     try {
       this._ws.close();
     } catch {
