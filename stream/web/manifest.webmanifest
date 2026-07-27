@@ -1,0 +1,20 @@
+{
+  "name": "Stream — view before you download",
+  "short_name": "Stream",
+  "description": "Ad-free, open-source torrent streaming that plays entirely in your browser.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0d11",
+  "theme_color": "#0b0d11",
+  "categories": ["entertainment", "video", "utilities"],
+  "icons": [
+    { "src": "/icon-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "protocol_handlers": [
+    { "protocol": "magnet", "url": "/?magnet=%s" }
+  ]
+}

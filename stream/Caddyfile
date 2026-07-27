@@ -15,6 +15,15 @@ stream.moveweight.com {
 		reverse_proxy 127.0.0.1:8802
 	}
 
+	# index.html carries a hashed script URL, so it must never be cached or a
+	# returning visitor keeps loading the previous build's assets.
+	@html path / /index.html
+	header @html Cache-Control "no-cache, must-revalidate"
+
+	# Hashed/versioned assets are safe to cache hard.
+	@assets path *.js *.svg *.webmanifest
+	header @assets Cache-Control "public, max-age=604800"
+
 	handle {
 		root * /srv/stream/www
 		try_files {path} /index.html

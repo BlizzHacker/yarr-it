@@ -24,10 +24,11 @@ import WebTorrent from './webtorrent.min.js';
 // Trackers reachable from a browser. Plain http/udp trackers cannot be
 // contacted directly from a page, so we use the WSS ones; the bridge covers
 // the rest via peer exchange once any connection is established.
+// tracker.files.fm:7073 was dropped: it is dead and every attempt spams the
+// console with a failed WebSocket handshake.
 const WSS_TRACKERS = [
   'wss://tracker.openwebtorrent.com',
   'wss://tracker.webtorrent.dev',
-  'wss://tracker.files.fm:7073/announce',
 ];
 
 const MAX_BRIDGE_PEERS = 12;

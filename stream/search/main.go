@@ -75,8 +75,9 @@ type card struct {
 	Episode  int      `json:"episode,omitempty"`
 	Kind     string   `json:"kind"` // video | audio | image | other
 	Sources  []source `json:"sources"`
-	Best     int      `json:"best"`     // index into Sources
-	Seeders  int       `json:"seeders"` // max across sources
+	Best     int      `json:"best"`    // index into Sources
+	Seeders  int      `json:"seeders"` // max across sources
+	Art      artwork  `json:"art"`
 }
 
 type cacheEntry struct {
@@ -89,9 +90,17 @@ type server struct {
 	apiKey      string
 	ttl         time.Duration
 
-	mu     sync.RWMutex
-	cache  map[string]cacheEntry
-	single map[string]*sync.WaitGroup
+	mu    sync.RWMutex
+	cache map[string]cacheEntry
+
+	// inflight collapses concurrent identical queries into one upstream call.
+	// A search fans out to ~28 indexers and can take a minute; without this,
+	// three people searching the same title triple the load on Prowlarr and
+	// make the timeouts that much likelier.
+	flightMu sync.Mutex
+	inflight map[string]chan struct{}
+
+	tmdb *tmdbClient
 }
 
 func main() {
@@ -110,7 +119,8 @@ func main() {
 		apiKey:      key,
 		ttl:         *ttl,
 		cache:       make(map[string]cacheEntry),
-		single:      make(map[string]*sync.WaitGroup),
+		inflight:    make(map[string]chan struct{}),
+		tmdb:        newTMDB(os.Getenv("TMDB_API_KEY")),
 	}
 	go s.evictLoop()
 
@@ -122,7 +132,7 @@ func main() {
 		Addr:              *addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      90 * time.Second,
+		WriteTimeout:      130 * time.Second,
 	}
 	log.Printf("mw-search listening on %s -> %s (ttl %s)", *addr, s.prowlarrURL, *ttl)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -158,24 +168,90 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if len(q) > 128 {
 		q = q[:128]
 	}
-	kind := r.URL.Query().Get("kind")
+	f := parseFilters(r.URL.Query())
+	kind := f.Kind
 	cacheKey := kind + "\x00" + strings.ToLower(q)
 
+	// Filters are applied to the cached result set, so changing one is instant
+	// and costs no indexer traffic.
+	respond := func(cards []card, cacheState string, stale bool) {
+		body := map[string]any{
+			"query":  q,
+			"cards":  f.apply(cards),
+			"facets": buildFacets(cards),
+			"total":  len(cards),
+		}
+		if stale {
+			body["stale"] = true
+		}
+		w.Header().Set("X-Cache", cacheState)
+		writeJSON(w, 200, body)
+	}
+
 	if cards, ok := s.getCached(cacheKey); ok {
-		w.Header().Set("X-Cache", "HIT")
-		writeJSON(w, 200, map[string]any{"query": q, "cards": cards})
+		respond(cards, "HIT", false)
 		return
+	}
+
+	// Collapse duplicate concurrent queries; the loser waits and then reads
+	// whatever the winner cached.
+	if wait, leader := s.claim(cacheKey); !leader {
+		select {
+		case <-wait:
+		case <-r.Context().Done():
+			return
+		}
+		if cards, ok := s.getAny(cacheKey); ok {
+			respond(cards, "COALESCED", false)
+			return
+		}
+	} else {
+		defer s.release(cacheKey)
 	}
 
 	cards, err := s.searchProwlarr(r.Context(), q, kind)
 	if err != nil {
-		writeJSON(w, 502, map[string]string{"error": "upstream search failed"})
 		log.Printf("search %q: %v", q, err)
+		// A slow indexer should not turn into a dead end. If we have ever had
+		// results for this query, stale ones beat an error page.
+		if stale, ok := s.getAny(cacheKey); ok {
+			respond(stale, "STALE", true)
+			return
+		}
+		writeJSON(w, 504, map[string]string{
+			"error": "indexers are taking too long right now — try again in a moment",
+		})
 		return
 	}
+
+	// Artwork only for the leading cards: enriching 200 of them would be slow
+	// and most are never scrolled to.
+	s.tmdb.enrich(r.Context(), cards, 40)
+
 	s.putCached(cacheKey, cards)
-	w.Header().Set("X-Cache", "MISS")
-	writeJSON(w, 200, map[string]any{"query": q, "cards": cards})
+	respond(cards, "MISS", false)
+}
+
+// claim returns (wait, true) for the goroutine that should do the upstream
+// call, or (wait, false) for one that should wait on the leader.
+func (s *server) claim(k string) (<-chan struct{}, bool) {
+	s.flightMu.Lock()
+	defer s.flightMu.Unlock()
+	if ch, ok := s.inflight[k]; ok {
+		return ch, false
+	}
+	ch := make(chan struct{})
+	s.inflight[k] = ch
+	return ch, true
+}
+
+func (s *server) release(k string) {
+	s.flightMu.Lock()
+	defer s.flightMu.Unlock()
+	if ch, ok := s.inflight[k]; ok {
+		close(ch)
+		delete(s.inflight, k)
+	}
 }
 
 func (s *server) getCached(k string) ([]card, bool) {
@@ -183,6 +259,18 @@ func (s *server) getCached(k string) ([]card, bool) {
 	defer s.mu.RUnlock()
 	e, ok := s.cache[k]
 	if !ok || time.Now().After(e.expires) {
+		return nil, false
+	}
+	return e.cards, true
+}
+
+// getAny returns cached cards regardless of freshness. Used only when the
+// upstream has failed, where stale results beat an error page.
+func (s *server) getAny(k string) ([]card, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.cache[k]
+	if !ok || len(e.cards) == 0 {
 		return nil, false
 	}
 	return e.cards, true
@@ -198,10 +286,13 @@ func (s *server) evictLoop() {
 	t := time.NewTicker(5 * time.Minute)
 	defer t.Stop()
 	for range t.C {
-		now := time.Now()
+		// Expired means "re-query", not "discard": expired entries are the
+		// fallback when indexers time out. Only drop genuinely ancient ones so
+		// memory stays bounded on a 1 GB box.
+		cutoff := time.Now().Add(-24 * time.Hour)
 		s.mu.Lock()
 		for k, e := range s.cache {
-			if now.After(e.expires) {
+			if e.expires.Before(cutoff) {
 				delete(s.cache, k)
 			}
 		}
@@ -210,7 +301,7 @@ func (s *server) evictLoop() {
 }
 
 func (s *server) searchProwlarr(ctx context.Context, q, kind string) ([]card, error) {
-	ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 100*time.Second)
 	defer cancel()
 
 	u := fmt.Sprintf("%s/api/v1/search?query=%s&limit=200", s.prowlarrURL, url.QueryEscape(q))

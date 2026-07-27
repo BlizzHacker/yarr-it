@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 const fakeKey = "PROWLARR_API_KEY_REDACTED"
@@ -142,5 +143,45 @@ func TestWithDefaultTrackersDoesNotDuplicate(t *testing.T) {
 	got := withDefaultTrackers(base)
 	if n := strings.Count(got, "tracker.opentrackr.org"); n != 1 {
 		t.Errorf("opentrackr appears %d times, want 1", n)
+	}
+}
+
+// A slow indexer must not turn a search into a dead end: if we have ever had
+// results for a query, stale ones are served instead of an error.
+func TestStaleCacheServedWhenUpstreamFails(t *testing.T) {
+	s := &server{cache: map[string]cacheEntry{}, inflight: map[string]chan struct{}{}, ttl: time.Minute}
+	key := "\x00sintel"
+	s.putCached(key, []card{{Title: "Sintel", Seeders: 5}})
+
+	// Expire it the way the TTL would.
+	s.mu.Lock()
+	s.cache[key] = cacheEntry{cards: s.cache[key].cards, expires: time.Now().Add(-time.Hour)}
+	s.mu.Unlock()
+
+	if _, fresh := s.getCached(key); fresh {
+		t.Error("entry should be stale")
+	}
+	stale, ok := s.getAny(key)
+	if !ok || len(stale) != 1 || stale[0].Title != "Sintel" {
+		t.Fatalf("stale lookup failed: ok=%v cards=%v", ok, stale)
+	}
+}
+
+// Two concurrent identical queries must produce one upstream call.
+func TestClaimCollapsesConcurrentQueries(t *testing.T) {
+	s := &server{cache: map[string]cacheEntry{}, inflight: map[string]chan struct{}{}}
+	_, leader1 := s.claim("k")
+	if !leader1 {
+		t.Fatal("first caller should lead")
+	}
+	wait, leader2 := s.claim("k")
+	if leader2 {
+		t.Fatal("second caller should follow, not duplicate the upstream call")
+	}
+	s.release("k")
+	select {
+	case <-wait:
+	default:
+		t.Error("follower was not released")
 	}
 }
