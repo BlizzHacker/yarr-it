@@ -1465,7 +1465,7 @@ git commit -m "feat: library view for browsing playlist collections"
 Replaces the torrent-only `play()` with resolve-then-render, and adds `<audio>` and `<iframe>` so the non-video render paths have somewhere to land.
 
 **Files:**
-- Modify: `stream/web/src/main.js:350-386` (the `play()` function)
+- Modify: `stream/web/src/main.js` — the `play()` function (locate by `function play(card, src) {`)
 - Modify: `stream/web/index.html` (add `<audio>` and `<iframe>` to the player stage)
 
 **Interfaces:**
@@ -1492,7 +1492,7 @@ And add this style next to the existing `video,#image` rule:
 
 - [ ] **Step 2: Replace the imports at the top of main.js**
 
-Change `stream/web/src/main.js` line 1 from:
+In `stream/web/src/main.js`, find the single existing import line and replace it. It reads:
 
 ```js
 import { StreamEngine, classify, needsWebCodecs } from './engine.js';
@@ -1514,7 +1514,7 @@ import { PlaybackError } from './failures.js';
 
 - [ ] **Step 3: Replace the play() function**
 
-Replace `stream/web/src/main.js` lines 350-386 (the whole `play()` function) with:
+Replace the whole `play()` function — from `function play(card, src) {` through its closing brace, immediately before the `/**` comment introducing `attachMedia` — with:
 
 ```js
 function playerElements() {
@@ -1581,7 +1581,7 @@ async function play(card, src) {
 
 - [ ] **Step 4: Release the playable when the player closes**
 
-Find `closePlayer` in `stream/web/src/main.js` (around line 440) and add these two lines as the first statements in its body:
+Find `function closePlayer(` in `stream/web/src/main.js` and add these two lines as the first statements in its body:
 
 ```js
   state.playable?.cleanup();
@@ -1627,7 +1627,7 @@ Relayed bytes are billed twice. A 1080p stream costs ~4.4 GiB per viewer-hour ag
 
 **Files:**
 - Modify: `stream/bridge/budget.go`
-- Modify: `stream/bridge/main.go:75-90` (flags and server construction), `:121-131` (health output)
+- Modify: `stream/bridge/main.go` — the flag block in `func main()`, the server literal, and `handleHealth`
 - Test: `stream/bridge/budget_test.go`
 
 **Interfaces:**
@@ -1695,7 +1695,7 @@ Expected: PASS — `ok  	mw-bridge`
 
 - [ ] **Step 5: Wire the flag and the second budget**
 
-In `stream/bridge/main.go`, after the `budgetGiB` flag declaration (line 79) add:
+In `stream/bridge/main.go`, immediately after the `budgetGiB := flag.Int64(...)` line, add:
 
 ```go
 	iptvBudgetGiB := flag.Int64("iptv-budget-gib", 0,
@@ -1710,13 +1710,13 @@ After `flag.Parse()` add:
 	}
 ```
 
-In the server literal (line ~86), alongside `budget:`, add:
+In the `&server{...}` literal, on the line after `budget:`, add:
 
 ```go
 		iptvBudget: newBudget(*statePath+".iptv", *iptvBudgetGiB<<30),
 ```
 
-Add the field to the server struct (near line 47):
+Add the field to the `server` struct definition, immediately after its existing `budget *budget` field:
 
 ```go
 	iptvBudget *budget
@@ -1724,7 +1724,7 @@ Add the field to the server struct (near line 47):
 
 - [ ] **Step 6: Expose it in health output**
 
-In the health handler (around line 130), alongside the existing `"budget_cap"` entry, add:
+In `handleHealth`, in the response map alongside the existing `"budget_cap"` entry, add:
 
 ```go
 		"iptv_budget_used": iptvUsed,
@@ -1757,7 +1757,7 @@ Tier 3 of the ladder is unreachable without this. The relay fetches the stream s
 
 **Files:**
 - Create: `stream/bridge/iptv.go`
-- Modify: `stream/bridge/main.go:90-92` (route registration)
+- Modify: `stream/bridge/main.go` — route registration in `func main()`
 - Test: `stream/bridge/iptv_test.go`
 
 **Interfaces:**
@@ -1918,7 +1918,7 @@ func (s *server) handleIPTV(w http.ResponseWriter, r *http.Request) {
 
 - [ ] **Step 4: Register the route**
 
-In `stream/bridge/main.go`, after line 92, add:
+In `stream/bridge/main.go`, immediately after the `mux.HandleFunc("/bridge/health", s.handleHealth)` line, add:
 
 ```go
 	mux.HandleFunc("/bridge/iptv", s.handleIPTV)
