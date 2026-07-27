@@ -25,7 +25,16 @@ cp -f node_modules/webtorrent/dist/sw.min.js dist/
 
 HASH=$(sha256sum dist/app.js | cut -c1-12)
 echo "==> build $HASH"
-sed "s/__BUILD__/$HASH/g" index.html > dist/index.html
+
+# Icons need the same treatment as app.js and for the same reason. They sit on
+# stable URLs behind `Cache-Control: max-age=86400`, so after a rebrand both
+# Cloudflare and every visitor's browser keep serving the OLD mark for a day --
+# which reads as "the rebrand did not ship" even though it did.
+ICONHASH=$(sha256sum dist/icon-512.png | cut -c1-12)
+echo "==> icons $ICONHASH"
+
+sed -e "s/__BUILD__/$HASH/g" -e "s/__ICON__/$ICONHASH/g" index.html > dist/index.html
+sed -e "s/__ICON__/$ICONHASH/g" manifest.webmanifest > dist/manifest.webmanifest
 
 push() {
   ssh "$JUMP" "ssh -i $KEY -o BatchMode=yes $VPS 'cat > $WWW/$1'" < "$2"
@@ -36,7 +45,7 @@ push "index.html"          dist/index.html
 push "app.js"              dist/app.js
 push "webtorrent.min.js"   dist/webtorrent.min.js
 push "sw.min.js"           dist/sw.min.js
-push "manifest.webmanifest" manifest.webmanifest
+push "manifest.webmanifest" dist/manifest.webmanifest
 push "privacy.html"       privacy.html
 # Raw modules, served for console diagnostics. Kept in the deploy so they can
 # never drift from the bundle the way they silently did once.
@@ -45,6 +54,10 @@ push "engine.js"          src/engine.js
 push "bridge-peer.js"     src/bridge-peer.js
 push "dht.js"            src/dht.js
 push "bencode.js"        src/bencode.js
+# Both the hashed name (referenced by the page and the web manifest) and the
+# bare name (referenced by installed PWAs, the TWA and anything already cached).
+push "icon-192.$ICONHASH.png" dist/icon-192.png
+push "icon-512.$ICONHASH.png" dist/icon-512.png
 push "icon-192.png"        dist/icon-192.png
 push "icon-512.png"        dist/icon-512.png
 

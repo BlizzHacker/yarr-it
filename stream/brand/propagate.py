@@ -29,8 +29,13 @@ SQUARE = [
     ("installers/msix-assets/StoreLogo.png", 50),
     ("installers/msix-assets/Square44x44Logo.png", 44),
     ("installers/msix-assets/Square150x150Logo.png", 150),
-    # Android launcher icons for the TV build.
-    ("installers/android-assets/ic_launcher.png", 512),
+    # Android launcher icons. Bubblewrap bakes these in at project-creation
+    # time from the site icon, so they do not follow a rebrand on their own.
+    ("installers/android-assets/mipmap-mdpi/ic_launcher.png", 48),
+    ("installers/android-assets/mipmap-hdpi/ic_launcher.png", 72),
+    ("installers/android-assets/mipmap-xhdpi/ic_launcher.png", 96),
+    ("installers/android-assets/mipmap-xxhdpi/ic_launcher.png", 144),
+    ("installers/android-assets/mipmap-xxxhdpi/ic_launcher.png", 192),
     # Roku's focus icon is not square; it is letterboxed below instead.
 ]
 
@@ -42,6 +47,16 @@ FITTED = [
     ("roku/images/splash_hd.png", 1280, 720, 0.42),
     ("roku/images/splash_sd.png", 720, 480, 0.42),
     ("installers/msix-assets/SplashScreen.png", 620, 300, 0.62),
+    ("installers/android-assets/tv-banner.png", 320, 180, 0.86),
+    # Android splash, one per density. Bubblewrap derives these from the site
+    # icon at project-creation time, so a rebrand leaves the OLD art on the
+    # launch screen while the launcher icon is already correct -- which looks
+    # exactly like a failed rebrand.
+    ("installers/android-assets/drawable-mdpi/splash.png", 300, 300, 0.62),
+    ("installers/android-assets/drawable-hdpi/splash.png", 450, 450, 0.62),
+    ("installers/android-assets/drawable-xhdpi/splash.png", 600, 600, 0.62),
+    ("installers/android-assets/drawable-xxhdpi/splash.png", 900, 900, 0.62),
+    ("installers/android-assets/drawable-xxxhdpi/splash.png", 1200, 1200, 0.62),
 ]
 
 
