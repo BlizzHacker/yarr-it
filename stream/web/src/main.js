@@ -23,6 +23,11 @@ const state = {
   engine: null,
   registry: null,
   playable: null,
+  // Bumped at the start of every play() call. A resolve() that finishes
+  // after a newer play() has started is stale -- comparing against the
+  // counter it captured is how play() tells "still the one the user last
+  // clicked" from "lost the race".
+  resolveGen: 0,
   active: null,
   filters: {
     seeders: 1, minSize: '', maxSize: '',
@@ -53,6 +58,12 @@ async function search({ showSpinner = true } = {}) {
   $('#intro').hidden = true;
   $('#discover').hidden = true;
   $('#get').hidden = true;
+  // A playlist Collection browsed earlier leaves #library visible (it's
+  // only ever shown, never hidden, by renderLibrary). #player is a
+  // full-viewport overlay, so that stays invisible right up until the
+  // player closes -- then the old channel list resurfaces underneath a
+  // brand new, unrelated search. Every fresh search must start clean.
+  $('#library').hidden = true;
   if (showSpinner) {
     $('#status').textContent = 'Searching every indexer…';
     $('#status').hidden = false;
@@ -380,10 +391,65 @@ function buildRegistry() {
 }
 
 /**
+ * Best-effort filename for a resolved Playable, so needsWebCodecs can look at
+ * the actual container extension instead of a magnet link.
+ *
+ * WebTorrent's file.streamURL (what the torrent resolver sets as `src`) is
+ * `<sw-scope>/<infoHash>/<encoded file path>` -- the final path segment is
+ * the real filename, which is what this recovers. The url/playlist resolvers
+ * set `src` to the source URI itself, which is usually the same shape.
+ *
+ * This is not reliable in every case, and there is nothing to fall back to
+ * that fixes that: source.js's makePlayable (render/src/mime/tier/cleanup)
+ * does not carry the original filename as its own field, so when `src` is
+ * not a filename-shaped URL -- e.g. the no-service-worker torrent fallback
+ * in attachMedia(), which plays from a bare `blob:` URL -- there is no
+ * filename to recover at all. In that case this just returns `src` itself;
+ * needsWebCodecs will find no matching extension and stay silent rather than
+ * guess. That's a known gap, not a bug: it only affects the rare
+ * service-worker-unavailable fallback path, not normal torrent playback.
+ */
+function playableFilename(playable) {
+  try {
+    const { pathname } = new URL(playable.src, location.href);
+    const last = pathname.split('/').pop();
+    if (last) return decodeURIComponent(last);
+  } catch {
+    /* src isn't a parseable URL (e.g. an opaque blob: id) -- fall through */
+  }
+  return playable.src;
+}
+
+/**
  * Resolve any source and render whatever comes back. `src.magnet` is still
  * honoured so existing search results keep working unchanged.
+ *
+ * Two guards protect this against the async gap between "resolve() called"
+ * and "resolve() settles":
+ *
+ *  - The outgoing Playable's cleanup() is called up front, before anything
+ *    else, so a torrent's swarm (or any other resolver's held resource) is
+ *    always released the instant a new source is picked -- not just when
+ *    the player is closed, and not left to whatever side effect the next
+ *    resolver happens to have (StreamEngine.add() tearing down the previous
+ *    torrent is one such side effect, not a substitute for this).
+ *  - `resolveGen` guards overlapping calls: if the user picks a second
+ *    source before the first has finished resolving, only the resolution
+ *    matching the *latest* play() call is allowed to touch the DOM or
+ *    state.playable. A resolution that loses the race still gets its
+ *    Playable cleaned up so it can't leak in the background.
  */
 async function play(card, src) {
+  const gen = ++state.resolveGen;
+
+  try {
+    state.playable?.cleanup();
+  } catch (err) {
+    console.warn('[player] cleanup of outgoing playable failed:', err?.message || err);
+  }
+  state.playable = null;
+
+  $('#library').hidden = true;
   $('#player').hidden = false;
   $('#player-title').textContent = card.title + (card.year ? ` (${card.year})` : '');
   $('#player-sub').textContent = src.title ?? '';
@@ -398,16 +464,32 @@ async function play(card, src) {
   try {
     const out = await state.registry.resolve(makeSource({ kind: 'auto', uri }));
 
+    if (gen !== state.resolveGen) {
+      // A newer play() call has since taken over. Never touch the DOM or
+      // state.playable with a stale result -- but still release whatever
+      // this resolution acquired (a torrent's cleanup destroys its swarm)
+      // so the loser of the race doesn't leak.
+      if (!isCollection(out)) {
+        try {
+          out.cleanup?.();
+        } catch (err) {
+          console.warn('[player] cleanup of abandoned playable failed:', err?.message || err);
+        }
+      }
+      return;
+    }
+
     if (isCollection(out)) {
       $('#player').hidden = true;
       renderLibrary(out, {
         mount: $('#library'),
-        onPick: (picked) => play({ title: picked.meta.title }, { uri: picked.uri }),
+        onPick: (picked) => play({ title: picked.meta.title || picked.uri }, { uri: picked.uri }),
       });
       return;
     }
 
-    if (needsWebCodecs(uri)) {
+    $('#library').hidden = true;
+    if (needsWebCodecs(playableFilename(out))) {
       setPlayerStatus('Unusual container — if this stalls, pick an MP4 source.');
     }
     const el = renderPlayable(out, els);
@@ -415,6 +497,7 @@ async function play(card, src) {
     el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
     if (out.render === 'image' || out.render === 'embed') setPlayerStatus('');
   } catch (err) {
+    if (gen !== state.resolveGen) return;
     const why = err instanceof PlaybackError ? err.message : `Could not start: ${err.message}`;
     setPlayerStatus(why);
   }
@@ -471,6 +554,7 @@ function closePlayer() {
   state.playable?.cleanup();
   state.playable = null;
   $('#player').hidden = true;
+  $('#library').hidden = true;
   // detachAll pauses/loads every real media element (video, audio) and clears
   // src on all of them, not just video+image -- with the audio and embed
   // elements now in play, leaving those untouched would let a paused-looking
