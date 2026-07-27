@@ -28,7 +28,7 @@ stream.moveweight.com {
 	@images path *.png *.svg *.webmanifest
 	header @images Cache-Control "public, max-age=86400"
 
-	@modules path /engine.js /bridge-peer.js /tracker-udp.js /sw.min.js /webtorrent.min.js
+	@modules path /engine.js /bridge-peer.js /tracker-udp.js /dht.js /bencode.js /sw.min.js /webtorrent.min.js
 	header @modules Cache-Control "no-cache, must-revalidate"
 
 	handle {

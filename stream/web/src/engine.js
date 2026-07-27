@@ -21,6 +21,10 @@ import {
   httpTrackersFromMagnet,
   infoHashFromMagnet,
 } from './tracker-udp.js';
+import { dhtFindPeers } from './dht.js';
+
+const ENABLE_DHT =
+  typeof localStorage !== 'undefined' && localStorage.getItem('mw-dht') === '1';
 
 // WebTorrent's prebuilt browser bundle is an ES module (`export {default}`), so
 // it must be imported rather than loaded as a global via <script>. It is marked
@@ -110,6 +114,18 @@ export class StreamEngine {
         const peers = await announceHttp(tr, infoHash).catch(() => []);
         await this._dialInBatches(torrent, peers);
       }),
+      // DHT is implemented and its transport is verified, but it is OFF by
+      // default because it does not yet yield peers: every query egresses from
+      // the single relay IP, so DHT nodes see one address issuing ~100
+      // get_peers queries and rate-limit it. Enable to experiment:
+      //   localStorage.setItem("mw-dht", "1")
+      ...(ENABLE_DHT
+        ? [
+            dhtFindPeers(infoHash, (peers) => {
+              this._dialInBatches(torrent, peers).catch(() => {});
+            }).catch(() => []),
+          ]
+        : []),
     ]);
   }
 

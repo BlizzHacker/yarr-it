@@ -42,6 +42,8 @@ push "manifest.webmanifest" manifest.webmanifest
 push "tracker-udp.js"     src/tracker-udp.js
 push "engine.js"          src/engine.js
 push "bridge-peer.js"     src/bridge-peer.js
+push "dht.js"            src/dht.js
+push "bencode.js"        src/bencode.js
 push "icon-192.png"        dist/icon-192.png
 push "icon-512.png"        dist/icon-512.png
 
