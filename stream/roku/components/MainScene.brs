@@ -28,7 +28,19 @@ sub init()
 
     m.grid.setFocus(true)
     showBusy("Loading…")
-    m.api.request = { kind: "discover" }
+    dispatch({ kind: "discover" })
+end sub
+
+' dispatch sends a request to the network task.
+'
+' Setting .request alone does nothing: a SceneGraph Task only executes when its
+' control field is set to RUN, and it must be re-set for every subsequent run.
+' Forgetting this makes the UI sit on a spinner forever with no error anywhere,
+' because the task simply never ran.
+sub dispatch(req as Object)
+    m.api.control = "STOP"
+    m.api.request = req
+    m.api.control = "RUN"
 end sub
 
 ' ---------------------------------------------------------------- remote ----
@@ -78,7 +90,7 @@ sub onKeyboardButton()
         m.top.dialog.close = true
         if query <> invalid and query.trim() <> ""
             showBusy("Searching every index for " + Chr(34) + query + Chr(34) + "…" + Chr(10) + Chr(10) + "A cold search can take a few seconds.")
-            m.api.request = { kind: "search", query: query }
+            dispatch({ kind: "search", query: query })
         end if
     else
         m.top.dialog.close = true
@@ -94,7 +106,7 @@ sub onApiResponse()
     if resp.kind = "discover"
         hideBusy()
         if resp.data = invalid or resp.data.rows = invalid
-            setStatus("Could not reach the search service. Press ★ to search anyway.")
+            setStatus("Could not reach the search service. Press the * button to search anyway.")
             return
         end if
         ' Flatten the discover rails into one grid: rows-of-rows is fiddly with
@@ -117,7 +129,7 @@ sub onApiResponse()
     else if resp.kind = "search"
         hideBusy()
         if resp.data = invalid or resp.data.cards = invalid or resp.data.cards.count() = 0
-            setStatus("Nothing found. Press ★ to try another search.")
+            setStatus("Nothing found. Press the * button to try another search.")
             return
         end if
         m.cards = resp.data.cards
@@ -159,7 +171,7 @@ sub showCards(items as Object)
         node.title = it.title
         if it.poster <> invalid and it.poster <> "" then node.HDGRIDPOSTERURL = it.poster
         if it.seeders >= 0
-            node.addFields({ seedText: Str(it.seeders).trim() + "▲" })
+            node.addFields({ seedText: Str(it.seeders).trim() + " up" })
         else
             node.addFields({ seedText: "" })
         end if
@@ -177,7 +189,7 @@ sub onTitleSelected()
         node = m.grid.content.getChild(idx)
         if node = invalid then return
         showBusy("Finding sources for " + Chr(34) + node.title + Chr(34) + "…")
-        m.api.request = { kind: "search", query: node.title }
+        dispatch({ kind: "search", query: node.title })
         return
     end if
 
@@ -200,7 +212,7 @@ sub showSources(card as Object)
         if codec = invalid or codec = "" then codec = "?"
         ' Container matters more than codec on Roku, so it leads the row.
         container = containerOf(s.title)
-        rows.push(container + "   " + quality + "   " + codec + "   " + s.sizeHuman + "   " + Str(s.seeders).trim() + "▲   " + s.indexer)
+        rows.push(container + "   " + quality + "   " + codec + "   " + s.sizeHuman + "   " + Str(s.seeders).trim() + " up   " + s.indexer)
     end for
 
     m.sourceList.content = buildLabelContent(rows)
@@ -216,7 +228,7 @@ sub onSourceSelected()
     src = m.activeCard.sources[idx]
     m.sourcePane.visible = false
     showBusy("Joining the swarm…" + Chr(10) + Chr(10) + "The gateway is fetching metadata and the first pieces. This can take up to a minute on a quiet torrent.")
-    m.api.request = { kind: "prepare", magnet: src.magnet }
+    dispatch({ kind: "prepare", magnet: src.magnet })
 end sub
 
 function containerOf(name as String) as String

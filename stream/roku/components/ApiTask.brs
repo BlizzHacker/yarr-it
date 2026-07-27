@@ -8,11 +8,13 @@ sub runRequest()
     req = m.top.request
     if req = invalid then return
 
-    global = m.top.getGlobalNode()
+    ' Inside a component the global node is m.global. getGlobalNode() only
+    ' exists on roSGScreen, so calling it here is a member-not-found error.
+    globalNode = m.global
     kind = req.kind
 
     if kind = "discover"
-        url = global.searchBase + "/api/discover"
+        url = globalNode.searchBase + "/api/discover"
         m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 25) }
 
     else if kind = "search"
@@ -20,13 +22,13 @@ sub runRequest()
         ' AVI, WMV, XviD and so on. Roku shows a bare "cannot play" error with no
         ' explanation, so a source it will refuse is worse than no source at all.
         ' minSeeders=1 drops dead torrents for the same reason.
-        url = global.searchBase + "/api/search?device=roku&minSeeders=1&q=" + urlEncode(req.query)
-        m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 90) }
+        url = globalNode.searchBase + "/api/search?device=roku&minSeeders=1&q=" + urlEncode(req.query)
+        m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 150) }
 
     else if kind = "prepare"
         ' The gateway joins the swarm and waits for metadata, which can take a
         ' while, so this gets a long timeout and its own error surface.
-        url = global.gatewayBase + "/prepare?magnet=" + urlEncode(req.magnet)
+        url = globalNode.gatewayBase + "/prepare?magnet=" + urlEncode(req.magnet)
         result = httpGetJson(url, 140)
         ok = result <> invalid and result.streamUrl <> invalid
         m.top.response = { kind: kind, ok: ok, data: result }

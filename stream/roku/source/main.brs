@@ -12,9 +12,11 @@ sub Main()
     scene = screen.CreateScene("MainScene")
     screen.show()
 
-    ' Global node: anything the scene and its tasks both need to read.
-    global = screen.getGlobalNode()
-    global.addFields({
+    ' Shared config the scene and its tasks both read. Note the name: 'global'
+    ' is a reserved BrightScript identifier bound to ifGlobal, and assigning a
+    ' node to it is a runtime type mismatch.
+    globalNode = screen.getGlobalNode()
+    globalNode.addFields({
         searchBase: "https://stream.moveweight.com"
         gatewayBase: "http://192.168.0.118:8900"
     })

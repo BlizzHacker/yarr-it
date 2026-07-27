@@ -6,11 +6,11 @@
     <Rectangle id="bg" width="1920" height="1080" color="0x0b0d11ff" />
 
     <!-- Header -->
-    <Label id="brand" text="▶ Stream" translation="[80,52]"
+    <Label id="brand" text="STREAM" translation="[80,52]"
            color="0x5eead4ff" >
       <Font role="font" uri="font:BoldSystemFontFile" size="42" />
     </Label>
-    <Label id="hint" text="Press ★ to search   ·   OK to pick a source"
+    <Label id="hint" text="Press the * button to search   -   OK to pick a source"
            translation="[82,104]" color="0x8b96a8ff">
       <Font role="font" uri="font:SystemFontFile" size="24" />
     </Label>
