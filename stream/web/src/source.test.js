@@ -41,3 +41,15 @@ test('registry resolve throws a typed error when nothing handles the input', asy
     /no resolver/,
   );
 });
+
+test('resolve selects the same resolver find would pick for the same uri', async () => {
+  const reg = createRegistry();
+  const magnet = { name: 'magnet', canHandle: (i) => i.startsWith('magnet:'), resolve: async () => 'resolved' };
+  reg.register({ name: 'no', canHandle: () => false, resolve: async () => null });
+  reg.register(magnet);
+  const source = makeSource({ kind: 'torrent', uri: 'magnet:?xt=1' });
+  const found = reg.find(source.uri);
+  assert.equal(found.name, magnet.name);
+  const result = await reg.resolve(source);
+  assert.equal(result, 'resolved');
+});

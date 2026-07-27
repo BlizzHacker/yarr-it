@@ -39,11 +39,12 @@ export function makePlayable({ render, src, mime, tier = TIER.DIRECT, cleanup })
  * Playable is what makes IPTV implementations feel fake.
  */
 export function makeCollection({ title, sources }) {
-  return { title, sources: [...sources] };
+  if (!sources) throw new Error('collection needs sources');
+  return { type: 'collection', title, sources: [...sources] };
 }
 
 export function isCollection(x) {
-  return Boolean(x) && Array.isArray(x.sources);
+  return Boolean(x) && x.type === 'collection';
 }
 
 export function createRegistry() {
@@ -56,8 +57,13 @@ export function createRegistry() {
     find(input) {
       return resolvers.find((r) => r.canHandle(input)) ?? null;
     },
+    // Delegate to find() instead of re-running resolvers.find() here, so
+    // there is exactly one place that decides which resolver claims an
+    // input. Two independent selections that happen to agree today would
+    // silently desync the moment one gets priority ordering and the other
+    // doesn't.
     async resolve(source, ctx = {}) {
-      const resolver = resolvers.find((r) => r.canHandle(source.uri));
+      const resolver = this.find(source.uri);
       if (!resolver) throw new Error(`no resolver for: ${source.uri}`);
       return resolver.resolve(source, ctx);
     },
