@@ -2,3 +2,4 @@
 *.pem
 id_ed25519*
 secrets.env
+node_modules/
