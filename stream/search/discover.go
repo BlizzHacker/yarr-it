@@ -94,6 +94,9 @@ func (s *server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		s.discover.rows = live
 		s.discover.expires = time.Now().Add(3 * time.Hour)
 		s.discover.mu.Unlock()
+		if s.warm != nil {
+			go s.warm.refill()
+		}
 	}
 
 	w.Header().Set("X-Cache", "MISS")

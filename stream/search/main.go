@@ -104,6 +104,7 @@ type server struct {
 
 	tmdb     *tmdbClient
 	discover discoverCache
+	warm     *warmer
 }
 
 func main() {
@@ -125,7 +126,11 @@ func main() {
 		inflight:    make(map[string]chan struct{}),
 		tmdb:        newTMDB(os.Getenv("TMDB_API_KEY")),
 	}
+	s.warm = newWarmer(s)
 	go s.evictLoop()
+	// Pre-search the titles on the landing rails so the common path --
+	// browse trending, click a poster -- hits cache instead of a 14s fan-out.
+	go s.warm.run()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/search", s.handleSearch)

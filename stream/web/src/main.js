@@ -45,7 +45,7 @@ async function search({ showSpinner = true } = {}) {
   if (showSpinner) {
     $('#status').textContent = 'Searching every indexer…';
     $('#status').hidden = false;
-    $('#grid').replaceChildren();
+    showSkeletons();
   }
 
   try {
@@ -142,6 +142,19 @@ function chipRow(host, values, selected) {
       refilter();
     });
     host.append(c);
+  }
+}
+
+/** Placeholder tiles so the grid has shape while a cold search runs. */
+function showSkeletons(n = 12) {
+  const grid = $('#grid');
+  grid.replaceChildren();
+  for (let i = 0; i < n; i++) {
+    const t = el('div', 'tile skel');
+    t.append(el('div', 'poster'));
+    t.append(el('div', 'tname-sk'));
+    t.append(el('div', 'tmeta-sk'));
+    grid.append(t);
   }
 }
 
