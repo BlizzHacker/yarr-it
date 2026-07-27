@@ -12,13 +12,42 @@ const HLS_MARKERS = ['#EXT-X-TARGETDURATION', '#EXT-X-STREAM-INF', '#EXT-X-VERSI
  * Both IPTV channel lists and HLS manifests use the .m3u8 extension, so the
  * extension tells you nothing. HLS manifests carry #EXT-X-* tags; channel
  * lists do not.
+ *
+ * A marker only counts when it is a TAG - i.e. it appears at the very start
+ * of a (trimmed) line. `text.includes(marker)` looks correct and will be
+ * "simplified" back to that if you're not careful, but it's a substring
+ * search over the WHOLE raw document: any IPTV channel list whose
+ * group-title, tvg-name, channel name, or URL merely CONTAINS one of these
+ * strings (e.g. group-title="#EXT-X-VERSION Sports") gets misclassified as
+ * an HLS manifest and handed to a video element as a single stream instead
+ * of being rendered as a channel list. Anchoring to the start of the line
+ * avoids that false positive while staying a single linear pass (the inner
+ * loop is over the small, fixed-size marker list, not the document).
  */
 export function looksLikeHls(text) {
-  return HLS_MARKERS.some((m) => text.includes(m));
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    for (const marker of HLS_MARKERS) {
+      if (line.startsWith(marker)) return true;
+    }
+  }
+  return false;
 }
 
+// Precompiled once at module load rather than per-call: attr() runs twice
+// per #EXTINF line, so a 50,000-channel playlist would otherwise compile
+// 100,000 RegExp objects. The `(?:^|\s)` boundary before the name ensures a
+// request for "group-title" doesn't also match a vendor-prefixed attribute
+// like tvg-group-title="..." or parent-group-title="..." - without it, the
+// no-boundary version matches "group-title=" anywhere it occurs as a
+// substring, including inside a longer attribute name.
+const ATTR_PATTERNS = {
+  'tvg-logo': /(?:^|\s)tvg-logo="([^"]*)"/,
+  'group-title': /(?:^|\s)group-title="([^"]*)"/,
+};
+
 function attr(line, name) {
-  const m = line.match(new RegExp(`${name}="([^"]*)"`));
+  const m = line.match(ATTR_PATTERNS[name]);
   return m ? m[1] : '';
 }
 

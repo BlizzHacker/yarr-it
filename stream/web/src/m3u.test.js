@@ -115,3 +115,69 @@ test('an unterminated quote on the #EXTINF line does not hang or throw', () => {
   assert.equal(entries[0].group, '');
   assert.equal(entries[0].uri, 'http://a/b');
 });
+
+// Regression: looksLikeHls used to be a raw substring search over the whole
+// document, so a channel list whose group-title merely CONTAINS a marker
+// string was misclassified as an HLS manifest and handed to a video element
+// as a single stream instead of being rendered as a channel list.
+test('a group-title containing "#EXT-X-VERSION" is not mistaken for HLS', () => {
+  const text = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="#EXT-X-VERSION Sports",Channel One',
+    'http://s/1',
+  ].join('\n');
+  assert.equal(looksLikeHls(text), false);
+  const { entries } = parseM3U(text);
+  assert.equal(entries.length, 1);
+  assert.deepEqual(entries[0], {
+    title: 'Channel One',
+    uri: 'http://s/1',
+    logo: '',
+    group: '#EXT-X-VERSION Sports',
+  });
+});
+
+// Regression: same false-positive risk via a URL fragment rather than an
+// attribute value.
+test('a channel URL containing "#EXT-X-TARGETDURATION" as a fragment is not mistaken for HLS', () => {
+  const text = [
+    '#EXTM3U',
+    '#EXTINF:-1,Channel Two',
+    'http://s/2#EXT-X-TARGETDURATION',
+  ].join('\n');
+  assert.equal(looksLikeHls(text), false);
+});
+
+// Guard against over-tightening the anchor fix: a genuine HLS manifest must
+// still be detected.
+test('a genuine HLS manifest is still detected after anchoring the marker check', () => {
+  const hls = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-TARGETDURATION:10',
+    '#EXTINF:9.9,',
+    'seg1.ts',
+  ].join('\n');
+  assert.equal(looksLikeHls(hls), true);
+});
+
+// Regression: attr() used to match "group-title" as a bare substring, so a
+// vendor-prefixed attribute like tvg-group-title="..." appearing before the
+// real group-title="..." would be picked up instead.
+test('a vendor-prefixed tvg-group-title does not shadow the real group-title', () => {
+  const text = [
+    '#EXTM3U',
+    '#EXTINF:-1 tvg-group-title="Wrong" group-title="Right",Channel Three',
+    'http://s/3',
+  ].join('\n');
+  const { entries } = parseM3U(text);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].group, 'Right');
+});
+
+// Regression: the HLS anchor must trim each line before comparing, so an
+// indented/whitespace-prefixed tag line is still recognized as HLS.
+test('an indented #EXT-X-TARGETDURATION line is still detected as HLS', () => {
+  const hls = '#EXTM3U\n  #EXT-X-TARGETDURATION:10\n#EXTINF:9.9,\nseg1.ts';
+  assert.equal(looksLikeHls(hls), true);
+});
