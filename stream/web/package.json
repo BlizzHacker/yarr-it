@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/main.js --bundle --minify --format=esm --outfile=dist/app.js --define:global=globalThis"
+    "build": "esbuild src/main.js --bundle --minify --format=esm --outfile=dist/app.js --define:global=globalThis",
+    "test": "node --test \"src/**/*.test.js\""
   },
   "dependencies": {
     "esbuild": "^0.28.1",
