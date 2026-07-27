@@ -138,14 +138,35 @@ test('url resolver throws DeadStream for a non-2xx response', async () => {
   );
 });
 
-test('url resolver throws DeadStream when fetch itself rejects', async () => {
+// A <video>/<audio>/<img> element is not subject to CORS the way fetch() is,
+// so a HEAD probe that fails at the network level (which in a real browser
+// is very often exactly a CORS preflight rejection on an otherwise perfectly
+// playable CDN url) must not be treated as proof the stream is dead. This
+// replaces a previous version of this test that asserted the opposite
+// (DeadStream) - that assertion was encoding the exact bug this fix
+// resolves (finding I2): the probe was stricter than the consumer, so an
+// ordinary cross-origin media url got misreported as dead.
+test('url resolver attaches optimistically instead of throwing when the HEAD probe fails at the network level and there is no mixed content', async () => {
   const fetchImpl = async () => {
     throw new Error('network down');
   };
-  await assert.rejects(
-    urlResolver.resolve({ uri: 'https://a/b.mp4' }, { fetchImpl }),
-    (err) => err.code === FAILURE.DEAD_STREAM,
+  const p = await urlResolver.resolve(
+    { uri: 'https://a/b.mp4' }, { fetchImpl, pageProtocol: 'https:' },
   );
+  assert.equal(p.render, RENDER.VIDEO);
+  assert.equal(p.src, 'https://a/b.mp4');
+  assert.equal(p.tier, 'direct');
+});
+
+test('url resolver routes through the relay when the network-level HEAD failure is genuine mixed content (http stream, https page)', async () => {
+  const fetchImpl = async () => {
+    throw new Error('network down');
+  };
+  const p = await urlResolver.resolve(
+    { uri: 'http://cdn.example.com/live.ts' }, { fetchImpl, pageProtocol: 'https:' },
+  );
+  assert.equal(p.tier, 'relay');
+  assert.equal(p.src, '/bridge/iptv?u=' + encodeURIComponent('http://cdn.example.com/live.ts'));
 });
 
 test('url resolver falls back to a ranged GET when HEAD returns 405', async () => {

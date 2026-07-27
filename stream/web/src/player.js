@@ -39,7 +39,17 @@ export function detachAll(elements) {
     // playback and load() forces the element to abandon the current network
     // request and reset, which is what actually releases the media. Do not
     // "simplify" this back down to just removeAttribute.
-    if (typeof el.pause === 'function') el.pause();
+    if (typeof el.pause === 'function') {
+      el.pause();
+    } else {
+      // An element with no pause() -- an <iframe> embed (YouTube/Vimeo) is
+      // the case that matters here -- cannot be stopped by
+      // removeAttribute('src') alone. Removing the attribute does not
+      // navigate the frame away: its document (and any audio/video it is
+      // playing) keeps running until something else loads in its place.
+      // about:blank is that something else.
+      el.src = 'about:blank';
+    }
     el.removeAttribute('src');
     if (typeof el.load === 'function') el.load();
   }

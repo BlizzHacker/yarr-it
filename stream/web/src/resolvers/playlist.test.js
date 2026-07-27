@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { playlistResolver } from './playlist.js';
-import { isCollection, RENDER } from '../source.js';
+import { isCollection, RENDER, TIER } from '../source.js';
 import { FAILURE } from '../failures.js';
 
 function fakeFetch(body) {
@@ -109,6 +109,55 @@ test('a rejecting fetchImpl is a typed dead-stream failure', async () => {
     ),
     (err) => {
       assert.equal(err.code, FAILURE.DEAD_STREAM);
+      return true;
+    },
+  );
+});
+
+// ------------------------------------------------------------ ladder retry --
+
+test('a network-level fetch failure retries through the ladder proxy and succeeds', async () => {
+  const origin = 'http://cdn.example.com/live.m3u8';
+  const proxied = '/bridge/iptv?u=' + encodeURIComponent(origin);
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === origin) throw new Error('network down'); // both the plain fetch and probeTier's HEAD probe
+    return { ok: true, text: async () => '#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:9.9,\nseg1.ts' };
+  };
+  const out = await playlistResolver.resolve(
+    { uri: origin }, { fetchImpl, pageProtocol: 'https:' },
+  );
+  assert.equal(out.render, RENDER.VIDEO);
+  assert.equal(out.tier, TIER.RELAY);
+  assert.equal(out.src, proxied);
+  assert.ok(calls.includes(proxied), 'the retried fetch should have gone through the proxied url');
+});
+
+test('when the relay answers 503 the failure is reported as budget exhausted, not a dead stream', async () => {
+  const origin = 'http://cdn.example.com/live.m3u8';
+  const fetchImpl = async (url) => {
+    if (url === origin) throw new Error('network down');
+    return { ok: false, status: 503, text: async () => '' };
+  };
+  await assert.rejects(
+    playlistResolver.resolve({ uri: origin }, { fetchImpl, pageProtocol: 'https:' }),
+    (err) => {
+      assert.equal(err.code, FAILURE.BUDGET_EXHAUSTED);
+      return true;
+    },
+  );
+});
+
+test('when no tier is available the ladder\'s blockedBy code is thrown, not DeadStream', async () => {
+  const origin = 'http://cdn.example.com/live.m3u8';
+  const fetchImpl = async () => { throw new Error('network down'); };
+  await assert.rejects(
+    playlistResolver.resolve(
+      { uri: origin }, { fetchImpl, pageProtocol: 'https:', relayAvailable: false },
+    ),
+    (err) => {
+      assert.equal(err.code, FAILURE.MIXED_CONTENT);
       return true;
     },
   );

@@ -402,8 +402,8 @@ function buildRegistry() {
  * This is not reliable in every case, and there is nothing to fall back to
  * that fixes that: source.js's makePlayable (render/src/mime/tier/cleanup)
  * does not carry the original filename as its own field, so when `src` is
- * not a filename-shaped URL -- e.g. the no-service-worker torrent fallback
- * in attachMedia(), which plays from a bare `blob:` URL -- there is no
+ * not a filename-shaped URL -- e.g. the no-service-worker torrent fallback in
+ * torrent.js's resolve(), which plays from a bare `blob:` URL -- there is no
  * filename to recover at all. In that case this just returns `src` itself;
  * needsWebCodecs will find no matching extension and stay silent rather than
  * guess. That's a known gap, not a bug: it only affects the rare
@@ -500,32 +500,6 @@ async function play(card, src) {
     if (gen !== state.resolveGen) return;
     const why = err instanceof PlaybackError ? err.message : `Could not start: ${err.message}`;
     setPlayerStatus(why);
-  }
-}
-
-/**
- * Point a media element at a torrent file.
- *
- * file.streamURL is served by WebTorrent's service worker, which answers range
- * requests so playback can start and seek while the download is in flight. If
- * the worker is unavailable (private windows, some webviews) we fall back to a
- * blob, which works only once the file is complete.
- */
-async function attachMedia(elem, file) {
-  const ready = await (state.engine?._serverReady ?? false);
-  if (ready && file.streamURL) {
-    elem.src = file.streamURL;
-    elem.play?.().catch(() => {});
-    return;
-  }
-  setPlayerStatus('Streaming unavailable in this browser — downloading fully first…');
-  try {
-    const blob = await file.blob();
-    elem.src = URL.createObjectURL(blob);
-    setPlayerStatus('');
-    elem.play?.().catch(() => {});
-  } catch (err) {
-    setPlayerStatus(`Playback error: ${err.message}`);
   }
 }
 

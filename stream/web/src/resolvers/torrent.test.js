@@ -105,3 +105,73 @@ test('canHandle never throws on non-string input', () => {
   assert.equal(r.canHandle(42), false);
   assert.equal(r.canHandle(undefined), false);
 });
+
+// ---------------------------------------------------- no-service-worker fallback --
+
+// In a browser where WebTorrent's service worker is unavailable (private
+// windows, some webviews), engine._serverReady resolves false and
+// file.streamURL points at a URL nothing will ever answer. This restores the
+// blob-URL fallback that used to live in main.js's now-deleted attachMedia().
+test('falls back to a blob url when the engine reports the service worker is unavailable', async () => {
+  const fakeBlob = new Blob(['fake'], { type: 'video/mp4' });
+  let blobCalls = 0;
+  const torrentA = { id: 'a' };
+  const engine = {
+    torrent: torrentA,
+    _serverReady: Promise.resolve(false),
+    add(_uri, { onReady }) {
+      onReady({
+        name: 'movie.mp4',
+        streamURL: 'http://sw-scope/deadbeef/movie.mp4',
+        blob: async () => { blobCalls += 1; return fakeBlob; },
+      }, torrentA);
+    },
+    destroyTorrent() { this.destroyed = true; },
+  };
+  const r = createTorrentResolver({ engine, classify: () => 'video' });
+  const playable = await r.resolve({ uri: 'abc'.padEnd(40, '0') });
+
+  assert.equal(blobCalls, 1);
+  assert.equal(playable.src.startsWith('blob:'), true);
+  assert.equal(playable.render, RENDER.VIDEO);
+
+  playable.cleanup();
+  // Both teardowns fire: the blob url this Playable created, and the
+  // torrent it was built for (still the engine's current one).
+  assert.equal(engine.destroyed, true);
+});
+
+test('falls back to a blob url when the service worker is ready but the file has no streamURL', async () => {
+  const fakeBlob = new Blob(['x']);
+  let blobCalls = 0;
+  const engine = {
+    _serverReady: Promise.resolve(true),
+    add(_uri, { onReady }) {
+      onReady({
+        name: 'song.mp3',
+        streamURL: null,
+        blob: async () => { blobCalls += 1; return fakeBlob; },
+      }, {});
+    },
+  };
+  const r = createTorrentResolver({ engine, classify: () => 'audio' });
+  const playable = await r.resolve({ uri: 'abc'.padEnd(40, '0') });
+
+  assert.equal(blobCalls, 1);
+  assert.equal(playable.src.startsWith('blob:'), true);
+});
+
+test('does not fall back to a blob when the engine never claims one way or the other about the service worker (existing fakes)', async () => {
+  // Guards the fakes used by every test above this one: none of them set
+  // _serverReady, and none of their file objects implement blob(). If the
+  // fallback ever became the default for "unspecified" instead of only for
+  // an explicit false, this would start throwing "file.blob is not a
+  // function" across the whole suite.
+  const engine = {
+    torrent: {},
+    add(_uri, { onReady }) { onReady({ name: 'movie.mp4', streamURL: 'blob:already-a-blob' }, {}); },
+  };
+  const r = createTorrentResolver({ engine, classify: () => 'video' });
+  const playable = await r.resolve({ uri: 'abc'.padEnd(40, '0') });
+  assert.equal(playable.src, 'blob:already-a-blob');
+});

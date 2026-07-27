@@ -54,6 +54,36 @@ test('switching from one render kind to another releases the outgoing element', 
   assert.equal(els.audio.src, 'http://a/audio');
 });
 
+// The current fakeElements() gives every element both pause() and load(),
+// which is exactly why the iframe bug (finding I1) was invisible to the
+// existing suite: a real <iframe> embed (YouTube/Vimeo) has neither. This
+// fake deliberately has neither, and tracks every value assigned to `src` so
+// the test can prove about:blank was actually set, not just that the final
+// (post-removeAttribute) value happens to be empty.
+function fakeIframeElement() {
+  const el = {
+    hidden: false,
+    srcHistory: [],
+    removeAttribute(k) { this[k] = ''; },
+  };
+  Object.defineProperty(el, 'src', {
+    get() { return el._src; },
+    set(v) { el._src = v; el.srcHistory.push(v); },
+  });
+  return el;
+}
+
+test('detachAll points an element with no pause() at about:blank before clearing its src, so an iframe embed actually stops', () => {
+  const iframe = fakeIframeElement();
+  const els = { video: null, audio: null, image: null, embed: iframe, canvas: null };
+
+  detachAll(els);
+
+  assert.equal(iframe.hidden, true);
+  assert.equal(iframe.srcHistory[0], 'about:blank', 'src should have been set to about:blank first');
+  assert.equal(iframe.src, '', 'removeAttribute should still clear it afterward');
+});
+
 test('an unknown element for a valid render kind throws rather than silently doing nothing', () => {
   const els = fakeElements();
   delete els.embed;

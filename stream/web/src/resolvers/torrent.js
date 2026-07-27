@@ -109,12 +109,42 @@ export function createTorrentResolver({ engine, classify, timeoutMs = 90000 }) {
             try {
               const classifyFn = classify ?? (await loadEngineClassify());
               const render = renderForKind(classifyFn(file.name));
+
+              // file.streamURL is served by WebTorrent's service worker,
+              // which answers range requests so playback can start and seek
+              // while the download is still in flight. The worker is
+              // unavailable in some browsers (private windows, some
+              // webviews) -- engine._serverReady reports that. A fake
+              // engine used in tests that never sets _serverReady at all is
+              // not making a claim about worker availability one way or the
+              // other, so that case is treated as "ready" rather than
+              // triggering the fallback; only an engine that explicitly
+              // resolves _serverReady to a falsy value asks for it.
+              const serverReady = engine && '_serverReady' in engine
+                ? await engine._serverReady
+                : true;
+
+              let src = file.streamURL;
+              let blobUrl = null;
+              if (!serverReady || !file.streamURL) {
+                // No service worker to answer streamURL -- fall back to a
+                // blob. This only becomes playable once the file has fully
+                // downloaded, but that beats pointing the element at a URL
+                // nothing will ever answer, which just hangs forever.
+                const blob = await file.blob();
+                blobUrl = URL.createObjectURL(blob);
+                src = blobUrl;
+              }
+
               resolve(makePlayable({
                 render,
-                src: file.streamURL,
+                src,
                 mime: mimeForName(file.name),
                 tier: TIER.DIRECT,
                 cleanup: () => {
+                  // Always release this Playable's own blob URL, independent
+                  // of whether the torrent teardown below fires.
+                  if (blobUrl) URL.revokeObjectURL(blobUrl);
                   // Scoped to the torrent this Playable was built for: a stale
                   // cleanup() from a superseded source must never tear down
                   // whatever the engine has since moved on to.

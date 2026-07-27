@@ -1,6 +1,7 @@
 import { parseM3U, looksLikeHls } from '../m3u.js';
-import { makeCollection, makeSource, makePlayable, RENDER } from '../source.js';
+import { makeCollection, makeSource, makePlayable, RENDER, TIER } from '../source.js';
 import { PlaybackError, FAILURE } from '../failures.js';
+import { probeTier } from '../ladder.js';
 
 const HLS_MIME = 'application/vnd.apple.mpegurl';
 
@@ -23,12 +24,42 @@ export const playlistResolver = {
     if (!/^https?:$/i.test(url.protocol)) return false;
     return /\.m3u8?$/i.test(url.pathname);
   },
-  async resolve(source, { fetchImpl = fetch } = {}) {
+  async resolve(source, { fetchImpl = fetch, pageProtocol, gateway, relayAvailable } = {}) {
+    // Unlike url.js, this resolver does a real fetch() and reads the body
+    // itself (to parse the playlist), so CORS genuinely applies here - a
+    // browser will not hand the bytes of a cross-origin response to script
+    // without Access-Control-Allow-Origin, even though a <video src> pointed
+    // at the same URL would have played fine. So, unlike url.js, a
+    // network-level failure here is real signal worth running through the
+    // ladder rather than something to shrug off.
     let res;
+    let tier = TIER.DIRECT;
+    let fetchUrl = source.uri;
     try {
       res = await fetchImpl(source.uri);
     } catch {
-      throw new PlaybackError(FAILURE.DEAD_STREAM, source.uri);
+      const probe = await probeTier(source.uri, { fetchImpl, pageProtocol, gateway, relayAvailable });
+      if (!probe.tier) {
+        // No gateway configured and the relay isn't available either - this
+        // is a browser-enforced block, not a dead source, so it must not be
+        // reported as DeadStream (that would tell the user to give up on a
+        // stream that is actually fine, just unreachable from here).
+        throw new PlaybackError(probe.blockedBy ?? FAILURE.CORS_BLOCKED, source.uri);
+      }
+      tier = probe.tier;
+      fetchUrl = probe.url;
+      try {
+        res = await fetchImpl(fetchUrl);
+      } catch {
+        throw new PlaybackError(FAILURE.DEAD_STREAM, source.uri);
+      }
+      // The public relay bills every byte twice and shares a monthly budget
+      // with the mail edge; when it is out, it answers 503 rather than
+      // proxying. That is a distinct, actionable failure - not "the source
+      // is dead" and not a generic network error.
+      if (res.status === 503) {
+        throw new PlaybackError(FAILURE.BUDGET_EXHAUSTED, source.uri);
+      }
     }
     if (!res.ok) throw new PlaybackError(FAILURE.DEAD_STREAM, `HTTP ${res.status}`);
 
@@ -36,7 +67,7 @@ export const playlistResolver = {
 
     // Both shapes share the .m3u8 extension, so the body decides.
     if (looksLikeHls(body)) {
-      return makePlayable({ render: RENDER.VIDEO, src: source.uri, mime: HLS_MIME });
+      return makePlayable({ render: RENDER.VIDEO, src: fetchUrl, mime: HLS_MIME, tier });
     }
 
     // Deliberate: this is a single fetch that never auto-expands a nested
