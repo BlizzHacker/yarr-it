@@ -4,7 +4,15 @@ import { renderPlayable, detachAll } from './player.js';
 import { makePlayable, RENDER } from './source.js';
 
 function fakeElements() {
-  const make = () => ({ src: '', hidden: true, removeAttribute(k) { this[k] = ''; } });
+  const make = () => ({
+    src: '',
+    hidden: true,
+    pauseCalls: 0,
+    loadCalls: 0,
+    removeAttribute(k) { this[k] = ''; },
+    pause() { this.pauseCalls += 1; },
+    load() { this.loadCalls += 1; },
+  });
   return { video: make(), audio: make(), image: make(), embed: make(), canvas: make() };
 }
 
@@ -29,6 +37,21 @@ test('detachAll clears every source so nothing keeps streaming', () => {
   detachAll(els);
   assert.equal(els.video.hidden, true);
   assert.equal(els.video.src, '');
+});
+
+test('switching from one render kind to another releases the outgoing element', () => {
+  const els = fakeElements();
+
+  renderPlayable(makePlayable({ render: RENDER.VIDEO, src: 'http://a/video', mime: 'video/mp4' }), els);
+  renderPlayable(makePlayable({ render: RENDER.AUDIO, src: 'http://a/audio', mime: 'audio/mp3' }), els);
+
+  assert.equal(els.video.hidden, true);
+  assert.equal(els.video.src, '');
+  assert.ok(els.video.pauseCalls >= 1, 'pause() should have been called on the outgoing video element');
+  assert.ok(els.video.loadCalls >= 1, 'load() should have been called on the outgoing video element');
+
+  assert.equal(els.audio.hidden, false);
+  assert.equal(els.audio.src, 'http://a/audio');
 });
 
 test('an unknown element for a valid render kind throws rather than silently doing nothing', () => {
