@@ -1,0 +1,40 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { urlResolver, renderForMime } from './url.js';
+import { embedResolver, embedUrlFor } from './embed.js';
+import { RENDER } from '../source.js';
+
+test('mime maps to the right render path', () => {
+  assert.equal(renderForMime('video/mp4'), RENDER.VIDEO);
+  assert.equal(renderForMime('audio/mpeg'), RENDER.AUDIO);
+  assert.equal(renderForMime('image/png'), RENDER.IMAGE);
+  assert.equal(renderForMime('application/pdf'), null);
+});
+
+test('url resolver claims http(s) but not magnets', () => {
+  assert.equal(urlResolver.canHandle('https://a/b.mp4'), true);
+  assert.equal(urlResolver.canHandle('magnet:?xt=urn:btih:abc'), false);
+});
+
+test('youtube watch, short and embed forms all become one embed url', () => {
+  const want = 'https://www.youtube.com/embed/dQw4w9WgXcQ';
+  assert.equal(embedUrlFor('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), want);
+  assert.equal(embedUrlFor('https://youtu.be/dQw4w9WgXcQ'), want);
+  assert.equal(embedUrlFor('https://www.youtube.com/embed/dQw4w9WgXcQ'), want);
+});
+
+test('vimeo becomes a player embed url', () => {
+  assert.equal(embedUrlFor('https://vimeo.com/123456789'),
+    'https://player.vimeo.com/video/123456789');
+});
+
+test('a non-embeddable url is not claimed by the embed resolver', () => {
+  assert.equal(embedUrlFor('https://example.com/x.mp4'), null);
+  assert.equal(embedResolver.canHandle('https://example.com/x.mp4'), false);
+});
+
+test('embed resolver produces an embed playable', async () => {
+  const p = await embedResolver.resolve({ uri: 'https://youtu.be/dQw4w9WgXcQ' });
+  assert.equal(p.render, RENDER.EMBED);
+  assert.equal(p.src, 'https://www.youtube.com/embed/dQw4w9WgXcQ');
+});
