@@ -37,8 +37,8 @@ push "app.js"              dist/app.js
 push "webtorrent.min.js"   dist/webtorrent.min.js
 push "sw.min.js"           dist/sw.min.js
 push "manifest.webmanifest" manifest.webmanifest
-push "icon-192.svg"        dist/icon-192.svg
-push "icon-512.svg"        dist/icon-512.svg
+push "icon-192.png"        dist/icon-192.png
+push "icon-512.png"        dist/icon-512.png
 
 ssh "$JUMP" "ssh -i $KEY $VPS 'chown -R caddy:caddy /srv/stream'"
 echo "==> done ($HASH)"

@@ -3,3 +3,9 @@
 id_ed25519*
 secrets.env
 node_modules/
+# Build outputs and signing material
+stream/installers/build/
+stream/installers/dist/
+stream/extension/dist/
+*.keystore
+keystore.properties

@@ -21,7 +21,7 @@ stream.moveweight.com {
 	header @html Cache-Control "no-cache, must-revalidate"
 
 	# Hashed/versioned assets are safe to cache hard.
-	@assets path *.js *.svg *.webmanifest
+	@assets path *.js *.png *.svg *.webmanifest
 	header @assets Cache-Control "public, max-age=604800"
 
 	handle {
