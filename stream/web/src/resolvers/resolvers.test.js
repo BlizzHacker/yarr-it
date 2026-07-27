@@ -3,6 +3,19 @@ import assert from 'node:assert/strict';
 import { urlResolver, renderForMime } from './url.js';
 import { embedResolver, embedUrlFor } from './embed.js';
 import { RENDER } from '../source.js';
+import { FAILURE } from '../failures.js';
+
+// A minimal stand-in for the real `Headers` interface: case-insensitive
+// `get(name)`, backed by a plain object of header values.
+function makeHeaders(headers = {}) {
+  const lower = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  return { get: (name) => lower[name.toLowerCase()] ?? null };
+}
+
+function stubResponse({ status = 200, headers = {} } = {}) {
+  return { ok: status >= 200 && status < 300, status, headers: makeHeaders(headers) };
+}
 
 test('mime maps to the right render path', () => {
   assert.equal(renderForMime('video/mp4'), RENDER.VIDEO);
@@ -69,4 +82,82 @@ test('a malformed input returns null instead of throwing', () => {
 test('youtube watch url with extra query params before v still resolves', () => {
   assert.equal(embedUrlFor('https://www.youtube.com/watch?list=PL1&v=dQw4w9WgXcQ'),
     'https://www.youtube.com/embed/dQw4w9WgXcQ');
+});
+
+test('url resolver resolves a video content-type to a video playable', async () => {
+  const fetchImpl = async () => stubResponse({ headers: { 'content-type': 'video/mp4' } });
+  const p = await urlResolver.resolve({ uri: 'https://a/b.mp4' }, { fetchImpl });
+  assert.equal(p.render, RENDER.VIDEO);
+  assert.equal(p.src, 'https://a/b.mp4');
+});
+
+test('url resolver resolves audio and image content-types', async () => {
+  const audioFetch = async () => stubResponse({ headers: { 'content-type': 'audio/mpeg' } });
+  const audio = await urlResolver.resolve({ uri: 'https://a/b.mp3' }, { fetchImpl: audioFetch });
+  assert.equal(audio.render, RENDER.AUDIO);
+
+  const imageFetch = async () => stubResponse({ headers: { 'content-type': 'image/png' } });
+  const image = await urlResolver.resolve({ uri: 'https://a/b.png' }, { fetchImpl: imageFetch });
+  assert.equal(image.render, RENDER.IMAGE);
+});
+
+test('url resolver strips content-type parameters before matching', async () => {
+  const fetchImpl = async () =>
+    stubResponse({ headers: { 'content-type': 'video/mp4; charset=utf-8' } });
+  const p = await urlResolver.resolve({ uri: 'https://a/b.mp4' }, { fetchImpl });
+  assert.equal(p.render, RENDER.VIDEO);
+});
+
+test('url resolver matches mixed-case content-type', async () => {
+  const fetchImpl = async () => stubResponse({ headers: { 'content-type': 'Video/MP4' } });
+  const p = await urlResolver.resolve({ uri: 'https://a/b.mp4' }, { fetchImpl });
+  assert.equal(p.render, RENDER.VIDEO);
+});
+
+test('url resolver throws UnsupportedCodec when there is no content-type header', async () => {
+  const fetchImpl = async () => stubResponse({ headers: {} });
+  await assert.rejects(
+    urlResolver.resolve({ uri: 'https://a/b' }, { fetchImpl }),
+    (err) => err.code === FAILURE.UNSUPPORTED_CODEC,
+  );
+});
+
+test('url resolver throws UnsupportedCodec for an unrecognised content-type', async () => {
+  const fetchImpl = async () => stubResponse({ headers: { 'content-type': 'application/pdf' } });
+  await assert.rejects(
+    urlResolver.resolve({ uri: 'https://a/b.pdf' }, { fetchImpl }),
+    (err) => err.code === FAILURE.UNSUPPORTED_CODEC,
+  );
+});
+
+test('url resolver throws DeadStream for a non-2xx response', async () => {
+  const fetchImpl = async () => stubResponse({ status: 404 });
+  await assert.rejects(
+    urlResolver.resolve({ uri: 'https://a/missing.mp4' }, { fetchImpl }),
+    (err) => err.code === FAILURE.DEAD_STREAM,
+  );
+});
+
+test('url resolver throws DeadStream when fetch itself rejects', async () => {
+  const fetchImpl = async () => {
+    throw new Error('network down');
+  };
+  await assert.rejects(
+    urlResolver.resolve({ uri: 'https://a/b.mp4' }, { fetchImpl }),
+    (err) => err.code === FAILURE.DEAD_STREAM,
+  );
+});
+
+test('url resolver falls back to a ranged GET when HEAD returns 405', async () => {
+  let calls = 0;
+  const fetchImpl = async (uri, init) => {
+    calls += 1;
+    if (init.method === 'HEAD') return stubResponse({ status: 405 });
+    assert.equal(init.method, 'GET');
+    assert.equal(init.headers.Range, 'bytes=0-0');
+    return stubResponse({ headers: { 'content-type': 'video/mp4' } });
+  };
+  const p = await urlResolver.resolve({ uri: 'https://a/b.mp4' }, { fetchImpl });
+  assert.equal(p.render, RENDER.VIDEO);
+  assert.equal(calls, 2);
 });

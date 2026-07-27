@@ -8,9 +8,16 @@ const PREFIX = {
 };
 
 export function renderForMime(mime = '') {
-  const found = Object.entries(PREFIX).find(([p]) => mime.startsWith(p));
+  const lower = mime.toLowerCase();
+  const found = Object.entries(PREFIX).find(([p]) => lower.startsWith(p));
   return found ? found[1] : null;
 }
+
+// Some CDNs and media servers reject HEAD with 405 (Method Not Allowed) or
+// 501 (Not Implemented) even when the resource is perfectly playable. In
+// that case retry once with a ranged GET instead of reporting the stream
+// dead on a probe method the server just doesn't support.
+const HEAD_UNSUPPORTED = new Set([405, 501]);
 
 export const urlResolver = {
   name: 'url',
@@ -21,12 +28,18 @@ export const urlResolver = {
     let res;
     try {
       res = await fetchImpl(source.uri, { method: 'HEAD' });
+      if (HEAD_UNSUPPORTED.has(res.status)) {
+        res = await fetchImpl(source.uri, {
+          method: 'GET',
+          headers: { Range: 'bytes=0-0' },
+        });
+      }
     } catch {
       throw new PlaybackError(FAILURE.DEAD_STREAM, source.uri);
     }
     if (!res.ok) throw new PlaybackError(FAILURE.DEAD_STREAM, `HTTP ${res.status}`);
 
-    const mime = (res.headers.get('content-type') ?? '').split(';')[0].trim();
+    const mime = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
     const render = renderForMime(mime);
     if (!render) throw new PlaybackError(FAILURE.UNSUPPORTED_CODEC, mime || 'unknown type');
 
