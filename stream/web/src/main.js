@@ -42,6 +42,7 @@ async function search({ showSpinner = true } = {}) {
   if (!state.query) return;
   $('#intro').hidden = true;
   $('#discover').hidden = true;
+  $('#get').hidden = true;
   if (showSpinner) {
     $('#status').textContent = 'Searching every indexer…';
     $('#status').hidden = false;

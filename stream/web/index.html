@@ -166,6 +166,22 @@
   .stats { display:flex; gap:22px; padding:10px 18px; border-top:1px solid var(--line); font-size:12px; color:var(--dim); flex-wrap:wrap; }
   .stats b { color:var(--fg); font-weight:600; }
 
+  /* ---------- get the app ---------- */
+  #get { margin-top:34px; padding-top:28px; border-top:1px solid var(--line); }
+  #get h3 { font-size:17px; margin:0 0 6px; }
+  .get-lede { color:var(--muted); font-size:13.5px; margin:0 0 16px; max-width:60ch; }
+  .get-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+  .dl {
+    display:block; padding:15px 16px; border-radius:var(--r); text-decoration:none;
+    background:var(--panel); border:1px solid var(--line); color:var(--fg);
+    transition:border-color .15s ease, transform .15s ease;
+  }
+  .dl:hover { border-color:var(--accent-dim); transform:translateY(-2px); }
+  .dl b { display:block; font-size:15px; margin-bottom:3px; }
+  .dl span { display:block; font-size:12px; color:var(--accent); margin-bottom:6px; }
+  .dl em { display:block; font-style:normal; font-size:12px; color:var(--dim); line-height:1.4; }
+  .dl.ghost { background:transparent; border-style:dashed; }
+
   /* ---------- discover ---------- */
   #discover { margin-top:34px; }
   .shelf { margin-bottom:30px; }
@@ -284,6 +300,36 @@
       <div class="step"><b>3 · It plays on your machine</b>
         <p>Pieces are verified and decoded on your own device. We never transcode, never cache, and
            never keep a copy.</p></div>
+    </div>
+  </section>
+
+  <section id="get">
+    <h3>Get the app</h3>
+    <p class="get-lede">
+      Tester builds, straight from GitHub. Store versions are on the way — until then these
+      install directly.
+    </p>
+    <div class="get-grid">
+      <a class="dl" href="https://github.com/BlizzHacker/stream-moveweight/releases/latest/download/Stream-1.0.0.apk">
+        <b>Android</b>
+        <span>APK · 912 KB</span>
+        <em>Tap to install, allow the source when asked</em>
+      </a>
+      <a class="dl" href="https://github.com/BlizzHacker/stream-moveweight/releases/tag/v1.0.0">
+        <b>Windows</b>
+        <span>MSIX + installer</span>
+        <em>Run Install-Windows.ps1 as admin — it trusts the sideload cert first</em>
+      </a>
+      <a class="dl" href="https://github.com/BlizzHacker/stream-moveweight/releases/latest/download/stream-extension-1.0.0.zip">
+        <b>Chrome / Brave</b>
+        <span>Extension · 8 KB</span>
+        <em>Hijacks magnet links and adds ▶ on tracker sites</em>
+      </a>
+      <a class="dl ghost" href="https://github.com/BlizzHacker/stream-moveweight">
+        <b>Source</b>
+        <span>GitHub · AGPL-3.0</span>
+        <em>All of it, including the relay</em>
+      </a>
     </div>
   </section>
 
