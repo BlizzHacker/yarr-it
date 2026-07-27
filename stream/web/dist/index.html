@@ -71,6 +71,10 @@
   }
   .chip:hover { border-color:var(--accent-dim); color:var(--fg); }
   .chip.on { background:rgba(94,234,212,.16); border-color:var(--accent-dim); color:var(--accent); }
+  .chip.adult { border-style:dashed; }
+  .chip.adult.on { background:rgba(248,113,113,.16); border-color:var(--danger); color:var(--danger); border-style:solid; }
+  .fcats { flex-wrap:wrap; gap:6px; }
+  .chip .cnt { opacity:.55; margin-left:4px; font-size:11px; }
   .fsel { padding:5px 9px; font-size:12.5px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; }
   .fnum { width:78px; padding:5px 9px; font-size:12.5px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; }
   #filter-reset { margin-left:auto; background:none; border:0; color:var(--dim); cursor:pointer; font-size:12.5px; text-decoration:underline; }
@@ -221,6 +225,10 @@
 
 <section id="filters" hidden>
   <div class="wrap">
+    <div class="fgroup fcats"><span class="flabel">Show</span><span id="f-groups"></span></div>
+    <div class="fgroup">
+      <span class="chip adult" id="f-adult" title="Adult results are hidden unless you turn this on">18+</span>
+    </div>
     <div class="fgroup">
       <span class="flabel">Seeders ≥</span>
       <input class="fnum" id="f-seeders" type="number" min="0" value="1" />
@@ -325,6 +333,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=63921c315fa0"></script>
+<script type="module" src="/app.js?v=0c4bf54211fd"></script>
 </body>
 </html>

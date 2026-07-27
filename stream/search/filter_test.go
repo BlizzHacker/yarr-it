@@ -229,3 +229,71 @@ func TestAdultResultsNotDemotedWhenAskedFor(t *testing.T) {
 		t.Errorf("top = %q, want the asked-for result; order %v", got[0].Title, titles(got))
 	}
 }
+
+func TestAdultHiddenByDefaultAndShownOnRequest(t *testing.T) {
+	cards := []card{
+		{Title: "Family Film", Seeders: 10, Groups: []string{"movies"},
+			Sources: []source{{Seeders: 10}}},
+		{Title: "Some Parody XXX", Seeders: 99, Adult: true, Groups: []string{"adult"},
+			Sources: []source{{Seeders: 99}}},
+	}
+	hidden := filters{Sort: "seeders"}.apply(cards)
+	if len(hidden) != 1 || hidden[0].Title != "Family Film" {
+		t.Errorf("adult should be hidden by default; got %v", titles(hidden))
+	}
+	shown := filters{Sort: "seeders", ShowAdult: true}.apply(cards)
+	if len(shown) != 2 {
+		t.Errorf("adult should appear when asked for; got %v", titles(shown))
+	}
+}
+
+func TestCategoryGroupFiltering(t *testing.T) {
+	cards := []card{
+		{Title: "A Film", Seeders: 5, Groups: []string{"movies"}, Sources: []source{{Seeders: 5}}},
+		{Title: "A Show", Seeders: 5, Groups: []string{"tv"}, Sources: []source{{Seeders: 5}}},
+		{Title: "An Album", Seeders: 5, Groups: []string{"music"}, Sources: []source{{Seeders: 5}}},
+	}
+	got := filters{Sort: "seeders", Groups: []string{"movies", "music"}}.apply(cards)
+	if len(got) != 2 {
+		t.Fatalf("got %v, want Film + Album", titles(got))
+	}
+	for _, c := range got {
+		if c.Title == "A Show" {
+			t.Error("TV leaked through a movies+music filter")
+		}
+	}
+	// No selection means no constraint.
+	if len(filters{Sort: "seeders"}.apply(cards)) != 3 {
+		t.Error("empty group filter should not exclude anything")
+	}
+}
+
+func TestNewznabCategoryMapping(t *testing.T) {
+	cases := map[int]string{
+		2000: "movies", 2040: "movies",
+		5000: "tv", 5040: "tv",
+		5070: "anime", // overlaps TV and must win
+		3000: "music",
+		1000: "games",
+		4000: "apps",
+		7000: "books",
+		6000: "adult", 6060: "adult",
+	}
+	for id, want := range cases {
+		if got := groupForCategory(id); got != want {
+			t.Errorf("groupForCategory(%d) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// Dedicated porn trackers frequently send no category at all.
+func TestAdultDetectedFromIndexerWithoutCategory(t *testing.T) {
+	r := prowlarrResult{Title: "Some Release 1080p", Indexer: "Free JAV Torrent"}
+	if !isAdult(r, r.Title) {
+		t.Error("adult indexer not detected without a category")
+	}
+	clean := prowlarrResult{Title: "Some Release 1080p", Indexer: "The Pirate Bay"}
+	if isAdult(clean, clean.Title) {
+		t.Error("false positive on a general indexer")
+	}
+}

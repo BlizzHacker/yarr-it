@@ -14,7 +14,11 @@ const state = {
   query: '',
   engine: null,
   active: null,
-  filters: { seeders: 1, minSize: '', maxSize: '', quality: new Set(), codec: new Set(), webSafe: false, sort: 'relevance' },
+  filters: {
+    seeders: 1, minSize: '', maxSize: '',
+    quality: new Set(), codec: new Set(), groups: new Set(),
+    webSafe: false, adult: false, sort: 'relevance',
+  },
 };
 
 // ------------------------------------------------------------------ search --
@@ -28,6 +32,9 @@ function filterParams() {
   if (f.quality.size) p.set('quality', [...f.quality].join(','));
   if (f.codec.size) p.set('codec', [...f.codec].join(','));
   if (f.webSafe) p.set('webSafe', '1');
+  if (f.groups.size) p.set('groups', [...f.groups].join(','));
+  // Adult results are excluded server-side unless explicitly requested.
+  if (f.adult) p.set('adult', '1');
   return p;
 }
 
@@ -87,9 +94,39 @@ function renderFilters() {
   $('#filters').hidden = !f;
   if (!f) return;
 
+  groupRow($('#f-groups'), f.groups, state.filters.groups);
+  $('#f-adult').classList.toggle('on', state.filters.adult);
+  $('#f-adult').textContent = f.adultCount ? `18+ ${f.adultCount}` : '18+';
   chipRow($('#f-quality'), f.qualities, state.filters.quality);
   chipRow($('#f-codec'), f.codecs, state.filters.codec);
   $('#f-websafe').classList.toggle('on', state.filters.webSafe);
+}
+
+// Human labels for the Newznab buckets the API reports.
+const GROUP_LABELS = {
+  movies: 'Movies', tv: 'TV', anime: 'Anime', music: 'Music',
+  games: 'Games', apps: 'Apps', books: 'Books', other: 'Other',
+};
+
+/**
+ * Category checkboxes, in the spirit of a torrent site's category bar.
+ * 'adult' is excluded here because it has its own explicit 18+ toggle — it
+ * should never be something you enable by accident while ticking boxes.
+ */
+function groupRow(host, values, selected) {
+  host.replaceChildren();
+  for (const { value, count } of (values || [])) {
+    if (value === 'adult') continue;
+    const c = el('span', 'chip', GROUP_LABELS[value] || value);
+    c.append(el('span', 'cnt', String(count)));
+    if (selected.has(value)) c.classList.add('on');
+    c.addEventListener('click', () => {
+      selected.has(value) ? selected.delete(value) : selected.add(value);
+      c.classList.toggle('on');
+      refilter();
+    });
+    host.append(c);
+  }
 }
 
 function chipRow(host, values, selected) {
@@ -456,13 +493,23 @@ function init() {
   $('#f-minsize').addEventListener('input', (e) => { state.filters.minSize = e.target.value; refilter(); });
   $('#f-maxsize').addEventListener('input', (e) => { state.filters.maxSize = e.target.value; refilter(); });
   $('#f-sort').addEventListener('change', (e) => { state.filters.sort = e.target.value; refilter(); });
+  $('#f-adult').addEventListener('click', () => {
+    state.filters.adult = !state.filters.adult;
+    $('#f-adult').classList.toggle('on', state.filters.adult);
+    refilter();
+  });
+
   $('#f-websafe').addEventListener('click', () => {
     state.filters.webSafe = !state.filters.webSafe;
     $('#f-websafe').classList.toggle('on', state.filters.webSafe);
     refilter();
   });
   $('#filter-reset').addEventListener('click', () => {
-    state.filters = { seeders: 1, minSize: '', maxSize: '', quality: new Set(), codec: new Set(), webSafe: false, sort: 'relevance' };
+    state.filters = {
+      seeders: 1, minSize: '', maxSize: '',
+      quality: new Set(), codec: new Set(), groups: new Set(),
+      webSafe: false, adult: false, sort: 'relevance',
+    };
     $('#f-seeders').value = 1; $('#f-minsize').value = ''; $('#f-maxsize').value = '';
     $('#f-sort').value = 'relevance';
     renderFilters();

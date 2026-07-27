@@ -78,6 +78,8 @@ type card struct {
 	Best     int      `json:"best"`    // index into Sources
 	Seeders  int      `json:"seeders"` // max across sources
 	Art      artwork  `json:"art"`
+	Groups   []string `json:"groups"`
+	Adult    bool     `json:"adult"`
 }
 
 type cacheEntry struct {
@@ -380,6 +382,7 @@ func buildCards(raw []prowlarrResult) []card {
 			c = &card{
 				Key: k, Title: p.Title, Year: p.Year, IsSeries: p.IsSeries,
 				Season: p.Season, Episode: p.Episode, Kind: kindOf(r),
+				Groups: groupsFor(r), Adult: isAdult(r, r.Title),
 			}
 			byKey[k] = c
 		}
@@ -391,6 +394,16 @@ func buildCards(raw []prowlarrResult) []card {
 		})
 		if r.Seeders > c.Seeders {
 			c.Seeders = r.Seeders
+		}
+		if isAdult(r, r.Title) {
+			c.Adult = true
+		}
+		for _, g := range groupsFor(r) {
+			if !containsFold(c.Groups, g) || len(c.Groups) == 0 {
+				if !hasString(c.Groups, g) {
+					c.Groups = append(c.Groups, g)
+				}
+			}
 		}
 	}
 

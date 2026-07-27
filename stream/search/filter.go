@@ -21,6 +21,8 @@ type filters struct {
 	WebSafe    bool   // only what the browser can play unaided
 	Sort       string // relevance | seeders | size | quality | recent | title
 	Query      string
+	Groups     []string // movies, tv, music, games, apps, books, anime, adult
+	ShowAdult  bool
 	Kind       string // video | audio | image
 }
 
@@ -36,6 +38,9 @@ func parseFilters(q url.Values) filters {
 		Sort:       q.Get("sort"),
 		Kind:       q.Get("kind"),
 		Query:      q.Get("q"),
+		Groups:     splitCSV(q.Get("groups")),
+		// Adult results are hidden unless explicitly asked for.
+		ShowAdult: q.Get("adult") == "1" || q.Get("adult") == "true",
 	}
 	if f.Sort == "" {
 		f.Sort = "relevance"
@@ -87,6 +92,12 @@ func (f filters) apply(cards []card) []card {
 	out := make([]card, 0, len(cards))
 
 	for _, c := range cards {
+		if c.Adult && !f.ShowAdult {
+			continue
+		}
+		if len(f.Groups) > 0 && !anyGroupMatches(c.Groups, f.Groups) {
+			continue
+		}
 		kept := make([]source, 0, len(c.Sources))
 		for _, s := range c.Sources {
 			if s.Seeders < f.MinSeeders {
@@ -266,11 +277,13 @@ func newest(c card) string {
 // facets reports what values actually exist in a result set, so the UI can show
 // only filters that would do something rather than a fixed list of dead options.
 type facets struct {
-	Qualities []facetCount `json:"qualities"`
-	Codecs    []facetCount `json:"codecs"`
-	Indexers  []facetCount `json:"indexers"`
-	MaxSeed   int          `json:"maxSeeders"`
-	MaxSizeMB int64        `json:"maxSizeMB"`
+	Qualities  []facetCount `json:"qualities"`
+	Codecs     []facetCount `json:"codecs"`
+	Indexers   []facetCount `json:"indexers"`
+	Groups     []facetCount `json:"groups"`
+	AdultCount int          `json:"adultCount"`
+	MaxSeed    int          `json:"maxSeeders"`
+	MaxSizeMB  int64        `json:"maxSizeMB"`
 }
 
 type facetCount struct {
@@ -280,8 +293,15 @@ type facetCount struct {
 
 func buildFacets(cards []card) facets {
 	q, cd, ix := map[string]int{}, map[string]int{}, map[string]int{}
+	grp := map[string]int{}
 	f := facets{}
 	for _, c := range cards {
+		for _, g := range c.Groups {
+			grp[g]++
+		}
+		if c.Adult {
+			f.AdultCount++
+		}
 		for _, s := range c.Sources {
 			if s.Quality != "" {
 				q[s.Quality]++
@@ -303,6 +323,7 @@ func buildFacets(cards []card) facets {
 	f.Qualities = sortedFacets(q, true)
 	f.Codecs = sortedFacets(cd, false)
 	f.Indexers = sortedFacets(ix, false)
+	f.Groups = sortedFacets(grp, false)
 	return f
 }
 
