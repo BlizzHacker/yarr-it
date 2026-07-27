@@ -78,8 +78,12 @@ func main() {
 	perIP := flag.Int("per-ip", 40, "max concurrent relayed sockets per client IP")
 	global := flag.Int("global", 800, "max concurrent relayed sockets overall")
 	budgetGiB := flag.Int64("budget-gib", 2600, "monthly relay budget in GiB before degrading")
+	// iptvBudget is a carve-out of -budget-gib, not additive to it: IPTV bytes
+	// are charged to both s.budget and s.iptvBudget (see copyIPTV in iptv.go),
+	// so IPTV traffic counts against -- and can independently exhaust before
+	// -- the shared monthly allowance.
 	iptvBudgetGiB := flag.Int64("iptv-budget-gib", 0,
-		"monthly IPTV proxy budget in GiB (0 = a quarter of -budget-gib)")
+		"monthly IPTV proxy budget in GiB, carved out of -budget-gib (0 = a quarter of it)")
 	statePath := flag.String("state", "/var/lib/mw-bridge/budget.json", "budget state file")
 	flag.Parse()
 
