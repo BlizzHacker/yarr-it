@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="MainScene" extends="Scene">
+  <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
+
+  <children>
+    <Rectangle id="bg" width="1920" height="1080" color="0x0b0d11ff" />
+
+    <!-- Header -->
+    <Label id="brand" text="YARR.IT" translation="[80,52]"
+           color="0x5eead4ff" >
+      <Font role="font" uri="font:BoldSystemFontFile" size="42" />
+    </Label>
+    <Label id="hint" text="Press the * button to search   -   OK to pick a source"
+           translation="[82,104]" color="0x8b96a8ff">
+      <Font role="font" uri="font:SystemFontFile" size="24" />
+    </Label>
+
+    <!-- Status / errors -->
+    <Label id="status" translation="[80,160]" color="0xe9edf3ff" width="1760" wrap="true">
+      <Font role="font" uri="font:SystemFontFile" size="28" />
+    </Label>
+
+    <!-- Browse grid. MarkupGrid rather than RowList: a flat grid of posters is
+         easier to navigate with a D-pad than nested rows. -->
+    <MarkupGrid id="grid" translation="[80,170]"
+                itemComponentName="PosterTile"
+                numRows="2" numColumns="6"
+                itemSize="[280,420]" itemSpacing="[16,24]"
+                vertFocusAnimationStyle="floatingFocus"
+                drawFocusFeedback="true" />
+
+    <!-- Source picker: shown after a title is chosen. -->
+    <Group id="sourcePane" visible="false">
+      <Rectangle width="1920" height="1080" color="0x0b0d11ee" />
+      <Label id="sourceTitle" translation="[80,70]" color="0xe9edf3ff" width="1760" wrap="true">
+        <Font role="font" uri="font:BoldSystemFontFile" size="40" />
+      </Label>
+      <Label id="sourceHint" translation="[82,132]" color="0x8b96a8ff">
+        <Font role="font" uri="font:SystemFontFile" size="24" />
+      </Label>
+      <LabelList id="sourceList" translation="[80,190]"
+                 itemSize="[1760,64]" numRows="11"
+                 color="0xcfd6e0ff" focusedColor="0x5eead4ff"
+                 drawFocusFeedback="true">
+        <Font role="font" uri="font:SystemFontFile" size="26" />
+        <Font role="focusedFont" uri="font:BoldSystemFontFile" size="26" />
+      </LabelList>
+    </Group>
+
+    <!-- Player -->
+    <Video id="player" width="1920" height="1080" translation="[0,0]" visible="false" />
+
+    <!-- Busy overlay -->
+    <Group id="busy" visible="false">
+      <Rectangle width="1920" height="1080" color="0x0b0d11dd" />
+      <Label id="busyText" translation="[80,500]" width="1760" wrap="true"
+             color="0xe9edf3ff" horizAlign="center">
+        <Font role="font" uri="font:SystemFontFile" size="34" />
+      </Label>
+    </Group>
+
+    <ApiTask id="api" />
+  </children>
+</component>

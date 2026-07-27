@@ -1,0 +1,13 @@
+node_modules/
+installers/build/
+installers/dist/
+extension/dist/
+*.keystore
+keystore.properties
+*.pfx
+*.pem
+*.key
+# Compiled server binaries - built by deploy, not committed
+gateway/mw-gateway
+search/mw-search
+bridge/mw-bridge

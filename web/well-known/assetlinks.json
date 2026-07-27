@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.moveweight.stream",
+      "sha256_cert_fingerprints": [
+        "CD:FE:97:8E:67:D7:EF:65:1F:34:F6:68:BF:92:24:CF:6A:72:99:7B:F8:92:16:C6:51:41:FB:8A:CB:23:2B:98"
+      ]
+    }
+  }
+]

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  One poster in the browse grid. Kept deliberately simple: a Poster, the title,
+  and the seeder count, because at ten feet anything smaller is unreadable.
+-->
+<component name="PosterTile" extends="Group">
+  <interface>
+    <field id="itemContent" type="node" onChange="onContentChanged" />
+  </interface>
+
+  <children>
+    <Rectangle id="frame" width="280" height="366" color="0x151a22ff" />
+    <Poster id="art" width="280" height="366" loadDisplayMode="scaleToFill" />
+    <Label id="seeds" translation="[10,10]" color="0x5eead4ff">
+      <Font role="font" uri="font:BoldSystemFontFile" size="22" />
+    </Label>
+    <Label id="name" translation="[2,374]" width="276" maxLines="2" wrap="true"
+           color="0xe9edf3ff">
+      <Font role="font" uri="font:SystemFontFile" size="22" />
+    </Label>
+  </children>
+
+  <script type="text/brightscript">
+    <![CDATA[
+      sub onContentChanged()
+          c = m.top.itemContent
+          if c = invalid then return
+          m.top.findNode("name").text = c.title
+          m.top.findNode("seeds").text = c.seedText
+          if c.HDGRIDPOSTERURL <> invalid and c.HDGRIDPOSTERURL <> ""
+              m.top.findNode("art").uri = c.HDGRIDPOSTERURL
+          end if
+      end sub
+
+    ]]>
+  </script>
+</component>

@@ -1,0 +1,22 @@
+/* Injected ▶ button. Deliberately high-specificity and !important-heavy:
+   tracker sites have aggressive global styles that would otherwise flatten it. */
+.mw-stream-btn {
+  all: unset !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  margin-left: 6px !important;
+  padding: 2px 8px !important;
+  font: 600 11px/1.6 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif !important;
+  color: #04211d !important;
+  background: #5eead4 !important;
+  border-radius: 5px !important;
+  cursor: pointer !important;
+  vertical-align: middle !important;
+  white-space: nowrap !important;
+  box-shadow: none !important;
+  text-decoration: none !important;
+}
+.mw-stream-btn:hover {
+  background: #2dd4bf !important;
+}

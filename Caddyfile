@@ -1,0 +1,51 @@
+{
+	email wadeivy11@gmail.com
+}
+
+stream.moveweight.com {
+	encode zstd gzip
+
+	# Torrent peer relay (WebSocket). Long-lived connections, no compression.
+	handle /bridge* {
+		reverse_proxy 127.0.0.1:8801
+	}
+
+	# Search / metadata API.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8802
+	}
+
+	# index.html carries a hashed script URL, so it must never be cached or a
+	# returning visitor keeps loading the previous build's assets.
+	@html path / /index.html
+	header @html Cache-Control "no-cache, must-revalidate"
+
+	# Only app.js carries a content hash in its URL, so only it is safe to cache
+	# hard. Caching the other modules pinned stale copies for a week.
+	@hashed path /app.js
+	header @hashed Cache-Control "public, max-age=604800, immutable"
+
+	@images path *.png *.svg *.webmanifest
+	header @images Cache-Control "public, max-age=86400"
+
+	@modules path /engine.js /bridge-peer.js /tracker-udp.js /dht.js /bencode.js /sw.min.js /webtorrent.min.js
+	header @modules Cache-Control "no-cache, must-revalidate"
+
+	handle {
+		root * /srv/stream/www
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# The engine runs in workers; keep it same-origin isolated.
+		Cross-Origin-Opener-Policy "same-origin"
+	}
+
+	log {
+		output file /var/log/caddy/stream.log
+		format json
+	}
+}

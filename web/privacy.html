@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Policy — Yarr.It</title>
+<meta name="description" content="What Stream collects, what it does not, and how streaming works." />
+<style>
+  :root { --bg:#0b0d11; --panel:#151a22; --line:#252d3a; --fg:#e9edf3; --muted:#8b96a8; --accent:#5eead4; --warn:#fbbf24; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:0 22px 80px; }
+  header { border-bottom:1px solid var(--line); margin-bottom:34px; }
+  header .wrap { padding:20px 22px; }
+  a { color:var(--accent); }
+  h1 { font-size:30px; letter-spacing:-.02em; margin:34px 0 6px; }
+  h2 { font-size:19px; margin:34px 0 8px; }
+  .updated { color:var(--muted); font-size:14px; margin:0 0 8px; }
+  p, li { color:#cfd6e0; }
+  ul { padding-left:20px; }
+  .callout { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent);
+             border-radius:10px; padding:14px 16px; margin:20px 0; }
+  .callout.warn { border-left-color:var(--warn); }
+  strong { color:var(--fg); }
+  table { width:100%; border-collapse:collapse; margin:16px 0; font-size:15px; }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.05em; }
+</style>
+</head>
+<body>
+<header><div class="wrap"><a href="/">Yarr.It</a></div></header>
+<div class="wrap">
+
+<h1>Privacy Policy</h1>
+<p class="updated">Last updated 27 July 2026</p>
+
+<p>
+  Yarr.It is a search and playback tool. It does not host, store or distribute any media.
+  This policy describes exactly what the service handles and what it does not.
+</p>
+
+<div class="callout">
+  <strong>The short version.</strong> We have no accounts, no logins, no analytics, no
+  advertising and no tracking. We do not collect personal information. Media never touches
+  our servers — playback happens peer-to-peer, in your own browser or app.
+</div>
+
+<h2>Information we collect</h2>
+<p><strong>None that identifies you.</strong> Specifically:</p>
+<ul>
+  <li>No account, email address, name or phone number — there is nothing to sign up for.</li>
+  <li>No advertising identifiers, cookies for tracking, or third-party analytics.</li>
+  <li>No watch history, search history or library tied to a person.</li>
+  <li>No payment information — the service is free and takes no payments.</li>
+</ul>
+
+<h2>Information handled while the service runs</h2>
+<table>
+  <tr><th>Data</th><th>Why</th><th>Retention</th></tr>
+  <tr>
+    <td>Search terms</td>
+    <td>Passed to torrent indexers to return results, and cached briefly so repeat searches are fast.</td>
+    <td>Cached up to 24 hours, not linked to any person or device.</td>
+  </tr>
+  <tr>
+    <td>IP address</td>
+    <td>Unavoidably present in any web request, and used for basic rate limiting.</td>
+    <td>Not written to any persistent log by the relay.</td>
+  </tr>
+  <tr>
+    <td>Preferences</td>
+    <td>Filter settings and whether you dismissed the VPN notice.</td>
+    <td>Stored in your own browser only. Never transmitted.</td>
+  </tr>
+</table>
+
+<h2>How playback works, and what it exposes</h2>
+<div class="callout warn">
+  <strong>Use a VPN.</strong> Streaming is peer-to-peer. Your device connects directly to
+  other people sharing the same file, which means <strong>your IP address is visible to those
+  peers</strong> — exactly as it is with any BitTorrent client. This is inherent to how
+  peer-to-peer works, not a choice we made, and it is why we recommend a VPN.
+</div>
+<p>
+  Media is fetched by your device and assembled, verified and decoded there. Our server
+  operates a relay that forwards raw bytes between your browser and other peers, because web
+  browsers cannot open the kind of network connections that peer-to-peer requires. That relay
+  does not interpret, inspect, store or cache what passes through it, and it never writes
+  filenames or content identifiers to disk.
+</p>
+
+<h2>Third-party services</h2>
+<ul>
+  <li><strong>TMDB</strong> supplies posters, artwork and descriptions. Requests for images
+      are made by your device directly to TMDB.</li>
+  <li><strong>Torrent indexers</strong> receive your search terms in order to return results.</li>
+  <li><strong>Trackers and peers</strong> receive the standard BitTorrent information needed
+      to join a swarm, including your IP address.</li>
+</ul>
+<p>These services have their own privacy policies, which we do not control.</p>
+
+<h2>Children</h2>
+<p>
+  Yarr.It is not directed at children. Adult material is filtered out by default and can only
+  be shown by deliberately enabling it.
+</p>
+
+<h2>Content</h2>
+<p>
+  We do not host, upload, index or store any media. Results come from third-party public
+  indexers, and playback is peer-to-peer between users. You are responsible for complying
+  with the laws of your country regarding the material you access.
+</p>
+
+<h2>Changes</h2>
+<p>Material changes will be reflected here with a new "last updated" date.</p>
+
+<h2>Contact</h2>
+<p>Questions, or a copyright concern: <a href="mailto:me@moveweight.com">me@moveweight.com</a></p>
+
+</div>
+</body>
+</html>

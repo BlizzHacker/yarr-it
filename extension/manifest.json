@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Yarr.It — view before you download",
+  "short_name": "Yarr.It",
+  "version": "1.0.0",
+  "description": "Yarr.It streams any magnet link in your browser instead of downloading it. Adds a ▶ to torrent sites and hijacks magnet: links.",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Yarr.It — stream this page's torrents",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "omnibox": { "keyword": "st" },
+  "permissions": ["contextMenus", "storage", "scripting", "offscreen"],
+  "host_permissions": ["https://stream.moveweight.com/*"],
+  "optional_host_permissions": ["*://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*", "pip.html"],
+      "matches": ["*://*/*"]
+    }
+  ]
+}

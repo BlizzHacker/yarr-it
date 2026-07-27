@@ -1,0 +1,14 @@
+{
+  "name": "stream-moveweight",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --minify --format=esm --outfile=dist/app.js --define:global=globalThis"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.1",
+    "events": "^3.3.0",
+    "streamx": "^2.28.0",
+    "webtorrent": "^3.0.16"
+  }
+}

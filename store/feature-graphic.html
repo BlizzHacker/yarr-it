@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8" />
+<style>
+  /* Google Play feature graphic: exactly 1024x500, no transparency.
+     Text is kept away from the edges because Play crops this differently
+     across surfaces and anything near the border gets clipped. */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { width:1024px; height:500px; overflow:hidden;
+         font-family:"Segoe UI",system-ui,-apple-system,sans-serif; }
+  .g {
+    width:1024px; height:500px; position:relative;
+    background:
+      radial-gradient(900px 420px at 78% 18%, rgba(94,234,212,.20), transparent 62%),
+      radial-gradient(700px 380px at 12% 92%, rgba(45,212,191,.13), transparent 60%),
+      linear-gradient(140deg,#0b0d11 0%,#101720 55%,#0b0d11 100%);
+    display:flex; align-items:center; padding:0 74px; color:#e9edf3;
+  }
+  .left { width:590px; }
+  .mark { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
+  .mark .tri {
+    width:0; height:0; border-left:26px solid #5eead4;
+    border-top:16px solid transparent; border-bottom:16px solid transparent;
+  }
+  .mark b { font-size:38px; letter-spacing:-.02em; }
+  h1 { font-size:47px; line-height:1.07; letter-spacing:-.035em; margin-bottom:16px; }
+  h1 em { font-style:normal; color:#5eead4; }
+  p { font-size:19px; line-height:1.45; color:#95a1b3; }
+  .pills { display:flex; gap:9px; margin-top:26px; flex-wrap:wrap; }
+  .pill { font-size:13.5px; font-weight:600; padding:7px 14px; border-radius:999px;
+          background:rgba(94,234,212,.11); border:1px solid rgba(94,234,212,.34); color:#5eead4; }
+  /* A suggestion of the poster grid, not a literal screenshot -- real artwork
+     here would be someone else's copyrighted material on our store banner. */
+  .grid { position:absolute; right:-40px; top:-64px; display:grid;
+          grid-template-columns:repeat(3,132px); gap:15px; transform:rotate(-9deg); opacity:.5; }
+  .card { width:132px; height:198px; border-radius:11px;
+          background:linear-gradient(160deg,#1c232d,#151a22); border:1px solid #2a3341;
+          position:relative; overflow:hidden; }
+  .card::after { content:''; position:absolute; left:9px; bottom:9px; width:38px; height:7px;
+                 border-radius:4px; background:rgba(94,234,212,.5); }
+  .card::before { content:''; position:absolute; right:9px; top:9px; width:22px; height:7px;
+                  border-radius:4px; background:rgba(251,191,36,.45); }
+  .fade { position:absolute; inset:0; background:linear-gradient(90deg,#0b0d11 30%,transparent 78%); }
+</style></head>
+<body>
+<div class="g">
+  <div class="grid">
+    <div class="card"></div><div class="card"></div><div class="card"></div>
+    <div class="card"></div><div class="card"></div><div class="card"></div>
+    <div class="card"></div><div class="card"></div><div class="card"></div>
+    <div class="card"></div><div class="card"></div><div class="card"></div>
+  </div>
+  <div class="fade"></div>
+  <div class="left" style="position:relative;z-index:2">
+    <div class="mark"><span class="tri"></span><b>Stream</b></div>
+    <h1>View before you<br /><em>download.</em></h1>
+    <p>Search every major index at once and play instantly — on your device, not our servers.</p>
+    <div class="pills">
+      <span class="pill">No ads</span>
+      <span class="pill">No accounts</span>
+      <span class="pill">Open source</span>
+      <span class="pill">Nothing hosted</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

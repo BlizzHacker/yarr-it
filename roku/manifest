@@ -1,0 +1,24 @@
+# Yarr.It — Roku channel manifest.
+#
+# This channel is a thin front end. It cannot join a BitTorrent swarm: Roku has
+# no browser engine, no WebRTC and no usable socket API, and its Video node
+# plays HLS/DASH/MP4 from a URL only. So it browses via the public search API
+# and asks the LAN gateway to turn a magnet into an HTTP stream it can play.
+
+title=Yarr.It
+major_version=1
+minor_version=0
+build_version=1
+
+mm_icon_focus_hd=pkg:/images/icon_focus_hd.png
+mm_icon_focus_sd=pkg:/images/icon_focus_sd.png
+
+splash_screen_fhd=pkg:/images/splash_fhd.png
+splash_screen_hd=pkg:/images/splash_hd.png
+splash_screen_sd=pkg:/images/splash_sd.png
+splash_color=#0b0d11
+splash_min_time=800
+
+ui_resolutions=fhd,hd
+supports_input_launch=1
+
