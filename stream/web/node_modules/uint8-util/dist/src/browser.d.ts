@@ -1,0 +1,14 @@
+import type { HashType, HashAlgo, ByteArray } from './util.ts';
+export declare const arr2hex: (data: ByteArray) => string;
+export declare const hex2arr: (str: string) => Uint8Array<ArrayBuffer>;
+export declare const text2arr: (str: string) => Uint8Array<ArrayBuffer>;
+export declare const arr2base: (bytes: ByteArray) => string;
+export declare const base2arr: (str: string) => Uint8Array<ArrayBuffer>;
+export declare const bin2hex: (str: string) => string;
+export declare const hex2bin: (hex: string) => string;
+export declare function hash(data: string | BufferSource, format?: undefined, algo?: HashAlgo): Promise<Uint8Array<ArrayBuffer>>;
+export declare function hash(data: string | BufferSource, format: HashType, algo?: HashAlgo): Promise<string>;
+export declare const randomBytes: (size: number) => Uint8Array<ArrayBuffer>;
+export declare function equal(a: ByteArray, b: ByteArray): boolean;
+export declare function compare(a: ByteArray, b: ByteArray): number;
+export * from './util.js';

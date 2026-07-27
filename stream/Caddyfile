@@ -1,0 +1,35 @@
+{
+	email wadeivy11@gmail.com
+}
+
+stream.moveweight.com {
+	encode zstd gzip
+
+	# Torrent peer relay (WebSocket). Long-lived connections, no compression.
+	handle /bridge* {
+		reverse_proxy 127.0.0.1:8801
+	}
+
+	# Search / metadata API.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8802
+	}
+
+	handle {
+		root * /srv/stream/www
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# The engine runs in workers; keep it same-origin isolated.
+		Cross-Origin-Opener-Policy "same-origin"
+	}
+
+	log {
+		output file /var/log/caddy/stream.log
+		format json
+	}
+}

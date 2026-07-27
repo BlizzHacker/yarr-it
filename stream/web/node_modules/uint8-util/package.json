@@ -1,0 +1,78 @@
+{
+  "name": "uint8-util",
+  "version": "2.3.2",
+  "description": "Fastest possible buffer-like utilities for uint8.",
+  "main": "./dist/src/node.js",
+  "browser": "./dist/src/browser.js",
+  "chromeapp": "./dist/src/browser.js",
+  "type": "module",
+  "exports": {
+    ".": {
+      "node": {
+        "types": "./dist/src/browser.d.ts",
+        "import": "./dist/src/node.js"
+      },
+      "browser": {
+        "types": "./dist/src/browser.d.ts",
+        "import": "./dist/src/browser.js"
+      },
+      "chromeapp": {
+        "types": "./dist/src/browser.d.ts",
+        "import": "./dist/src/browser.js"
+      },
+      "default": {
+        "types": "./dist/src/browser.d.ts",
+        "import": "./dist/src/browser.js"
+      }
+    }
+  },
+  "types": "./dist/src/browser.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ThaUnknown/uint8-util.git"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "uint8",
+    "buffer",
+    "sha1",
+    "crypto",
+    "hex",
+    "tohex",
+    "tostring"
+  ],
+  "author": "ThaUnknown",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ThaUnknown/uint8-util/issues"
+  },
+  "homepage": "https://github.com/ThaUnknown/uint8-util#readme",
+  "devDependencies": {
+    "@babel/core": "^7.20.5",
+    "@babel/plugin-syntax-import-assertions": "^7.20.0",
+    "@babel/preset-env": "^7.20.2",
+    "@types/node": "^26.1.1",
+    "airtap": "^4.0.4",
+    "airtap-manual": "^1.0.0",
+    "babelify": "^10.0.0",
+    "base64-arraybuffer": "^1.0.2",
+    "benchmark": "^2.1.4",
+    "eslint-config-standard-universal": "^1.0.10",
+    "vite": "^8.1.5",
+    "vite-plugin-node-polyfills": "^0.28.0"
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.base.json",
+    "typecheck": "tsc --noEmit -p tsconfig.base.json && tsc --noEmit -p tsconfig.test.json",
+    "bench-node-all": "node test/benchmark/index.ts",
+    "bench-node-save": "node test/benchmark/index.ts > results/node.txt",
+    "bench-node-one": "node benchmark/bin2hex.js",
+    "bench-browser-all": "airtap --preset local -- benchmark/index.js",
+    "bench-browser-one": "airtap --preset local -- benchmark/hex2arr.js",
+    "bench-vite": "vite --config vite.config.ts test/benchmark/browser",
+    "test": "node --experimental-test-coverage --test test/all.test.ts"
+  }
+}

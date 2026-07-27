@@ -1,0 +1,10 @@
+export type ByteArray = Buffer | Uint8Array;
+type Encoding = 'utf-8' | 'utf-16le' | 'ascii';
+export type HashType = 'hex' | 'base64';
+export type HashAlgo = 'sha-1' | 'sha-256' | 'sha-384' | 'sha-512';
+export declare const arr2text: (data: AllowSharedBufferSource, enc?: Encoding) => string;
+export declare function concat<T extends Array<ArrayLike<number>>>(chunks: T, size?: number): Uint8Array<ArrayBuffer>;
+export declare function xor(a: ByteArray, b: ByteArray): ByteArray;
+export declare function or(a: ByteArray, b: ByteArray): ByteArray;
+export declare function and(a: ByteArray, b: ByteArray): ByteArray;
+export {};

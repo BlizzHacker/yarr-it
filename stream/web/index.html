@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stream — view before you download</title>
+<meta name="description" content="Ad-free, open-source torrent streaming. Everything plays in your browser." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>▶</text></svg>" />
+<style>
+  :root {
+    --bg: #0b0d11; --panel: #14181f; --panel-2: #1b212a; --line: #262d38;
+    --fg: #e8ecf2; --muted: #8b95a5; --accent: #5eead4; --accent-dim: #2dd4bf;
+    --warn: #fbbf24; --dead: #64748b; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header { border-bottom: 1px solid var(--line); padding: 18px 20px; position: sticky; top: 0; background: rgba(11,13,17,.92); backdrop-filter: blur(8px); z-index: 5; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  .brand { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .brand b { font-size: 19px; letter-spacing: -.02em; }
+  .brand span { color: var(--muted); font-size: 13px; }
+  form { display: flex; gap: 8px; }
+  input, select, button { font: inherit; }
+  #q {
+    flex: 1; padding: 11px 14px; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line); border-radius: var(--radius); outline: none;
+  }
+  #q:focus { border-color: var(--accent-dim); }
+  #kind { padding: 11px 10px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: var(--radius); }
+  form button {
+    padding: 11px 20px; background: var(--accent); color: #04211d; font-weight: 650;
+    border: 0; border-radius: var(--radius); cursor: pointer;
+  }
+  form button:hover { background: var(--accent-dim); }
+  #magnet-form { margin-top: 8px; }
+  #magnet {
+    flex: 1; padding: 10px 14px; background: var(--panel); color: var(--fg);
+    border: 1px dashed var(--line); border-radius: var(--radius); outline: none; font-size: 13px;
+  }
+  #magnet:focus { border-color: var(--accent-dim); border-style: solid; }
+  #magnet-form button {
+    padding: 10px 18px; background: transparent; color: var(--accent); font-weight: 600;
+    border: 1px solid var(--accent-dim); border-radius: var(--radius); cursor: pointer;
+  }
+  #magnet-form button:hover { background: rgba(94,234,212,.1); }
+  main { padding: 22px 20px 60px; }
+  #status { color: var(--muted); padding: 28px 4px; }
+  #intro { padding: 30px 4px 10px; }
+  #intro h2 { font-size: 27px; margin: 0 0 10px; letter-spacing: -.02em; }
+  .lede { color: var(--muted); max-width: 640px; margin: 0 0 28px; }
+  .how { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .step b { color: var(--accent); font-size: 13px; display: block; margin-bottom: 6px; }
+  .step p { margin: 0; color: var(--muted); font-size: 13px; }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 22px; max-width: 700px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
+  .card-head { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .card-title { margin: 0; font-size: 16px; font-weight: 640; }
+  .card-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
+  .chip.seeds { color: var(--accent); }
+  .sources { border-top: 1px solid var(--line); max-height: 340px; overflow-y: auto; }
+  .source {
+    width: 100%; display: flex; align-items: center; gap: 12px; text-align: left;
+    padding: 10px 16px; background: transparent; border: 0; border-bottom: 1px solid var(--line);
+    color: var(--fg); cursor: pointer;
+  }
+  .source:last-child { border-bottom: 0; }
+  .source:hover { background: var(--panel-2); }
+  .source.best { background: rgba(94,234,212,.06); }
+  .source-left { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+  .source-right { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .q { font-weight: 650; min-width: 48px; font-size: 13px; }
+  .tag { font-size: 11px; padding: 2px 7px; border-radius: 5px; background: var(--panel-2); color: var(--muted); }
+  .tag.ok { background: rgba(94,234,212,.14); color: var(--accent); }
+  .tag.warn { background: rgba(251,191,36,.14); color: var(--warn); }
+  .name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .seeds { color: var(--accent); }
+  .seeds.dead { color: var(--dead); }
+  #player { position: fixed; inset: 0; background: rgba(4,6,9,.96); z-index: 20; display: flex; flex-direction: column; }
+  .player-bar { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  #player-title { font-weight: 650; }
+  #player-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #player-close { margin-left: auto; background: var(--panel-2); border: 1px solid var(--line); color: var(--fg); padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+  .stage { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 12px; }
+  video, #image { max-width: 100%; max-height: 100%; background: #000; border-radius: 8px; }
+  #player-status { color: var(--muted); padding: 16px; text-align: center; max-width: 620px; }
+  .stats { display: flex; gap: 22px; padding: 10px 18px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .stats b { color: var(--fg); font-weight: 600; }
+  .bar { height: 3px; background: var(--panel-2); }
+  #progress { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+  footer { color: var(--muted); font-size: 12px; padding: 0 20px 40px; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <b>▶ Stream</b>
+      <span>view before you download · ad-free · open source</span>
+    </div>
+    <form id="search-form">
+      <input id="q" placeholder="Search films, shows, music, images…" autocomplete="off" autofocus />
+      <select id="kind">
+        <option value="">Everything</option>
+        <option value="video">Video</option>
+        <option value="audio">Audio</option>
+      </select>
+      <button type="submit">Search</button>
+    </form>
+    <form id="magnet-form">
+      <input id="magnet" placeholder="…or paste a magnet: link / info hash and stream it straight away"
+             autocomplete="off" spellcheck="false" />
+      <button type="submit">Stream</button>
+    </form>
+  </div>
+</header>
+
+<main class="wrap">
+  <p id="status" hidden></p>
+
+  <section id="intro">
+    <h2>View before you download.</h2>
+    <p class="lede">
+      Search every major torrent index at once and play the result in this tab — films, TV,
+      music, images and text. Nothing is installed, nothing is queued, and nothing is stored
+      on our server.
+    </p>
+    <div class="how">
+      <div class="step">
+        <b>1 · Search or paste</b>
+        <p>One query fans out across every configured indexer. Results are grouped by title,
+           so one film is one card with a quality picker — not forty near-identical rows.</p>
+      </div>
+      <div class="step">
+        <b>2 · Press play</b>
+        <p>Your browser joins the swarm and starts at the first byte it needs, so playback
+           begins long before the file is complete.</p>
+      </div>
+      <div class="step">
+        <b>3 · It plays on your machine</b>
+        <p>Pieces are verified and decoded on your own device using your GPU. We never
+           transcode, never cache, and never keep a copy.</p>
+      </div>
+    </div>
+    <p class="note">
+      Some torrents have no live seeders and simply will not start — the seeder count on each
+      row tells you before you click. Files already in a web-friendly format (H.264/AAC MP4)
+      play instantly; other containers depend on what your browser can decode.
+    </p>
+  </section>
+
+  <div id="results"></div>
+</main>
+
+<footer class="wrap">
+  Playback happens entirely in your browser — pieces are verified and decoded on your device,
+  and nothing is transcoded or stored on the server.
+</footer>
+
+<div id="player" hidden>
+  <div class="player-bar">
+    <div>
+      <div id="player-title"></div>
+      <div id="player-sub"></div>
+    </div>
+    <button id="player-close">Close</button>
+  </div>
+  <div class="stage">
+    <video id="video" controls autoplay playsinline hidden></video>
+    <img id="image" hidden alt="" />
+    <p id="player-status" hidden></p>
+  </div>
+  <div class="bar"><div id="progress"></div></div>
+  <div class="stats">
+    <span>peers <b id="stat-peers">0</b></span>
+    <span>via relay <b id="stat-bridge">0</b></span>
+    <span>speed <b id="stat-speed">0 B/s</b></span>
+    <span>buffered <b id="stat-done">0%</b></span>
+  </div>
+</div>
+
+
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

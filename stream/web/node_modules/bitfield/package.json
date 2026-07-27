@@ -1,0 +1,65 @@
+{
+    "type": "module",
+    "name": "bitfield",
+    "description": "a simple bitfield, compliant with the BitTorrent spec",
+    "version": "5.0.1",
+    "author": "Felix Boehm <me@feedic.com>",
+    "funding": {
+        "type": "github",
+        "url": "https://github.com/sponsors/fb55"
+    },
+    "sideEffects": false,
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist",
+        "src",
+        "!**/*.spec.ts"
+    ],
+    "bugs": {
+        "url": "https://github.com/fb55/bitfield/issues"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.4.7",
+        "@eslint/compat": "^2.0.3",
+        "@feedic/eslint-config": "^0.3.1",
+        "@types/node": "^25.5.0",
+        "eslint": "^10.0.3",
+        "eslint-config-biome": "^2.1.3",
+        "globals": "^17.4.0",
+        "typescript": "^5.9.3",
+        "typescript-eslint": "^8.57.1",
+        "vitest": "^4.0.18"
+    },
+    "engines": {
+        "node": ">=20.19.0"
+    },
+    "keywords": [
+        "bitfield",
+        "buffer",
+        "bittorrent"
+    ],
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/fb55/bitfield"
+    },
+    "scripts": {
+        "build": "tsc",
+        "format": "npm run format:es && npm run format:biome",
+        "format:biome": "biome check --write .",
+        "format:es": "npm run lint:es -- --fix",
+        "lint": "npm run lint:es && npm run lint:biome",
+        "lint:biome": "biome check .",
+        "lint:es": "eslint .",
+        "prepare": "npm run build",
+        "test": "npm run test:vi && npm run lint",
+        "test:vi": "vitest run"
+    }
+}
