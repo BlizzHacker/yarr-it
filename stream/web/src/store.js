@@ -10,13 +10,20 @@ const STORE = 'sources';
 
 export function createMemoryStore() {
   const rows = new Map();
+  // structuredClone on every write and every read so this fallback matches
+  // IndexedDB's structured-clone semantics (caller mutations after put(), or
+  // mutations of a returned record, must never reach back into storage).
+  // Do not "optimise" this away by storing/returning live references.
   return {
-    async list() { return [...rows.values()]; },
-    async get(id) { return rows.get(id) ?? null; },
+    async list() { return [...rows.values()].map((r) => structuredClone(r)); },
+    async get(id) {
+      const r = rows.get(id);
+      return r ? structuredClone(r) : null;
+    },
     async put(record) {
       if (!record?.id) throw new Error('record needs an id');
-      rows.set(record.id, record);
-      return record;
+      rows.set(record.id, structuredClone(record));
+      return structuredClone(record);
     },
     async remove(id) { rows.delete(id); },
   };
@@ -34,6 +41,10 @@ export function createLocalStore(idbFactory = globalThis.indexedDB) {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+    // If another tab holds the connection open during a version upgrade,
+    // neither onsuccess nor onerror fires and this promise would otherwise
+    // hang forever, along with every list/get/put/remove call awaiting it.
+    req.onblocked = () => reject(new Error('IndexedDB open blocked by another open connection (e.g. another tab); close other tabs and retry'));
   });
 
   const run = async (mode, fn) => {
@@ -47,7 +58,7 @@ export function createLocalStore(idbFactory = globalThis.indexedDB) {
   };
 
   return {
-    async list() { return (await run('readonly', (s) => s.getAll())) ?? []; },
+    async list() { return await run('readonly', (s) => s.getAll()); },
     async get(id) { return (await run('readonly', (s) => s.get(id))) ?? null; },
     async put(record) {
       if (!record?.id) throw new Error('record needs an id');
