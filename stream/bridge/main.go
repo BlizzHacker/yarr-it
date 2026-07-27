@@ -106,6 +106,12 @@ func main() {
 	}
 
 	go s.budget.persistLoop()
+	// The IPTV sub-budget needs the same treatment as the main one. Without
+	// it the count resets on every restart -- so a viewer could drain the cap,
+	// the service could restart, and the counter would start again from zero --
+	// and rollover() would never run, so after a month boundary the stale total
+	// would leave it permanently degraded.
+	go s.iptvBudget.persistLoop()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -123,6 +129,7 @@ func main() {
 		log.Fatalf("listen: %v", err)
 	}
 	s.budget.persist()
+	s.iptvBudget.persist()
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
