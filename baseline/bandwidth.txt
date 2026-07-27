@@ -1,0 +1,16 @@
+# Monthly transfer allowance for racknerd-cf0459e (104.129.28.137)
+#
+# PENDING — must be read from https://nerdvm.racknerd.com (user vmuser354236).
+# Not filled in automatically: reading it requires authenticating to the panel.
+#
+# This number governs Phase 3 (stream.moveweight.com) sizing. Do not guess it.
+# RackNerd's 1 GB KVM Special is commonly ~3000 GB/mo, but that is NOT confirmed
+# for this instance and must not be relied on.
+#
+# Replace this file's contents with the real figure, e.g.:
+#   3000 GB/mo
+ALLOWANCE=UNCONFIRMED
+
+# Live accounting is running on the box from 2026-07-27:
+#   bash scripts/vps.sh 'vnstat -i eth0 -m'
+# Baseline at enablement: 26.99 KiB rx / 28.88 KiB tx.
