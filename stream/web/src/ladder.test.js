@@ -51,3 +51,28 @@ test('with no gateway and no relay the blocker is reported and no tier is chosen
   assert.equal(r.tier, null);
   assert.equal(r.blockedBy, FAILURE.CORS_BLOCKED);
 });
+
+test('a blob stream url with no cors header plays direct - CORS never applied to it', () => {
+  const r = chooseTier({ ...base, streamUrl: 'blob:https://example.com/abc-123', corsHeader: null });
+  assert.deepEqual(r, { tier: TIER.DIRECT, blockedBy: null });
+});
+
+test('a data stream url with no cors header plays direct - CORS never applied to it', () => {
+  const r = chooseTier({ ...base, streamUrl: 'data:video/mp4;base64,AAAA', corsHeader: null });
+  assert.deepEqual(r, { tier: TIER.DIRECT, blockedBy: null });
+});
+
+test('a stream that is both mixed content and cors-less reports mixed content, not cors', () => {
+  const r = chooseTier({
+    ...base,
+    streamUrl: 'http://cdn.example.com/live.m3u8',
+    corsHeader: null,
+  });
+  assert.equal(r.blockedBy, FAILURE.MIXED_CONTENT);
+});
+
+test('an uppercase HTTP scheme on an https page is still detected as mixed content', () => {
+  const r = chooseTier({ ...base, streamUrl: 'HTTP://cdn.example.com/live.m3u8' });
+  assert.equal(r.blockedBy, FAILURE.MIXED_CONTENT);
+  assert.equal(r.tier, TIER.RELAY);
+});
