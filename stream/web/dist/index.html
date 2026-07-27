@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Stream — view before you download</title>
-<meta name="description" content="Ad-free, open-source torrent streaming. Everything plays in your browser — nothing touches our servers." />
+<title>Yarr.It — view before you download</title>
+<meta name="description" content="Yarr.It — ad-free, open-source torrent streaming. Everything plays in your browser; nothing touches our servers." />
 <meta name="theme-color" content="#0b0d11" />
 <link rel="manifest" href="/manifest.webmanifest" />
 <link rel="apple-touch-icon" href="/icon-192.png" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>▶</text></svg>" />
+<link rel="icon" href="/icon-192.png" /><text y='.9em' font-size='90'>▶</text></svg>" />
 <style>
   :root {
     --bg:#0b0d11; --bg-2:#0e1116; --panel:#151a22; --panel-2:#1c232d; --line:#252d3a;
@@ -47,7 +47,8 @@
   /* ---------- header ---------- */
   header { position:sticky; top:0; z-index:30; background:rgba(11,13,17,.94); backdrop-filter:blur(12px); border-bottom:1px solid var(--line); }
   .bar { display:flex; align-items:center; gap:16px; padding:14px 0; }
-  .brand { font-size:19px; font-weight:700; letter-spacing:-.02em; white-space:nowrap; }
+  .brand { font-size:19px; font-weight:700; letter-spacing:-.02em; white-space:nowrap; display:flex; align-items:center; gap:9px; }
+  .brandmark { width:30px; height:30px; border-radius:7px; }
   .brand span { color:var(--accent); }
   #search-form { display:flex; gap:8px; flex:1; min-width:0; }
   #q { flex:1; min-width:0; padding:11px 15px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:var(--r); outline:none; }
@@ -232,7 +233,7 @@
 <header>
   <div class="wrap">
     <div class="bar">
-      <div class="brand">▶ <span>Stream</span></div>
+      <div class="brand"><img src="/icon-192.png" alt="" class="brandmark" /> Yarr<span>.It</span></div>
       <form id="search-form">
         <input id="q" placeholder="Search films, shows, music, images…" autocomplete="off" autofocus />
         <button class="btn" type="submit">Search</button>

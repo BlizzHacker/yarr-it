@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Yarr.It">
+  <!--
+    Yarr.It mark: a galleon whose sail carries a play triangle.
+
+    An homage to The Pirate Bay's ship-with-a-cassette, not a copy of it: same
+    visual tradition, but the sail carries our own symbol rather than their
+    cassette-and-crossbones, so the mark is ours to use.
+
+    Drawn bold and low-detail on purpose. Rigging and portholes vanish below
+    64px, which is the size that actually matters in a tab or a Roku tile.
+  -->
+  <defs>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="#0b0d11"/>
+
+  <g fill="url(#teal)">
+    <!-- Mast -->
+    <rect x="247" y="86" width="18" height="292" rx="6"/>
+
+    <!-- Main sail: a billowing curve off the mast, big enough to carry the
+         play mark and still read as canvas. -->
+    <path d="M265 104
+             C352 128 398 176 410 232
+             C398 250 330 262 265 262 Z"/>
+    <!-- Fore sail, smaller, on the other side for balance. -->
+    <path d="M247 128
+             C186 146 152 182 142 226
+             C154 240 202 248 247 248 Z"/>
+
+    <!-- Pennant -->
+    <path d="M265 66 L332 82 L265 98 Z"/>
+
+    <!-- Hull: one bold sweep, bowsprit on the right. -->
+    <path d="M74 300
+             L438 300
+             C430 356 386 396 320 404
+             L192 404
+             C126 396 82 356 74 300 Z"/>
+    <path d="M430 286 L486 262 L492 280 L438 302 Z"/>
+
+    <!-- Waves: two strokes, enough to sit the ship on water without noise. -->
+    <path d="M96 436 C136 420 176 452 216 436 C256 420 296 452 336 436
+             C376 420 400 444 424 438 L424 460
+             C400 466 376 442 336 458 C296 474 256 442 216 458
+             C176 474 136 442 96 458 Z" opacity="0.85"/>
+  </g>
+
+  <!-- Play triangle on the sail, in the negative colour so it reads as a
+       device printed on the canvas. -->
+  <path d="M300 158 L372 202 L300 246 Z" fill="#0b0d11"/>
+</svg>

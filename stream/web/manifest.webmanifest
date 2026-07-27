@@ -1,6 +1,6 @@
 {
-  "name": "Stream — view before you download",
-  "short_name": "Stream",
+  "name": "Yarr.It — view before you download",
+  "short_name": "Yarr.It",
   "description": "Ad-free, open-source torrent streaming that plays entirely in your browser.",
   "start_url": "/",
   "scope": "/",
