@@ -56,13 +56,13 @@ Expected: FAIL — `npm error Missing script: "test"`
 In `stream/web/package.json`, add to `scripts` (keep `build` unchanged):
 
 ```json
-    "test": "node --test src/"
+    "test": "node --test \"src/**/*.test.js\""
 ```
 
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 1`
+Expected: PASS — `ℹ pass 1`
 
 - [ ] **Step 5: Confirm the build still works**
 
@@ -226,7 +226,7 @@ export function createRegistry() {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 5`
+Expected: PASS — `ℹ pass 5`
 
 - [ ] **Step 5: Commit**
 
@@ -358,7 +358,7 @@ export class PlaybackError extends Error {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 10`
+Expected: PASS — `ℹ pass 10`
 
 - [ ] **Step 5: Commit**
 
@@ -495,7 +495,7 @@ function directBlocker({ pageProtocol, streamUrl, corsHeader }) {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 16`
+Expected: PASS — `ℹ pass 16`
 
 - [ ] **Step 5: Commit**
 
@@ -659,7 +659,7 @@ export function parseM3U(text) {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 22`
+Expected: PASS — `ℹ pass 22`
 
 - [ ] **Step 5: Commit**
 
@@ -827,7 +827,7 @@ export const embedResolver = {
 - [ ] **Step 5: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 28`
+Expected: PASS — `ℹ pass 28`
 
 - [ ] **Step 6: Commit**
 
@@ -949,7 +949,7 @@ export const playlistResolver = {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 31`
+Expected: PASS — `ℹ pass 31`
 
 - [ ] **Step 5: Commit**
 
@@ -1075,7 +1075,7 @@ export function createTorrentResolver({ engine, classify = () => 'video' }) {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 34`
+Expected: PASS — `ℹ pass 34`
 
 - [ ] **Step 5: Commit**
 
@@ -1185,7 +1185,7 @@ export function detachAll(elements) {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 37`
+Expected: PASS — `ℹ pass 37`
 
 - [ ] **Step 5: Commit**
 
@@ -1323,7 +1323,7 @@ export function createLocalStore(idbFactory = globalThis.indexedDB) {
 - [ ] **Step 4: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 41`
+Expected: PASS — `ℹ pass 41`
 
 - [ ] **Step 5: Commit**
 
@@ -1449,7 +1449,7 @@ And add this element inside `<main>`, immediately before the closing `</main>` t
 - [ ] **Step 5: Run the tests and make sure they pass**
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 43`
+Expected: PASS — `ℹ pass 43`
 
 - [ ] **Step 6: Commit**
 
@@ -1594,7 +1594,7 @@ Run: `cd stream/web && npm run build`
 Expected: esbuild writes `dist/app.js` with no errors.
 
 Run: `cd stream/web && npm test`
-Expected: PASS — `# pass 43`
+Expected: PASS — `ℹ pass 43`
 
 - [ ] **Step 6: Smoke-test the render paths in a real browser**
 
