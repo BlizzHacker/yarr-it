@@ -38,3 +38,35 @@ test('embed resolver produces an embed playable', async () => {
   assert.equal(p.render, RENDER.EMBED);
   assert.equal(p.src, 'https://www.youtube.com/embed/dQw4w9WgXcQ');
 });
+
+test('a youtube-lookalike path on an unrelated host is not hijacked', () => {
+  const evil = 'https://evil.com/youtube.com/watch?v=dQw4w9WgXcQ';
+  assert.equal(embedUrlFor(evil), null);
+  assert.equal(embedResolver.canHandle(evil), false);
+});
+
+test('youtube mobile host still embeds correctly', () => {
+  assert.equal(embedUrlFor('https://m.youtube.com/watch?v=dQw4w9WgXcQ'),
+    'https://www.youtube.com/embed/dQw4w9WgXcQ');
+});
+
+test('vimeo channels url embeds the trailing numeric id', () => {
+  assert.equal(embedUrlFor('https://vimeo.com/channels/staffpicks/123456789'),
+    'https://player.vimeo.com/video/123456789');
+});
+
+test('vimeo groups/videos url embeds the trailing numeric id', () => {
+  assert.equal(embedUrlFor('https://vimeo.com/groups/x/videos/987654321'),
+    'https://player.vimeo.com/video/987654321');
+});
+
+test('a malformed input returns null instead of throwing', () => {
+  assert.doesNotThrow(() => embedUrlFor('not a url'));
+  assert.equal(embedUrlFor('not a url'), null);
+  assert.equal(embedResolver.canHandle('not a url'), false);
+});
+
+test('youtube watch url with extra query params before v still resolves', () => {
+  assert.equal(embedUrlFor('https://www.youtube.com/watch?list=PL1&v=dQw4w9WgXcQ'),
+    'https://www.youtube.com/embed/dQw4w9WgXcQ');
+});
