@@ -1,0 +1,26 @@
+DNSBL / deliverability baseline for 104.129.28.137  (2026-07-27)
+
+zen.spamhaus.org        clean  (authoritative NXDOMAIN via b.gns.spamhaus.org)
+sbl.spamhaus.org        clean
+xbl.spamhaus.org        clean
+pbl.spamhaus.org        clean
+bl.spamcop.net          clean
+b.barracudacentral.org  clean
+dnsbl.sorbs.net         clean
+psbl.surriel.com        clean
+
+NOTE: querying Spamhaus through a public resolver (@1.1.1.1) returns
+127.255.255.254, which is a REFUSAL code, not a listing. Always query the
+authoritative NS directly.
+
+FCrDNS: PASS
+  PTR 104.129.28.137 -> relay.moveweight.net
+  A   relay.moveweight.net -> 104.129.28.137
+
+History: 18 sent / 6 bounced in the 24h before this check. The bounces were
+Gmail 5.7.25 (missing PTR), since resolved.
+
+Defect found and fixed: relay.moveweight.net had no SPF record of its own
+(SPF does not inherit from the parent zone), so postfix-generated bounces and
+NDRs failed Gmail with 5.7.26. Added TXT relay.moveweight.net
+"v=spf1 ip4:104.129.28.137 -all". Re-probe delivers 250 OK.
