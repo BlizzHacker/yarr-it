@@ -22,6 +22,29 @@ function attr(line, name) {
   return m ? m[1] : '';
 }
 
+// Real IPTV playlists routinely quote attribute values that contain commas,
+// e.g. group-title="News, UK" or group-title="Sports, US". A naive
+// line.indexOf(',') looks correct (and will be "simplified" back to that if
+// you're not careful) but it splits the channel name on the FIRST comma
+// anywhere on the line, including ones inside quoted attribute values, which
+// mangles the title. Scan for the first comma that is NOT inside a pair of
+// double quotes instead. If a quote is left unterminated, treat the rest of
+// the line as still "inside quotes" rather than looping or throwing - this
+// is a linear single-pass scan, so it can't hang, and it deterministically
+// yields "no unquoted comma found".
+function findUnquotedComma(line) {
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 export function parseM3U(text) {
   const clean = text.replace(/^﻿/, '').replace(/\r\n/g, '\n');
   const lines = clean.split('\n');
@@ -34,7 +57,7 @@ export function parseM3U(text) {
     if (!line) continue;
 
     if (line.startsWith('#EXTINF')) {
-      const comma = line.indexOf(',');
+      const comma = findUnquotedComma(line);
       pending = {
         title: comma === -1 ? '' : line.slice(comma + 1).trim(),
         uri: '',

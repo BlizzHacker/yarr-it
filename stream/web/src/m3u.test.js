@@ -56,3 +56,62 @@ test('an HLS master playlist is also HLS', () => {
   const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow.m3u8';
   assert.equal(looksLikeHls(master), true);
 });
+
+// Regression: real IPTV playlists routinely quote group-title values that
+// contain commas (e.g. group-title="News, UK"). A naive "first comma on the
+// line" split mistakes the comma inside the quoted attribute for the
+// name/attribute separator and mangles both the title and misses the group.
+test('a group-title containing a comma does not corrupt the channel name or the group', () => {
+  const text = [
+    '#EXTM3U',
+    '#EXTINF:-1 tvg-logo="http://x/l.png" group-title="News, UK",BBC News, HD',
+    'http://s/1',
+  ].join('\n');
+  const { entries } = parseM3U(text);
+  assert.equal(entries.length, 1);
+  assert.deepEqual(entries[0], {
+    title: 'BBC News, HD',
+    uri: 'http://s/1',
+    logo: 'http://x/l.png',
+    group: 'News, UK',
+  });
+});
+
+// Regression: the channel name itself is free to contain commas once we're
+// past the (unquoted) name/attribute separator - it must be preserved whole,
+// not truncated at the first comma inside it.
+test('a channel name that itself contains commas is preserved in full', () => {
+  const text = '#EXTM3U\n#EXTINF:-1 group-title="UK",BBC One, Extra, Channel\nhttp://a/b\n';
+  const { entries } = parseM3U(text);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].title, 'BBC One, Extra, Channel');
+  assert.equal(entries[0].group, 'UK');
+});
+
+// Guard against the quote-scanning rewrite breaking the simplest case: an
+// #EXTINF line with no attributes at all still parses correctly.
+test('an #EXTINF line with no attributes at all still parses', () => {
+  const text = '#EXTM3U\n#EXTINF:-1,Simple Channel\nhttp://a/b\n';
+  const { entries } = parseM3U(text);
+  assert.equal(entries.length, 1);
+  assert.deepEqual(entries[0], {
+    title: 'Simple Channel',
+    uri: 'http://a/b',
+    logo: '',
+    group: '',
+  });
+});
+
+// Guard against hangs/crashes on malformed input: an unterminated quote must
+// not loop forever or throw. The scanner treats everything after an unclosed
+// quote as still "inside quotes", so no unquoted comma is found and the
+// title falls back to '' - deterministic, not a crash.
+test('an unterminated quote on the #EXTINF line does not hang or throw', () => {
+  const text = '#EXTM3U\n#EXTINF:-1 group-title="News,Chan\nhttp://a/b\n';
+  assert.doesNotThrow(() => parseM3U(text));
+  const { entries } = parseM3U(text);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].title, '');
+  assert.equal(entries[0].group, '');
+  assert.equal(entries[0].uri, 'http://a/b');
+});
