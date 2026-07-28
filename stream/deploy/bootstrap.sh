@@ -17,6 +17,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/BlizzHacker/yarr-it/feat/universal-source-layer/stream/deploy/bootstrap.sh -o bootstrap.sh
 #   less bootstrap.sh          # it is short; read it before running it
 #   bash bootstrap.sh
+#
+# **raw.githubusercontent.com caches for several minutes.** Immediately after a
+# push, that URL serves the PREVIOUS version, and the script happily clones the
+# new commit while running the old logic -- which looks like a fix that did not
+# work rather than a file that never arrived. To re-run after a change, use the
+# clone this script already made, which is always at the fetched commit:
+#
+#   bash /opt/yarr-it/stream/deploy/bootstrap.sh
 set -euo pipefail
 
 REPO=https://github.com/BlizzHacker/yarr-it.git
