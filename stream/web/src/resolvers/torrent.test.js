@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTorrentResolver, renderForKind, normalizeMagnet } from './torrent.js';
-import { RENDER } from '../source.js';
+import { createTorrentResolver, renderForKind, normalizeMagnet, splitFileChoice } from './torrent.js';
+import { RENDER, isCollection } from '../source.js';
 import { FAILURE } from '../failures.js';
 
 test('claims magnet links and bare infohashes only', () => {
@@ -174,4 +174,79 @@ test('does not fall back to a blob when the engine never claims one way or the o
   const r = createTorrentResolver({ engine, classify: () => 'video' });
   const playable = await r.resolve({ uri: 'abc'.padEnd(40, '0') });
   assert.equal(playable.src, 'blob:already-a-blob');
+});
+
+// --- choosing a file out of a pack ---------------------------------------
+
+test('a file choice splits off the uri and survives a round trip', () => {
+  const magnet = 'magnet:?xt=urn:btih:EB7C1B7623104466A65034A5554DA59AE6C4517A&dn=N64+pack';
+  assert.deepEqual(splitFileChoice(magnet), { uri: magnet, index: null });
+  assert.deepEqual(splitFileChoice(`${magnet}#n=17`), { uri: magnet, index: 17 });
+  assert.deepEqual(splitFileChoice(''), { uri: '', index: null });
+  assert.deepEqual(splitFileChoice(undefined), { uri: '', index: null });
+});
+
+// Without this, picking an entry out of a ROM pack falls through to the url
+// resolver, which cannot play a magnet, and nothing happens.
+test('a chosen file is still recognised as the torrent it came from', () => {
+  const r = createTorrentResolver({ engine: {}, classify: () => 'rom' });
+  const magnet = 'magnet:?xt=urn:btih:EB7C1B7623104466A65034A5554DA59AE6C4517A';
+  assert.equal(r.canHandle(magnet), true);
+  assert.equal(r.canHandle(`${magnet}#n=3`), true);
+  assert.equal(r.canHandle('https://example.com/a.mp4#n=3'), false);
+});
+
+// A ROM pack's biggest file is not "the game", it is whichever game happened
+// to be biggest -- so a pack must offer the list rather than pick for you.
+test('a rom pack resolves to a list of games, not to one of them', async () => {
+  const files = [
+    { name: 'Super Mario 64 (USA).z64', length: 8_388_608 },
+    { name: 'GoldenEye 007 (USA).z64', length: 12_582_912 },
+    { name: 'Zelda OoT (USA).z64', length: 33_554_432 },
+    { name: 'readme.nfo', length: 900 },
+  ];
+  const engine = {
+    add(_uri, { onFiles }) {
+      onFiles({ name: 'Best N64 games', files });
+    },
+  };
+  const r = createTorrentResolver({ engine, classify: () => 'rom', timeoutMs: 0 });
+  const out = await r.resolve({ uri: 'magnet:?xt=urn:btih:' + 'e'.repeat(40) });
+
+  assert.equal(isCollection(out), true);
+  assert.equal(out.sources.length, 3, 'three games, and not the readme');
+  // Every entry has to carry the index back, or picking one is ambiguous.
+  for (const s of out.sources) assert.match(s.uri, /#n=\d+$/);
+  assert.match(out.sources[0].meta.title, /\.z64$/);
+});
+
+// One playable file is not a choice, so it must play rather than ask.
+test('a single-file torrent does not ask which file you meant', async () => {
+  let readied = null;
+  const engine = {
+    add(_uri, { onFiles, onReady }) {
+      const t = { name: 'One Movie',
+        files: [{ name: 'Movie.mkv', length: 3e9, streamURL: '/stream/Movie.mkv' }] };
+      if (onFiles(t)) return;
+      readied = t.files[0];
+      onReady(t.files[0], t);
+    },
+  };
+  const r = createTorrentResolver({ engine, classify: () => 'video', timeoutMs: 0 });
+  const out = await r.resolve({ uri: 'magnet:?xt=urn:btih:' + 'a'.repeat(40) });
+  assert.equal(isCollection(out), false);
+  assert.equal(readied.name, 'Movie.mkv');
+});
+
+test('an index that is no longer in the torrent fails loudly', async () => {
+  const engine = {
+    add(_uri, { onFiles }) {
+      onFiles({ name: 'pack', files: [{ name: 'a.z64', length: 10 }] });
+    },
+  };
+  const r = createTorrentResolver({ engine, classify: () => 'rom', timeoutMs: 0 });
+  await assert.rejects(
+    () => r.resolve({ uri: `magnet:?xt=urn:btih:${'b'.repeat(40)}#n=99` }),
+    /no longer in this torrent/,
+  );
 });

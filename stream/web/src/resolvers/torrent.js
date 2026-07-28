@@ -1,7 +1,8 @@
-import { makePlayable, RENDER, TIER } from '../source.js';
+import { makePlayable, makeCollection, makeSource, RENDER, TIER } from '../source.js';
 import { mountRuffle } from './flash.js';
 import { mountEmulator } from './game.js';
 import { detectCore, SNIFF_BYTES } from '../rom-core.js';
+import { needsChoice, playableFiles } from '../pickfile.js';
 import { PlaybackError, FAILURE } from '../failures.js';
 
 /**
@@ -88,6 +89,24 @@ export function normalizeMagnet(input) {
       trackers.map((t) => `&tr=${encodeURIComponent(t)}`).join('');
   }
   return null;
+}
+
+/**
+ * Split a `<uri>#n=<index>` file choice off a torrent URI.
+ *
+ * A torrent holding two hundred ROMs has no single right answer, so the user
+ * picks -- and the pick travels in the URI rather than in state somewhere.
+ * That keeps choosing a file identical to playing anything else: one play()
+ * call with a URI, nothing stored that can drift out of step with the screen.
+ *
+ * `#` cannot appear in a magnet or a URL path unencoded, so this is safe to
+ * split on.
+ */
+export function splitFileChoice(input) {
+  const raw = String(input ?? '');
+  const match = /#n=(\d+)$/.exec(raw);
+  if (!match) return { uri: raw, index: null };
+  return { uri: raw.slice(0, match.index), index: Number(match[1]) };
 }
 
 /**
@@ -195,7 +214,10 @@ export function createTorrentResolver({ engine, classify, timeoutMs = 90000 }) {
     name: 'torrent',
     canHandle(input) {
       if (typeof input !== 'string') return false;
-      const v = input.trim();
+      // A file chosen out of a pack comes back as `<uri>#n=<index>`, and that
+      // has to still be recognised as the torrent it came from -- otherwise
+      // picking an entry falls through to the url resolver and plays nothing.
+      const v = splitFileChoice(input.trim()).uri;
       return /^magnet:/i.test(v) || INFOHASH.test(v) || isTorrentFile(v);
     },
     resolve(source, _ctx) {
@@ -205,7 +227,12 @@ export function createTorrentResolver({ engine, classify, timeoutMs = 90000 }) {
       // metadata. So a magnet with only a web seed and no peers never becomes
       // ready. Pass a .torrent URL through untouched; WebTorrent fetches and
       // parses it itself.
-      const uri = isTorrentFile(source.uri) ? source.uri.trim() : normalizeMagnet(source.uri);
+      // A chosen file comes back as `<uri>#n=<index>`. Carrying the choice in
+      // the URI keeps it stateless: picking an entry out of a library is just
+      // another play() call, and there is no selection stored anywhere to fall
+      // out of step with what is on screen.
+      const { uri: bare, index: wantIndex } = splitFileChoice(source.uri);
+      const uri = isTorrentFile(bare) ? bare.trim() : normalizeMagnet(bare);
 
       return new Promise((resolve, reject) => {
         let settled = false;
@@ -225,7 +252,51 @@ export function createTorrentResolver({ engine, classify, timeoutMs = 90000 }) {
         }
 
         engine.add(uri, {
+          onFiles: (torrent) => {
+            if (settled) return true;
+
+            // An explicit choice was already made, so honour it rather than
+            // asking again.
+            if (wantIndex !== null) {
+              const chosen = torrent.files?.[wantIndex];
+              if (!chosen) {
+                settled = true;
+                clear();
+                reject(new PlaybackError(
+                  FAILURE.UNSUPPORTED_CODEC,
+                  'that file is no longer in this torrent',
+                ));
+                return true;
+              }
+              return false; // fall through to onReady with the engine's pick
+            }
+
+            // Several real choices means the honest answer is a list. A ROM
+            // pack is the case that matters: its biggest file is not "the
+            // game", it is whichever game happened to be biggest.
+            const indexed = (torrent.files ?? []).map((f, i) => ({
+              name: f.name, length: f.length, index: i,
+            }));
+            if (!needsChoice(indexed)) return false;
+
+            settled = true;
+            clear();
+            resolve(makeCollection({
+              title: torrent.name || 'Choose a file',
+              sources: playableFiles(indexed).map((f) => makeSource({
+                kind: 'auto',
+                uri: `${source.uri}#n=${f.index}`,
+                meta: { title: f.name, length: f.length },
+              })),
+            }));
+            return true;
+          },
           onReady: async (file, torrent) => {
+            // When a specific file was asked for, the engine's own pick is not
+            // it.
+            if (wantIndex !== null && torrent.files?.[wantIndex]) {
+              file = torrent.files[wantIndex];
+            }
             if (settled) {
               console.warn('[torrent] onReady after resolve settled', file?.name);
               return;

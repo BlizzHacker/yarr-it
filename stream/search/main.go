@@ -498,6 +498,12 @@ func rankSources(c *card) {
 		if s.WebSafe {
 			n += 25
 		}
+		// A player with a touch pad outranks one without, because the archive's
+		// own emulator expects a keyboard and offers no on-screen controls --
+		// on a phone that is a game you can watch but not play.
+		if s.Indexer == "EmulatorJS" {
+			n += 200
+		}
 		n += qualityRank(s.Quality) * 3
 		return n
 	}

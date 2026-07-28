@@ -222,10 +222,16 @@ export class StreamEngine {
    * Start streaming a magnet. Resolves with the chosen file once metadata
    * arrives, which is when playback can begin -- not when the download is done.
    */
-  add(magnet, { onReady, onError } = {}) {
+  add(magnet, { onReady, onError, onFiles } = {}) {
     this.destroyTorrent();
 
     const torrent = this.client.add(magnet, { announce: WSS_TRACKERS }, (t) => {
+      // A caller that wants to choose for itself gets the whole torrent first
+      // and returns true to say it has taken over. A 200-ROM pack has no
+      // single right answer, and picking one on the user's behalf is how a
+      // pack of games becomes whichever game happened to be biggest.
+      if (onFiles?.(t)) return;
+
       const file = pickPlayableFile(t.files);
       if (!file) {
         onError?.(new Error('no playable media in this torrent'));

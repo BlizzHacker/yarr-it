@@ -103,6 +103,7 @@ func main() {
 	mux.HandleFunc("/bridge/announce", s.handleAnnounce)
 	mux.HandleFunc("/bridge/health", s.handleHealth)
 	mux.HandleFunc("/bridge/iptv", s.handleIPTV)
+	mux.HandleFunc("/bridge/page", s.handlePage)
 
 	srv := &http.Server{
 		Addr:              *addr,

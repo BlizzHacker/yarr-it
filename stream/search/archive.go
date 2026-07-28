@@ -122,6 +122,81 @@ func friendlySystem(emulator string, collections []string) string {
 	return ""
 }
 
+// ejsCores are the archive.org emulator ids EmulatorJS also has a core for.
+//
+// This is what decides whether a game can be offered with touch controls. The
+// Internet Archive's own player is excellent on a desktop and close to
+// unusable on a phone: it expects a keyboard and offers no on-screen pad, so a
+// console game there is a screen you can watch and not play. EmulatorJS has a
+// virtual gamepad, which for a phone is the difference between a playable game
+// and a demo.
+//
+// So where both can run a title, both are offered -- EmulatorJS first.
+var ejsCores = map[string]string{
+	"nes": "nes", "famicom": "nes",
+	"snes": "snes", "superfamicom": "snes",
+	"gameboy": "gb", "gb": "gb", "gbcolor": "gb", "gbc": "gb",
+	"gba": "gba",
+	"n64":      "n64",
+	"genesis":  "segaMD",
+	"megadriv": "segaMD",
+	"segaMD":   "segaMD",
+	"32x":      "sega32x",
+	"sms":      "segaMS", "smsj": "segaMS",
+	"gamegear": "segaGG", "gg": "segaGG",
+	"psx":      "psx",
+	"coleco":   "coleco",
+	"a2600":    "atari2600",
+	"a7800":    "atari7800",
+	"lynx":     "lynx",
+	"intv2":    "atari2600", // Intellivision has no EmulatorJS core; excluded below
+	"tg16":     "pce",
+	"wswan":    "ws", "wscolor": "ws",
+	"ngpc": "ngp", "ngp": "ngp",
+	"vb": "vb",
+}
+
+// Intellivision maps to no EmulatorJS core; listing it above would offer a
+// player that cannot run it.
+func ejsCoreFor(emulator string) string {
+	if emulator == "intv2" || emulator == "intv" || emulator == "intvsrs" {
+		return ""
+	}
+	return ejsCores[emulator]
+}
+
+// sourcesFor builds the play options for an item.
+//
+// The EmulatorJS option carries an `#ejs` fragment; the resolver reads that and
+// fetches the item's file list at play time rather than here, because finding
+// the ROM inside an item costs one metadata request each and doing sixty of
+// them per search would make every search slower for a link most people never
+// click.
+func sourcesFor(d archiveDoc, title, system string) []source {
+	details := "https://archive.org/details/" + d.Identifier
+	out := make([]source, 0, 2)
+
+	if core := ejsCoreFor(d.Emulator); core != "" {
+		out = append(out, source{
+			Title:   title,
+			Indexer: "EmulatorJS",
+			Magnet:  details + "#ejs",
+			Source:  system,
+			Quality: "TOUCH",
+			WebSafe: true,
+		})
+	}
+
+	out = append(out, source{
+		Title:   title,
+		Indexer: "Archive.org",
+		Magnet:  details,
+		Source:  system,
+		WebSafe: true,
+	})
+	return out
+}
+
 // searchArchive queries archive.org and returns one card per game.
 func (s *server) searchArchive(ctx context.Context, q string) ([]card, error) {
 	params := url.Values{}
@@ -188,15 +263,7 @@ func archiveCards(docs []archiveDoc) []card {
 			// The "Games" chip filters on this, and a card without it would be
 			// hidden the moment somebody narrowed to exactly what they wanted.
 			Groups: []string{"games"},
-			Sources: []source{{
-				Title:   title,
-				Indexer: "Archive.org",
-				// The frontend plays whatever is in Magnet; an archive.org URL
-				// routes to the resolver that hands off to their player.
-				Magnet:  "https://archive.org/details/" + d.Identifier,
-				Source:  system,
-				WebSafe: true,
-			}},
+			Sources: sourcesFor(d, title, system),
 			Art: artwork{
 				// Their thumbnail service. An <img> is not subject to CORS, so
 				// this loads directly from them and costs us nothing.

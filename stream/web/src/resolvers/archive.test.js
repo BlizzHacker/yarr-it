@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { archiveResolver, identifierFrom, fileFrom, embedUrl, itemInfo } from './archive.js';
+import {
+  archiveResolver, identifierFrom, fileFrom, embedUrl, itemInfo, ejsCoreFor, MAX_RELAY_ROM,
+} from './archive.js';
 import { RENDER } from '../source.js';
 
 test('recognises archive.org item URLs and nothing else', () => {
@@ -92,4 +94,76 @@ test('a dead metadata lookup reports the identifier it failed on', async () => {
     () => itemInfo('gone', { fetchImpl: async () => ({ ok: false, status: 404 }) }),
     /gone.*404/,
   );
+});
+
+// --- playing here vs playing at archive.org --------------------------------
+
+function metaFetch({ emulator = 'nes', files = [{ name: 'game.nes', size: 40960 }] } = {}) {
+  return async () => ({
+    ok: true,
+    json: async () => ({ metadata: { title: 'A Game', emulator }, files }),
+  });
+}
+
+// The archive's own player has no on-screen controls, so on a phone a console
+// game there is something you can watch and not play. `#ejs` asks for ours.
+test('#ejs plays with our own emulator instead of their iframe', async () => {
+  const out = await archiveResolver.resolve(
+    { uri: 'https://archive.org/details/some_game#ejs' },
+    { fetchImpl: metaFetch() },
+  );
+  assert.equal(out.render, RENDER.CANVAS);
+  assert.ok(out.src.startsWith('/bridge/iptv?u='), 'archive.org sends no CORS header');
+  assert.ok(decodeURIComponent(out.src.split('u=')[1]).endsWith('game.nes'));
+});
+
+test('without the fragment it is still their player, costing nothing', async () => {
+  const out = await archiveResolver.resolve({ uri: 'https://archive.org/details/some_game' });
+  assert.equal(out.render, RENDER.EMBED);
+  assert.ok(!out.src.includes('/bridge/'));
+});
+
+// The core is translated from what archive.org declares, never guessed from a
+// file extension -- `.bin` alone would pick the wrong machine.
+test('the core comes from the declared emulator, not the file name', () => {
+  assert.equal(ejsCoreFor('coleco'), 'coleco');
+  assert.equal(ejsCoreFor('megadriv'), 'segaMD');
+  assert.equal(ejsCoreFor('gbcolor'), 'gb');
+  assert.equal(ejsCoreFor('some_unsupported_machine'), null);
+  assert.equal(ejsCoreFor(''), null);
+});
+
+test('a system with no core here says so instead of booting the wrong one', async () => {
+  await assert.rejects(
+    () => archiveResolver.resolve(
+      { uri: 'https://archive.org/details/x#ejs' },
+      { fetchImpl: metaFetch({ emulator: 'apple2gs' }) },
+    ),
+    /no core for/,
+  );
+});
+
+// Every relayed byte is paid for out of an allowance shared with a mail server.
+test('a rom too large to relay is refused with the other option named', async () => {
+  await assert.rejects(
+    () => archiveResolver.resolve(
+      { uri: 'https://archive.org/details/x#ejs' },
+      { fetchImpl: metaFetch({ files: [{ name: 'disc.bin', size: MAX_RELAY_ROM + 1 }] }) },
+    ),
+    /too large to play here.*archive\.org/s,
+  );
+});
+
+test('a named file in a multi-rom item is the one that gets played', async () => {
+  const out = await archiveResolver.resolve(
+    { uri: 'https://archive.org/download/pack/Zelda (USA).nes#ejs' },
+    { fetchImpl: metaFetch({ files: [
+      { name: 'Mario (USA).nes', size: 40960 },
+      { name: 'Zelda (USA).nes', size: 131072 },
+    ] }) },
+  );
+  // The relay's u= parameter is itself encoded, so read it back out rather
+  // than matching against the raw string.
+  const target = decodeURIComponent(out.src.split('u=')[1]);
+  assert.ok(target.endsWith(encodeURIComponent('Zelda (USA).nes')), target);
 });

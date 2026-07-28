@@ -1,12 +1,12 @@
 import { StreamEngine, classify, needsWebCodecs } from './engine.js';
-import { createRegistry, makeSource, isCollection } from './source.js';
+import { createRegistry, makeSource, makeCollection, isCollection } from './source.js';
 import { createTorrentResolver, normalizeMagnet } from './resolvers/torrent.js';
 import { urlResolver } from './resolvers/url.js';
 import { embedResolver } from './resolvers/embed.js';
 import { playlistResolver } from './resolvers/playlist.js';
 import { flashResolver } from './resolvers/flash.js';
 import { gameResolver } from './resolvers/game.js';
-import { archiveResolver, archiveFileResolver } from './resolvers/archive.js';
+import { archiveResolver } from './resolvers/archive.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
 import { PlaybackError } from './failures.js';
@@ -602,7 +602,62 @@ function titleFromUri(uri) {
   }
 }
 
-function streamPasted() {
+/**
+ * Pull the playable links out of a web page.
+ *
+ * A browser cannot do this itself. Reading cross-origin HTML needs an
+ * Access-Control-Allow-Origin header and no torrent site sends one, so pasting
+ * a description page produced only a CORS error in the console -- which reads
+ * like a bug here rather than a rule of the platform. The relay fetches the
+ * page instead and returns just the links.
+ */
+async function linksFromPage(pageUrl) {
+  const response = await fetch(`/bridge/page?u=${encodeURIComponent(pageUrl)}`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || 'could not read that page');
+  return body;
+}
+
+/**
+ * Show what a page had on it. One link plays straight away -- a description
+ * page with a single magnet is unambiguous and making somebody click twice for
+ * it is just friction.
+ */
+function offerPageLinks(page) {
+  const links = page.links ?? [];
+  if (links.length === 1) {
+    const only = links[0];
+    play({ title: only.name || page.title || titleFromUri(only.url), year: 0 },
+      { uri: only.url, title: only.url.slice(0, 90) });
+    return;
+  }
+
+  $('#status').hidden = true;
+  $('#player').hidden = true;
+  renderLibrary(
+    makeCollection({
+      title: page.title || titleFromUri(page.source),
+      sources: links.map((l) => makeSource({
+        kind: 'auto',
+        uri: l.url,
+        meta: { title: l.name || l.url.slice(0, 80) },
+      })),
+    }),
+    {
+      mount: $('#library'),
+      onPick: (picked) => play({ title: picked.meta.title || picked.uri }, { uri: picked.uri }),
+    },
+  );
+  $('#library').hidden = false;
+}
+
+function showStatus(text) {
+  const s = $('#status');
+  s.replaceChildren(document.createTextNode(text));
+  s.hidden = false;
+}
+
+async function streamPasted() {
   const raw = $('#magnet').value.trim();
   if (!raw) {
     showRetry(PASTE_HINT, () => {});
@@ -618,6 +673,18 @@ function streamPasted() {
 
   if (!state.registry) state.registry = buildRegistry();
   if (!state.registry.find(uri)) {
+    // Nothing here can play a web page, but a torrent site's page is a
+    // perfectly reasonable thing to paste -- it is where the magnet lives.
+    if (/^https?:\/\//i.test(uri)) {
+      showStatus('Reading that page…');
+      try {
+        const page = await linksFromPage(uri);
+        offerPageLinks(page);
+      } catch (err) {
+        showRetry(`${err.message}. ${PASTE_HINT}`, () => {});
+      }
+      return;
+    }
     showRetry(PASTE_HINT, () => {});
     return;
   }

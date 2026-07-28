@@ -60,8 +60,19 @@ func TestArchiveCardsAreInstantAndCarryTheirOwnArt(t *testing.T) {
 	if c.Seeders != 0 {
 		t.Error("an archive.org item has no swarm; seeders must not be invented")
 	}
-	if got := c.Sources[0].Magnet; got != "https://archive.org/details/dk_coleco" {
-		t.Errorf("play target = %q", got)
+	// Colecovision has an EmulatorJS core, so both players are offered and the
+	// one with touch controls leads.
+	if len(c.Sources) != 2 {
+		t.Fatalf("want both play options, got %d", len(c.Sources))
+	}
+	if c.Sources[0].Indexer != "EmulatorJS" {
+		t.Errorf("source[0] = %q, want the touch-capable player first", c.Sources[0].Indexer)
+	}
+	if got := c.Sources[0].Magnet; got != "https://archive.org/details/dk_coleco#ejs" {
+		t.Errorf("emulatorjs target = %q", got)
+	}
+	if got := c.Sources[1].Magnet; got != "https://archive.org/details/dk_coleco" {
+		t.Errorf("archive.org target = %q", got)
 	}
 	if !strings.HasPrefix(c.Art.Poster, "https://archive.org/services/img/") {
 		t.Errorf("art should come from archive.org, got %q", c.Art.Poster)
@@ -246,5 +257,47 @@ func TestAWellSeededTorrentStillOutranksAHostedGame(t *testing.T) {
 	filters{Sort: "seeders"}.sortCards(cards)
 	if cards[0].Title != "The Batman 2022" {
 		t.Errorf("an 800-seeder film should still lead: %q leads", cards[0].Title)
+	}
+}
+
+// The archive's own player expects a keyboard and has no on-screen controls,
+// so on a phone a console game there is something you can watch but not play.
+// Where both can run a title, the one with a touch pad has to lead.
+func TestTheTouchCapablePlayerIsRankedFirst(t *testing.T) {
+	cards := archiveCards([]archiveDoc{{
+		Identifier: "sonic", Title: "Sonic", Emulator: "genesis", Downloads: 500,
+	}})
+	c := cards[0]
+	rankSources(&c)
+	if c.Sources[c.Best].Indexer != "EmulatorJS" {
+		t.Errorf("best source = %q, want EmulatorJS", c.Sources[c.Best].Indexer)
+	}
+}
+
+// A system EmulatorJS has no core for must not be offered with a player that
+// cannot run it -- that is a button which loads and then does nothing.
+func TestASystemWithNoCoreOffersOnlyTheArchivePlayer(t *testing.T) {
+	cards := archiveCards([]archiveDoc{{
+		Identifier: "intv_game", Title: "Astrosmash", Emulator: "intv2",
+		Collection: []string{"consolelivingroom"},
+	}})
+	if n := len(cards[0].Sources); n != 1 {
+		t.Fatalf("want only the archive player, got %d sources", n)
+	}
+	if cards[0].Sources[0].Indexer != "Archive.org" {
+		t.Errorf("source = %q", cards[0].Sources[0].Indexer)
+	}
+}
+
+// MS-DOS and Flash items play in their player only; offering "touch controls"
+// for a keyboard-and-mouse DOS game would be a lie.
+func TestDosAndFlashKeepTheArchivePlayerOnly(t *testing.T) {
+	for _, emulator := range []string{"dosbox", "ruffle-swf"} {
+		cards := archiveCards([]archiveDoc{{
+			Identifier: "x_" + emulator, Title: "X", Emulator: emulator,
+		}})
+		if n := len(cards[0].Sources); n != 1 {
+			t.Errorf("%s: want 1 source, got %d", emulator, n)
+		}
 	}
 }
