@@ -230,10 +230,17 @@ function tile(card) {
     p.append(el('div', 'noart', card.title));
   }
 
-  const seedBadge = el('span', card.seeders > 0 ? 'badge' : 'badge dead', `${card.seeders}▲`);
-  p.append(seedBadge);
+  // A seeder count is a guess at whether something will play. For a result
+  // served by a host that is always up there is nothing to guess, so showing
+  // "0▲" there would read as broken when it is the most reliable card on the
+  // page.
+  if (card.instant) {
+    p.append(el('span', 'badge instant', 'INSTANT'));
+  } else {
+    p.append(el('span', card.seeders > 0 ? 'badge' : 'badge dead', `${card.seeders}▲`));
+  }
   if (card.art?.rating) p.append(el('span', 'rating', card.art.rating.toFixed(1)));
-  const bq = card.sources[card.best]?.quality;
+  const bq = card.platform || card.sources[card.best]?.quality;
   if (bq) p.append(el('span', 'best-q', bq));
   t.append(p);
 
@@ -241,7 +248,11 @@ function tile(card) {
   const bits = [];
   if (card.year) bits.push(card.year);
   if (card.isSeries) bits.push(`S${card.season}E${card.episode}`);
-  bits.push(`${card.sources.length} source${card.sources.length === 1 ? '' : 's'}`);
+  if (card.instant) {
+    bits.push('plays instantly');
+  } else {
+    bits.push(`${card.sources.length} source${card.sources.length === 1 ? '' : 's'}`);
+  }
   t.append(el('div', 'tmeta', bits.join(' · ')));
 
   t.addEventListener('click', () => openDetail(card));
@@ -326,7 +337,8 @@ function openDetail(card) {
   if (card.year) sub.push(card.year);
   if (card.isSeries) sub.push(`Season ${card.season}, Episode ${card.episode}`);
   if (card.art?.rating) sub.push(`★ ${card.art.rating.toFixed(1)}`);
-  sub.push(`${card.seeders} seeders`);
+  if (card.platform) sub.push(card.platform);
+  sub.push(card.instant ? 'Plays instantly — no download' : `${card.seeders} seeders`);
   $('#d-sub').textContent = sub.join('  ·  ');
 
   $('#d-overview').textContent = card.art?.overview || '';
@@ -336,7 +348,9 @@ function openDetail(card) {
   g.replaceChildren();
   for (const name of card.art?.genres || []) g.append(el('span', 'chip', name));
 
-  $('#d-srch').textContent = `${card.sources.length} source${card.sources.length === 1 ? '' : 's'} — pick one to stream`;
+  $('#d-srch').textContent = card.instant
+    ? 'Hosted by archive.org — press play'
+    : `${card.sources.length} source${card.sources.length === 1 ? '' : 's'} — pick one to stream`;
 
   const list = $('#d-sources');
   list.replaceChildren();
@@ -348,19 +362,31 @@ function sourceRow(card, s, isBest) {
   row.type = 'button';
 
   const l = el('div', 'sl');
-  l.append(el('span', 'q', s.quality || '—'));
-  const codec = el('span', s.webSafe ? 'tag ok' : 'tag warn', s.codec || 'unknown');
-  codec.title = s.webSafe
-    ? 'Plays directly in your browser'
-    : 'Needs hardware decode on your device — no server transcoding';
-  l.append(codec);
-  if (s.source) l.append(el('span', 'tag', s.source));
+  // Quality, codec, size and seeders are all torrent vocabulary. On a hosted
+  // game every one of them renders as "unknown" or "0", which reads as a
+  // broken row rather than the most reliable one on the page.
+  if (card.instant) {
+    l.append(el('span', 'q', 'PLAY'));
+    l.append(el('span', 'tag ok', s.source || 'Game'));
+  } else {
+    l.append(el('span', 'q', s.quality || '—'));
+    const codec = el('span', s.webSafe ? 'tag ok' : 'tag warn', s.codec || 'unknown');
+    codec.title = s.webSafe
+      ? 'Plays directly in your browser'
+      : 'Needs hardware decode on your device — no server transcoding';
+    l.append(codec);
+    if (s.source) l.append(el('span', 'tag', s.source));
+  }
   l.append(el('span', 'name', s.title));
   row.append(l);
 
   const r = el('div', 'sr');
-  r.append(el('span', null, s.sizeHuman));
-  r.append(el('span', s.seeders > 0 ? 'seeds' : 'seeds dead', `${s.seeders}▲`));
+  if (card.instant) {
+    r.append(el('span', 'seeds', 'INSTANT'));
+  } else {
+    r.append(el('span', null, s.sizeHuman));
+    r.append(el('span', s.seeders > 0 ? 'seeds' : 'seeds dead', `${s.seeders}▲`));
+  }
   r.append(el('span', null, s.indexer));
   row.append(r);
 
@@ -391,8 +417,7 @@ function buildRegistry() {
   const registry = createRegistry()
     .register(createTorrentResolver({ engine: state.engine, classify }))
     .register(embedResolver)      // before url: a YouTube link is also an http URL
-    .register(archiveFileResolver) // a chosen file inside an archive.org item
-    .register(archiveResolver)     // before url: archive.org items need /metadata
+    .register(archiveResolver)    // before url/game: archive.org runs its own player
     .register(flashResolver)      // before url: a .swf is also an http URL
     .register(gameResolver)       // before url: a .nes/.smc is also an http URL
     .register(playlistResolver)   // before url: .m3u8 is also an http URL

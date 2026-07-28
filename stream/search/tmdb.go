@@ -204,6 +204,13 @@ func (c *tmdbClient) enrich(ctx context.Context, cards []card, limit int) {
 	sem := make(chan struct{}, 6)
 	var wg sync.WaitGroup
 	for i := 0; i < limit; i++ {
+		// TMDB is a film and television database. Asking it about a game gets
+		// a confident answer about a different work entirely -- "Sonic the
+		// Hedgehog (Genesis)" comes back as the 2020 film. A card that already
+		// has art from the host serving it is likewise better off keeping it.
+		if cards[i].Kind == "game" || cards[i].Art.Found {
+			continue
+		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

@@ -100,15 +100,21 @@ func (f filters) apply(cards []card) []card {
 		}
 		kept := make([]source, 0, len(c.Sources))
 		for _, s := range c.Sources {
-			if s.Seeders < f.MinSeeders {
-				continue
-			}
-			sizeMB := s.Size / (1024 * 1024)
-			if f.MinSizeMB > 0 && sizeMB < f.MinSizeMB {
-				continue
-			}
-			if f.MaxSizeMB > 0 && sizeMB > f.MaxSizeMB {
-				continue
+			// Seeders and size are swarm properties. A hosted result has
+			// neither, so the default "at least 1 seeder" would silently drop
+			// every game -- the most reliable results on the page -- and the
+			// search would look like it found nothing.
+			if !c.Instant {
+				if s.Seeders < f.MinSeeders {
+					continue
+				}
+				sizeMB := s.Size / (1024 * 1024)
+				if f.MinSizeMB > 0 && sizeMB < f.MinSizeMB {
+					continue
+				}
+				if f.MaxSizeMB > 0 && sizeMB > f.MaxSizeMB {
+					continue
+				}
 			}
 			if f.WebSafe && !s.WebSafe {
 				continue
@@ -142,6 +148,25 @@ func (f filters) apply(cards []card) []card {
 	return out
 }
 
+// health puts hosted results and torrents on one scale.
+//
+// "Most seeders" is really "healthiest first": the count is a proxy for whether
+// a thing will actually play. A hosted result is at the top of that scale, not
+// the bottom, so sorting it by its literal zero buries the only guaranteed
+// results beneath a two-seeder torrent.
+//
+// It is scored as a solidly-healthy torrent rather than as infinity on purpose.
+// A search whose word appears in both a game and a film -- "batman", "sonic" --
+// should not bury a 500-seeder film under every game that shares the word.
+const instantHealth = 250
+
+func health(c card) int {
+	if c.Instant {
+		return instantHealth
+	}
+	return c.Seeders
+}
+
 func (f filters) sortCards(cards []card) {
 	terms := queryTerms(f.Query)
 	switch f.Sort {
@@ -167,8 +192,12 @@ func (f filters) sortCards(cards []card) {
 		})
 	case "seeders":
 		sort.SliceStable(cards, func(i, j int) bool {
-			if cards[i].Seeders != cards[j].Seeders {
-				return cards[i].Seeders > cards[j].Seeders
+			hi, hj := health(cards[i]), health(cards[j])
+			if hi != hj {
+				return hi > hj
+			}
+			if cards[i].Instant && cards[j].Instant {
+				return cards[i].Popular > cards[j].Popular
 			}
 			return cards[i].Title < cards[j].Title
 		})
@@ -246,6 +275,25 @@ func relevance(c card, queryTerms []string) int {
 	}
 	// Health dominates. A release nobody is seeding cannot be streamed at all,
 	// so this is the single most useful thing to rank on.
+	//
+	// For a host that is always up the question does not apply: it will play,
+	// every time, which is what the seeder score is trying to estimate. That is
+	// scored as the top health band rather than as a fake seeder count -- the
+	// dimension being ranked is "will this actually start", and here the answer
+	// is yes. Their own download count then separates the canonical upload from
+	// its near-duplicates, the same job seeders do for a torrent.
+	if c.Instant {
+		n += 900
+		switch {
+		case c.Popular >= 100_000:
+			n += 120
+		case c.Popular >= 10_000:
+			n += 80
+		case c.Popular >= 1_000:
+			n += 40
+		}
+		return n
+	}
 	switch {
 	case c.Seeders >= 500:
 		n += 900

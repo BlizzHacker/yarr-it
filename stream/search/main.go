@@ -73,13 +73,23 @@ type card struct {
 	IsSeries bool     `json:"isSeries"`
 	Season   int      `json:"season,omitempty"`
 	Episode  int      `json:"episode,omitempty"`
-	Kind     string   `json:"kind"` // video | audio | image | other
+	Kind     string   `json:"kind"` // video | audio | image | game | other
 	Sources  []source `json:"sources"`
 	Best     int      `json:"best"`    // index into Sources
 	Seeders  int      `json:"seeders"` // max across sources
 	Art      artwork  `json:"art"`
 	Groups   []string `json:"groups"`
 	Adult    bool     `json:"adult"`
+
+	// Instant marks a result that is served over HTTP by a host that is always
+	// up, rather than by whoever happens to be seeding. It has no seeder count
+	// because the question does not apply -- it will play.
+	Instant bool `json:"instant,omitempty"`
+	// Popular is the host's own demand signal (archive.org download count),
+	// used where seeders would be for a torrent.
+	Popular int `json:"popular,omitempty"`
+	// Platform is the console or system, for game results.
+	Platform string `json:"platform,omitempty"`
 }
 
 type cacheEntry struct {
@@ -226,7 +236,36 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		defer s.release(cacheKey)
 	}
 
+	// archive.org runs concurrently with the indexers rather than after them:
+	// it answers in well under a second while a 28-indexer fan-out can take
+	// most of a minute, so making it wait would be pure added latency.
+	type iaResult struct {
+		cards []card
+		err   error
+	}
+	ia := make(chan iaResult, 1)
+	wantGames := kind == "" || kind == "game"
+	if wantGames {
+		go func() {
+			c, err := s.searchArchive(r.Context(), q)
+			ia <- iaResult{c, err}
+		}()
+	}
+
 	cards, err := s.searchProwlarr(r.Context(), q, kind)
+
+	if wantGames {
+		got := <-ia
+		if got.err != nil {
+			// A dead archive.org must not take the torrent results down with
+			// it, so this is logged and dropped rather than returned.
+			log.Printf("archive.org search %q: %v", q, got.err)
+		} else if len(got.cards) > 0 {
+			cards = append(cards, got.cards...)
+			err = nil // archive.org alone is a usable answer
+		}
+	}
+
 	if err != nil {
 		log.Printf("search %q: %v", q, err)
 		// A slow indexer should not turn into a dead end. If we have ever had
@@ -356,6 +395,9 @@ func categoriesFor(kind string) []int {
 		return []int{3000}
 	case "image":
 		return []int{}
+	case "game":
+		// 1000-1999 is console, 4050-4069 is PC games.
+		return []int{1000, 4050}
 	default:
 		return nil
 	}
@@ -364,6 +406,8 @@ func categoriesFor(kind string) []int {
 func kindOf(r prowlarrResult) string {
 	for _, c := range r.Categories {
 		switch {
+		case c.ID >= 1000 && c.ID < 2000, c.ID >= 4050 && c.ID < 4070:
+			return "game"
 		case c.ID >= 2000 && c.ID < 3000, c.ID >= 5000 && c.ID < 6000:
 			return "video"
 		case c.ID >= 3000 && c.ID < 4000:

@@ -114,6 +114,9 @@
     backdrop-filter:blur(4px);
   }
   .badge.dead { color:var(--dead); }
+  /* A hosted result is the one thing on the page guaranteed to play, so it
+     gets a solid badge rather than the translucent seeder pill. */
+  .badge.instant { background:var(--ok,#2dd4bf); color:#04202b; letter-spacing:.04em; }
   .rating {
     position:absolute; top:8px; right:8px; font-size:11px; font-weight:650;
     padding:3px 7px; border-radius:6px; background:rgba(4,6,9,.82); color:var(--warn);
@@ -288,7 +291,7 @@
     <div class="bar">
       <div class="brand"><img src="/icon-192.__ICON__.png" alt="" class="brandmark" /><span class="wordmark">Yarr<span>.It</span></span></div>
       <form id="search-form">
-        <input id="q" placeholder="Search films, shows, music, images…" autocomplete="off" autofocus />
+        <input id="q" placeholder="Search films, shows, music, games…" autocomplete="off" autofocus />
         <button class="btn" type="submit">Search</button>
       </form>
     </div>
