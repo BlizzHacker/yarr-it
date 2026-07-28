@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodically refresh postfix relay_recipients from HestiaCP
+
+[Timer]
+# Hourly is the useful cadence: a mailbox added in Hestia should start
+# accepting mail within the hour, and the pull is a few kilobytes.
+OnCalendar=hourly
+# Without this, every reboot skips the refresh until the next whole hour --
+# which is exactly when the map is most likely to be stale.
+Persistent=true
+# Spread the load so a fleet of hosts does not all hit Hestia on the hour.
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

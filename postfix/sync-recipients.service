@@ -1,0 +1,20 @@
+[Unit]
+Description=Rebuild postfix relay_recipients from HestiaCP on LXC 160
+Documentation=file:///usr/local/sbin/sync-recipients.sh
+# Pointless before the tunnel is up: the pull goes to 10.10.10.1.
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sync-recipients.sh
+
+# The script refuses rather than truncating when Hestia is unreachable or
+# returns implausibly few entries, and exits non-zero to say so. That is a
+# healthy outcome -- the previous map stays in place -- so it must not be
+# escalated into a unit failure that pages someone. soak-check.sh reads
+# `systemctl show -p Result` to tell the difference.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target
