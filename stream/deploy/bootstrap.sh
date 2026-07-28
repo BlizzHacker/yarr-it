@@ -154,6 +154,10 @@ systemctl daemon-reload
 systemctl enable --now mw-bridge mw-search >/dev/null 2>&1 || true
 systemctl restart mw-bridge mw-search
 caddy validate --config /etc/caddy/Caddyfile >/dev/null
+# validate runs as root and OPENS the access log, creating it root:root 0600 --
+# after which the caddy user cannot write it and the service dies on start with
+# "permission denied". Re-chown after validating, not before.
+chown -R caddy:caddy /var/log/caddy
 systemctl restart caddy
 
 echo "==> verifying the mail relay is untouched"

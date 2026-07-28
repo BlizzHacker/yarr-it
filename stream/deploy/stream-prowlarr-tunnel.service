@@ -1,0 +1,36 @@
+[Unit]
+Description=Reverse SSH tunnel exposing Prowlarr to the stream VPS
+Documentation=https://github.com/BlizzHacker/yarr-it
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Installed on LXC 160, which already holds a key the VPS accepts.
+#
+# Deliberately a SEPARATE unit from mail-inbound-tunnel.service rather than an
+# extra -R on it. Mail is the critical path; a search outage must never be able
+# to restart or wedge the tunnel carrying inbound mail.
+#
+# mw-search on the VPS reached Prowlarr over WireGuard at 192.168.0.115:9696
+# until the 2026-07-28 rebuild removed WireGuard. The same inversion mail uses
+# applies here: nothing can dial in to the house, so the house dials out.
+#
+# ExitOnForwardFailure makes a refused binding fail fast and restart instead of
+# sitting there looking healthy while every search quietly returns nothing --
+# which is the failure mode to fear, because an empty result set reads as "no
+# releases found" rather than as a broken tunnel.
+ExecStart=/usr/bin/ssh -N -T \
+  -i /root/.ssh/vps_relay \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -R 127.0.0.1:9696:192.168.0.115:9696 \
+  root@104.129.28.137
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
