@@ -26,22 +26,16 @@ WWW=/srv/stream/www
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
 
-# --- refuse to damage the mail relay ----------------------------------------
-# Caddy will want :80 for ACME. If certbot renews the relay's certificate with
-# the standalone plugin, it also needs :80, and whichever holds it wins -- the
-# renewal would fail silently ~60 days from now, long after anyone connects it
-# to this script. Better to stop and be told.
+# --- do not damage the mail relay -------------------------------------------
+# certbot renews the relay certificate with the standalone plugin, which binds
+# :80. Caddy is configured (see stream/Caddyfile) to yield that port and issue
+# over TLS-ALPN-01 on :443 instead. That is asserted after startup rather than
+# assumed -- a silent renewal failure surfaces two months later as a dead
+# certificate on working mail.
+CERTBOT_STANDALONE=0
 if [ -d /etc/letsencrypt/renewal ] && grep -rqs "authenticator *= *standalone" /etc/letsencrypt/renewal; then
-  cat >&2 <<'EOF'
-REFUSING: certbot renews a certificate here using the standalone plugin, which
-binds port 80. Caddy needs port 80 for its own ACME challenges, and the two
-cannot share it -- the mail certificate would fail to renew, silently, weeks
-from now.
-
-Switch that renewal to --webroot (/var/www/html) or a DNS challenge first, then
-re-run. Nothing has been changed.
-EOF
-  exit 1
+  CERTBOT_STANDALONE=1
+  echo "==> certbot uses standalone (:80); Caddy will be held off that port"
 fi
 
 echo "==> packages (no firewall, nothing mail-related)"
@@ -135,6 +129,36 @@ systemctl enable --now mw-bridge mw-search >/dev/null 2>&1 || true
 systemctl restart mw-bridge mw-search
 caddy validate --config /etc/caddy/Caddyfile >/dev/null
 systemctl restart caddy
+
+echo "==> verifying the mail relay is untouched"
+if [ "$CERTBOT_STANDALONE" = "1" ]; then
+  # The port field must END at :80 -- a bare ":80" also matches 8801
+  # and 8802, which are our own services.
+  if ss -lntp 2>/dev/null | awk '$4 ~ /:80$/' | grep -q caddy; then
+    echo "FAIL: caddy took port 80 -- certbot standalone renewal would break." >&2
+    echo "Stopping caddy and leaving the relay intact." >&2
+    systemctl stop caddy
+    exit 1
+  fi
+  echo "    caddy is not on :80  (certbot keeps it)"
+  # The real proof. A dry run exercises the whole renewal path without
+  # spending a rate limit or replacing the live certificate.
+  if certbot renew --dry-run --cert-name relay >/tmp/certbot-dryrun.log 2>&1; then
+    echo "    certbot renew --dry-run: PASS"
+  else
+    echo "FAIL: certbot dry-run failed after starting caddy. Stopping caddy." >&2
+    tail -15 /tmp/certbot-dryrun.log >&2
+    systemctl stop caddy
+    exit 1
+  fi
+fi
+if ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE ':25$'; then
+  PORT25=listening
+else
+  PORT25=GONE
+fi
+printf "    postfix: %s   port 25: %s
+" "$(systemctl is-active postfix)" "$PORT25"
 
 echo "==> state"
 for u in mw-bridge mw-search caddy postfix; do

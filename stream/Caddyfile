@@ -1,8 +1,25 @@
 {
 	email wadeivy11@gmail.com
+
+	# Caddy must never bind :80 on this host. certbot renews the mail relay's
+	# certificate with the standalone plugin, which needs :80 for its own
+	# challenge -- whichever process holds the port wins, and the loser fails
+	# silently at renewal time, roughly two months after anyone would connect
+	# the two events. Losing that certificate breaks TLS on a working mail
+	# relay, so the web stack yields the port rather than sharing it.
+	auto_https disable_redirects
 }
 
 stream.moveweight.com {
+	# Issue over TLS-ALPN-01, which completes entirely on :443. The HTTP
+	# challenge is disabled because taking :80 would break the mail relay's
+	# renewal -- see the note above.
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
 	encode zstd gzip
 
 	# Torrent peer relay (WebSocket). Long-lived connections, no compression.
