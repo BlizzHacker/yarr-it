@@ -1,0 +1,7 @@
+
+# Anything that lands on a Linux host must keep LF. provision.sh uploads these
+# files byte for byte, and CRLF breaks both of them in ways that are painful to
+# read: systemd reports a bad unit, and bash fails on "\r: command not found".
+*.sh        text eol=lf
+*.service   text eol=lf
+Caddyfile   text eol=lf
