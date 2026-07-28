@@ -1,0 +1,37 @@
+[Unit]
+Description=mw-search — search and metadata API for stream.moveweight.com
+Documentation=https://github.com/BlizzHacker/yarr-it
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mw-search -addr 127.0.0.1:8802 -prowlarr http://192.168.0.115:9696
+
+# API keys live here, not in the unit and not in the repo. Marked required on
+# purpose: without them the service starts but silently answers with empty
+# shelves, which looks like a broken frontend rather than missing credentials.
+EnvironmentFile=/etc/mw-search.env
+
+Restart=always
+RestartSec=2
+
+User=mw-search
+Group=mw-search
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -16,3 +16,6 @@ stream/search/mw-search
 stream/bridge/mw-bridge
 stream/brand/node_modules/
 stream/web/dist/ruffle/
+
+# Built by stream/deploy/provision.sh; rebuilt on demand, never committed.
+stream/deploy/bin/

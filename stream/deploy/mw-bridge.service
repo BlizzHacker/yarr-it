@@ -1,0 +1,39 @@
+[Unit]
+Description=mw-bridge — WebSocket to TCP torrent peer relay
+Documentation=https://github.com/BlizzHacker/yarr-it
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mw-bridge -addr 127.0.0.1:8801 -state /var/lib/mw-bridge/budget.json
+Restart=always
+RestartSec=2
+
+# Runs as its own unprivileged user. It speaks to arbitrary peers on the open
+# internet, which is precisely the process you do not want running as root.
+User=mw-bridge
+Group=mw-bridge
+
+# The budget file is the only thing it writes; StateDirectory creates it with
+# the right ownership so ProtectSystem=strict can stay on.
+StateDirectory=mw-bridge
+StateDirectoryMode=0750
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# Outbound to arbitrary peers needs raw INET; UNIX is for the journal.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
