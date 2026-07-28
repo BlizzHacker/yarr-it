@@ -82,6 +82,9 @@
   .chip .cnt { opacity:.55; margin-left:4px; font-size:11px; }
   .fsel { padding:5px 9px; font-size:12.5px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; }
   .fnum { width:78px; padding:5px 9px; font-size:12.5px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; }
+  /* Before a search there are no facet counts yet, so the bar is shown in a
+     quieter state rather than hidden outright. */
+  #filters.awaiting { opacity:.72; }
   #filter-reset { margin-left:auto; background:none; border:0; color:var(--dim); cursor:pointer; font-size:12.5px; text-decoration:underline; }
 
   /* ---------- results ---------- */
@@ -297,7 +300,7 @@
   </div>
 </header>
 
-<section id="filters" hidden>
+<section id="filters">
   <div class="wrap">
     <div class="fgroup fcats"><span class="flabel">Show</span><span id="f-groups"></span></div>
     <div class="fgroup">
@@ -320,8 +323,8 @@
     <div class="fgroup">
       <span class="flabel">Sort</span>
       <select class="fsel" id="f-sort">
-        <option value="relevance">Best match</option>
         <option value="seeders">Most seeders</option>
+        <option value="relevance">Best match</option>
         <option value="quality">Best quality</option>
         <option value="size">Largest</option>
         <option value="recent">Newest</option>
@@ -444,6 +447,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=cb5d14f328f1"></script>
+<script type="module" src="/app.js?v=5b8a57087295"></script>
 </body>
 </html>

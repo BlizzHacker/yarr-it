@@ -214,23 +214,49 @@ func relevance(c card, queryTerms []string) int {
 		n -= 900
 	}
 
+	// Artwork is weighted differently for browsing than for searching, because
+	// the two want opposite things.
+	//
+	// Browsing (no query) is a poster wall: a card with art is the whole point,
+	// so art leads. Searching is a question with a right answer, and there the
+	// only thing that decides whether a result actually plays is how many
+	// people are seeding it.
+	//
+	// Artwork used to be worth 1000 in BOTH cases while the seeder bonus topped
+	// out at 60, so one mis-matched poster outranked a 500-seeder release --
+	// which is precisely how "random stuff with the wrong image" reached the
+	// top of a search.
 	if c.Art.Found {
-		n += 1000
-		if c.Art.Poster != "" {
-			n += 200
+		if len(queryTerms) == 0 {
+			n += 1000
+			if c.Art.Poster != "" {
+				n += 200
+			}
+			if c.Year > 0 {
+				n += 100
+			}
+			n += int(c.Art.Rating * 5)
+		} else {
+			n += 80
+			if c.Art.Poster != "" {
+				n += 20
+			}
+			n += int(c.Art.Rating)
 		}
-		if c.Year > 0 {
-			n += 100
-		}
-		n += int(c.Art.Rating * 5)
 	}
+	// Health dominates. A release nobody is seeding cannot be streamed at all,
+	// so this is the single most useful thing to rank on.
 	switch {
+	case c.Seeders >= 500:
+		n += 900
 	case c.Seeders >= 100:
-		n += 60
+		n += 700
+	case c.Seeders >= 50:
+		n += 550
 	case c.Seeders >= 20:
-		n += 40
+		n += 400
 	case c.Seeders >= 5:
-		n += 20
+		n += 220
 	case c.Seeders >= 1:
 		n += 10
 	}

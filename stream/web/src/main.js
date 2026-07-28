@@ -6,6 +6,7 @@ import { embedResolver } from './resolvers/embed.js';
 import { playlistResolver } from './resolvers/playlist.js';
 import { flashResolver } from './resolvers/flash.js';
 import { gameResolver } from './resolvers/game.js';
+import { archiveResolver, archiveFileResolver } from './resolvers/archive.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
 import { PlaybackError } from './failures.js';
@@ -34,7 +35,7 @@ const state = {
   filters: {
     seeders: 1, minSize: '', maxSize: '',
     quality: new Set(), codec: new Set(), groups: new Set(),
-    webSafe: false, adult: false, sort: 'relevance',
+    webSafe: false, adult: false, sort: 'seeders',
   },
 };
 
@@ -115,7 +116,11 @@ function debounce(fn, ms) {
 
 function renderFilters() {
   const f = state.facets;
-  $('#filters').hidden = !f;
+  // The filter bar stays visible from the first paint. Hiding it until results
+  // arrive means the one moment you would want to narrow a search -- before
+  // running it -- is the one moment the controls are missing.
+  $('#filters').hidden = false;
+  $('#filters').classList.toggle('awaiting', !f);
   if (!f) return;
 
   groupRow($('#f-groups'), f.groups, state.filters.groups);
@@ -386,6 +391,8 @@ function buildRegistry() {
   const registry = createRegistry()
     .register(createTorrentResolver({ engine: state.engine, classify }))
     .register(embedResolver)      // before url: a YouTube link is also an http URL
+    .register(archiveFileResolver) // a chosen file inside an archive.org item
+    .register(archiveResolver)     // before url: archive.org items need /metadata
     .register(flashResolver)      // before url: a .swf is also an http URL
     .register(gameResolver)       // before url: a .nes/.smc is also an http URL
     .register(playlistResolver)   // before url: .m3u8 is also an http URL
@@ -648,10 +655,10 @@ function init() {
     state.filters = {
       seeders: 1, minSize: '', maxSize: '',
       quality: new Set(), codec: new Set(), groups: new Set(),
-      webSafe: false, adult: false, sort: 'relevance',
+      webSafe: false, adult: false, sort: 'seeders',
     };
     $('#f-seeders').value = 1; $('#f-minsize').value = ''; $('#f-maxsize').value = '';
-    $('#f-sort').value = 'relevance';
+    $('#f-sort').value = 'seeders';
     renderFilters();
     search({ showSpinner: false });
   });
