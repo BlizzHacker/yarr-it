@@ -75,3 +75,26 @@ test('cleanup on a canvas playable is scoped to its own torrent', async () => {
   p.cleanup();
   assert.equal(engine.destroyed, 0, 'must not tear down a torrent it does not own');
 });
+
+test('an emulator playable waits for a real click before booting', async () => {
+  const { mountEmulator } = await import('./game.js');
+  const appended = [];
+  const el = { children: [], replaceChildren(...k) { this.children = k; } };
+  const fakeDoc = {
+    createElement: () => ({
+      style: {}, dataset: {},
+      addEventListener(type, fn) { this._click = fn; },
+      set textContent(v) { this._text = v; },
+      get textContent() { return this._text; },
+    }),
+    body: { append: (t) => appended.push(t) },
+  };
+  const handle = mountEmulator(el, 'blob:x', { core: 'nes', name: 'Zelda.nes', doc: fakeDoc });
+
+  // Nothing may boot before the click -- that is the whole point.
+  assert.equal(appended.length, 0, 'loader injected before any user gesture');
+  assert.match(handle._button.textContent, /Play Zelda\.nes/);
+
+  handle._button._click();
+  assert.equal(appended.length, 1, 'click did not boot the emulator');
+});

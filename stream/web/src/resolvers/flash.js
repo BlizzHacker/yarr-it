@@ -54,6 +54,10 @@ export function isSwf(input) {
  */
 export function mountRuffle(el, url) {
   const handle = { player: null, destroyed: false };
+  // Ruffle opens an AudioContext too, so it is subject to the same autoplay
+  // gate as the emulator -- but unlike EmulatorJS it starts rendering frames
+  // regardless and merely runs muted until the first interaction, so it does
+  // not need a click-to-start wrapper.
   loadRuffle()
     .then((RufflePlayer) => {
       if (handle.destroyed) return null;

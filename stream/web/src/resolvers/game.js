@@ -100,24 +100,45 @@ export function bootEmulator(el, { gameUrl, core, name, doc = document }) {
  * Boot EmulatorJS into `el` against any URL -- an http(s) ROM or a blob: URL
  * from a completed torrent file. Returns a handle whose destroy() stops it.
  */
-export function mountEmulator(el, url, { core, name }) {
-  // EmulatorJS replaces its host element's contents with its own UI, so give it
-  // a child of its own rather than the shared container.
-  const host = document.createElement('div');
-  host.style.width = '100%';
-  host.style.height = '100%';
-  el.replaceChildren(host);
+export function mountEmulator(el, url, { core, name, doc = document }) {
+  // A WASM emulator needs a REAL user gesture before the browser will let it
+  // run: it opens an AudioContext, and autoplay policy holds the whole run loop
+  // until the page has been interacted with. Relying on EJS_startOnLoaded alone
+  // leaves the core loaded, the ROM written into its filesystem, `started` true
+  // -- and the frame counter pinned at 0 with a black canvas and no error.
+  //
+  // So the boot is deliberately hung off a click. It is also better UX: a game
+  // that starts making noise on page load is not what anyone wants.
+  const button = doc.createElement('button');
+  button.className = 'canvas-start';
+  button.type = 'button';
+  button.textContent = `▶  Play ${name}`;
+  el.replaceChildren(button);
 
-  const tag = bootEmulator(host, { gameUrl: url, core, name });
+  const state = { tag: null, booted: false };
+
+  button.addEventListener('click', () => {
+    if (state.booted) return;
+    state.booted = true;
+
+    const host = doc.createElement('div');
+    host.style.width = '100%';
+    host.style.height = '100%';
+    el.replaceChildren(host);
+    state.tag = bootEmulator(host, { gameUrl: url, core, name, doc });
+  }, { once: true });
 
   return {
+    /** Exposed so tests can drive the boot without a synthetic-click caveat. */
+    _button: button,
     destroy() {
       try {
-        tag?.remove();
+        state.tag?.remove();
         globalThis.EJS_emulator?.pause?.();
       } catch {
         /* nothing running */
       }
+      state.tag = null;
     },
   };
 }
