@@ -41,7 +41,25 @@ fi
 echo "==> packages (no firewall, nothing mail-related)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git golang-go nodejs npm debian-keyring debian-archive-keyring apt-transport-https curl
+apt-get install -y -qq git nodejs npm debian-keyring debian-archive-keyring apt-transport-https curl ca-certificates
+
+# Go, from upstream rather than apt. Debian 12 ships 1.19 and both modules
+# declare `go 1.24`, so the packaged toolchain cannot build them at all -- it
+# fails with a version complaint that reads like a broken checkout.
+GO_WANT=1.24
+GO_HAVE=$(go version 2>/dev/null | sed -n 's/.*go\([0-9][0-9.]*\).*/\1/p')
+# sort -V -C succeeds only when input is already ordered, i.e. want <= have.
+if [ -z "$GO_HAVE" ] || ! printf '%s\n%s\n' "$GO_WANT" "$GO_HAVE" | sort -V -C; then
+  GO_VER=$(curl -fsSL 'https://go.dev/VERSION?m=text' 2>/dev/null | head -1)
+  case "$GO_VER" in go*) ;; *) GO_VER=go1.24.5 ;; esac
+  echo "    installing $GO_VER (found: ${GO_HAVE:-none})"
+  curl -fsSL "https://go.dev/dl/${GO_VER}.linux-amd64.tar.gz" -o /tmp/go.tgz
+  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz
+fi
+export PATH=/usr/local/go/bin:$PATH
+grep -qs '/usr/local/go/bin' /etc/profile.d/go.sh 2>/dev/null || \
+  echo 'export PATH=/usr/local/go/bin:$PATH' > /etc/profile.d/go.sh
+go version | sed 's/^/    /'
 
 if ! command -v caddy >/dev/null; then
   curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
