@@ -1,117 +1,126 @@
-<p align="center">
-  <img src="brand/yarrit-256.png" width="128" alt="Yarr.It">
-</p>
+# stream.moveweight.com
 
-<h1 align="center">Yarr.It</h1>
+Ad-free, open-source torrent **streaming** — not a downloader. Search every
+configured indexer at once and play the result in the browser.
 
-<p align="center"><b>View before you download.</b><br>
-Ad-free, open-source torrent <i>streaming</i> — not a downloader.</p>
+## Why it is built this way
 
-<p align="center">
-  <a href="https://stream.moveweight.com">stream.moveweight.com</a> ·
-  <a href="../../releases">Downloads</a> ·
-  <a href="SIDELOADING.md">Sideloading guide</a>
-</p>
-
----
-
-**Nothing is hosted, stored or transcoded here.** Your own device joins the
-swarm, verifies each piece and decodes it locally.
-
-> **Use a VPN.** Streaming is peer-to-peer, so your IP address is visible to
-> other peers exactly as it is with any BitTorrent client. That is inherent to
-> how peer-to-peer works, not a choice made here.
-
-## What it does
-
-- Searches **48 public torrent indexes** in a single query
-- Groups results **by title** — one film is one poster with artwork, synopsis
-  and rating, and a quality picker underneath, not forty near-identical rows
-- Plays immediately: video starts in seconds while the rest is still arriving
-- Filters by category, minimum seeders, size, resolution and codec
-- Adult content filtered out by default behind an explicit 18+ toggle
-
-## Apps
-
-| Platform | Artifact | Notes |
-|---|---|---|
-| Web | [stream.moveweight.com](https://stream.moveweight.com) | Full peer-to-peer in the browser |
-| Chrome / Edge / Brave | `yarrit-extension-*.zip` | Magnet hijack, ▶ on torrent sites, omnibox |
-| Android | `Yarr.It-*.apk` | |
-| Google TV / Android TV | `Yarr.It-tv-*.apk` | Leanback launcher, D-pad, plays via the LAN gateway |
-| Windows 10/11 + Xbox | `Yarr.It_*.msix` | |
-| Roku | `Yarr.It-roku.zip` | Sideload only; plays via the LAN gateway |
-
-None of these are in an app store yet, and some realistically never will be.
-**[SIDELOADING.md](SIDELOADING.md)** covers every platform end to end, including
-the failure modes each one actually hits.
-
-Every client talks to a configurable API endpoint and carries bundled defaults,
-so nothing depends on a store listing — or on `stream.moveweight.com` staying up.
-
-## How playback works
-
-A browser cannot open a TCP socket or send UDP; it gets HTTP, WebSocket and
-WebRTC and nothing else. BitTorrent peers speak TCP/uTP and trackers speak UDP,
-which is why adding a healthy 50-seeder torrent to a plain WebTorrent client
-yields **zero** peers. Pieces are therefore sourced in three tiers, cheapest
-first:
-
-1. **HTTP web seeds** — fetched straight from the origin, costs nothing
-2. **WebRTC peers** — other viewers' browsers
-3. **TCP peers via a byte relay** — the only tier that costs bandwidth, so it is
-   capped and degrades back to the free tiers at 80% of the monthly budget
+A web page cannot open a TCP socket or send UDP. Browsers expose only HTTP,
+WebSocket and WebRTC. BitTorrent peers speak TCP/uTP and trackers speak UDP, so
+a pure in-browser client reaches only WebRTC peers — which is why adding a
+50-seeder torrent to a plain WebTorrent client yields **zero** peers.
 
 `mw-bridge` closes exactly that gap and nothing more: it is told an address and
 moves bytes. It never parses the BitTorrent protocol, never assembles a piece,
 never learns a filename or infohash, never writes payload to disk, and keeps no
-cache. Peer addresses arrive in the first WebSocket frame rather than in the URL
-so they cannot land in a proxy access log, and private/loopback/CGNAT ranges are
-refused so the relay cannot be turned into a route into the network behind it.
-
-It is a conduit, not a host.
-
-### TVs are different, and this README should say so
-
-Roku and Android TV have no browser engine, no WebRTC and no usable socket API,
-so they cannot join a swarm at all. Those clients browse through the search API
-and ask a **LAN gateway** to turn a magnet into an HTTP stream they can play.
-That inverts the "your device does the work" posture, which is exactly why the
-gateway runs on your own network rather than someone else's.
+cache. Peer addresses arrive in the first WebSocket frame rather than the URL so
+they cannot land in a proxy access log, and private/loopback/CGNAT ranges are
+refused so the relay cannot be used to reach the estate behind the tunnel.
 
 ## Components
 
 | Piece | Where | Role |
 |---|---|---|
-| `bridge/` | `127.0.0.1:8801` | WebSocket↔TCP/UDP byte relay, per-IP caps, monthly budget |
-| `search/` | `127.0.0.1:8802` | Prowlarr front end; groups releases into title cards, TMDB artwork |
-| `web/` | static | SPA, in-browser engine, service-worker player |
-| `gateway/` | LAN | Torrent→HTTP for devices that cannot do peer-to-peer |
-| `roku/` | Roku | SceneGraph channel |
-| `extension/` | Chrome MV3 | Magnet hijack and page injection |
-| `installers/` | — | MSIX, TV APK, packaging |
-| `brand/` | — | One master mark, propagated to every app |
+| `bridge/` | VPS `127.0.0.1:8801` | WebSocket↔TCP/UDP byte relay, per-IP caps, monthly budget |
+| `search/` | VPS `127.0.0.1:8802` | Prowlarr front-end over WireGuard; groups releases into title cards |
+| `web/` | Caddy static | SPA, in-browser engine, service-worker player |
 
-[ARCHITECTURE.md](ARCHITECTURE.md) goes into the protocol detail.
+Bytes are sourced cheapest-first: HTTP web seeds → WebRTC peers → relayed TCP.
+Only the last tier costs bandwidth, so it is capped and degrades to the free
+tiers at 80% of the monthly budget.
 
-## Building the mark
+## Sources
 
-The logo is not hand-authored vector art. Five attempts at drawing a tricorn as
-SVG paths each read as something else — a dome, a cowboy hat, a boat hull, a
-mountain range, a sombrero. It is generated instead:
+A source is anything a resolver claims. Each resolver answers `canHandle(input)`
+and `resolve(source)`, returning either a **`Playable`** — a descriptor the
+player renders, discriminated by `render`
+(`video｜audio｜image｜embed｜canvas`) — or a **`Collection`**, a list the
+library browses. That split is what makes an IPTV playlist a real channel
+browser instead of a faked single stream.
+
+| Resolver | Input | Result |
+|---|---|---|
+| `torrent` | magnet, 40-char info hash | playable — wraps `StreamEngine` unchanged |
+| `embed` | YouTube, Vimeo | playable, official iframe only — never extraction |
+| `playlist` | `.m3u`, `.m3u8` | collection, or a playable when the body is an HLS manifest |
+| `flash` | `.swf` | playable, `canvas` — Ruffle (vendored, dual MIT/Apache) |
+| `game` | ROM (`.nes`, `.smc`, `.gba`, `.z64`, `.md`, …) | playable, `canvas` — EmulatorJS |
+| `url` | direct media URL | playable, `render` chosen by sniffed content-type |
+
+Registration order is `torrent, embed, flash, game, playlist, url`. `url` is the catch-all and
+must stay last: a YouTube link and an `.m3u8` link are both http(s) URLs, so the
+specific resolvers need first refusal.
+
+`.m3u8` is used by *both* IPTV channel lists and HLS media manifests, so the
+extension proves nothing — the body decides. HLS manifests carry `#EXT-X-*` tags
+at the start of a line; channel lists do not. That is one fetch, sniffed, which
+is why these are one resolver rather than two.
+
+### Flash and games out of torrents
+
+The torrent resolver classifies `.swf` and cartridge ROMs alongside video and
+audio, so a torrent carrying either renders on the canvas rather than being
+handed to a `<video>` that can never play it. Neither can be streamed — Ruffle
+needs the whole SWF and an emulator needs the whole cartridge before it boots —
+so those wait for the file to complete, showing progress, then hand the bytes
+over as a blob. Cartridge-era ROMs are kilobytes to a few megabytes, so that is
+seconds on a healthy swarm.
+
+`pickPlayableFile` prefers real media when a torrent has both, so a film that
+happens to ship an `.swf` extra still plays the film.
+
+**`.torrent` file URLs work as well as magnets, and are more reliable for this.**
+A magnet carries no metadata: WebTorrent has to fetch the file list from a peer
+via `ut_metadata` first, and a BEP-19 web seed serves content, not metadata — so
+a magnet with only a web seed and no peers never becomes ready. A `.torrent`
+file has the metadata inline and starts immediately.
+
+### The playback ladder
+
+Two browser rules block most real IPTV and no resolver can code around either:
+an HTTPS page cannot load HTTP media, and most IPTV endpoints send no
+`Access-Control-Allow-Origin`. So playback probes and climbs, cheapest first:
+
+1. **Direct** — the client fetches it. Free, and the only tier TV clients need:
+   Roku and Android TV use native players with neither restriction.
+2. **Your own gateway** — the LAN gateway proxies it, on your hardware and
+   bandwidth. Unlimited, and costs the project nothing.
+3. **Public relay** — `/bridge/iptv` terminates TLS and adds a CORS header,
+   fixing both blockers at once.
+4. **Explain** — only when all three are impossible, naming the rule that blocked
+   it rather than showing a generic error.
+
+Relayed video is billed twice per byte, roughly **4.4 GiB per viewer-hour**. It
+therefore has its own sub-budget (`-iptv-budget-gib`, default a quarter of
+`-budget-gib`) so continuous IPTV can never drain the month — the mail edge
+shares that allowance.
+
+`/bridge/iptv` refuses any non-public address via `resolvesPublic`, **re-checked
+on every redirect hop**, because an upstream that passes the first check can
+redirect to a private address and walk into the network behind the tunnel.
+
+## Build and deploy
 
 ```bash
-python brand/generate.py    # SD 3.5 Large, six concepts
-python brand/recolor.py     # remap onto the brand palette, centre, trim
-python brand/propagate.py   # push the master into every app's icons
+cd bridge && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o mw-bridge .
+cd ../search && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o mw-search .
+cd ../web && npx esbuild src/main.js --bundle --format=esm \
+  --outfile=dist/app.js --define:global=globalThis --external:./webtorrent.min.js --minify
 ```
 
-## Not affiliated with any indexer
+`dist/webtorrent.min.js` and `dist/sw.min.js` are copied unmodified from the
+`webtorrent` package. Both are ES modules and must not be bundled.
 
-Yarr.It does not host, upload, index or store media. It is a client for public
-indexes and peer-to-peer networks, the way a browser is a client for websites.
-You are responsible for complying with the laws of your country.
+## Gotchas found the hard way
 
-## Licence
-
-[MIT](LICENSE).
+- **WebTorrent 3 removed `file.streamTo()`/`appendTo()`.** Playback goes through
+  `client.createServer({controller})` + a registered `sw.min.js` and
+  `file.streamURL`. The old call fails silently — data downloads, video stays blank.
+- **Never emit Prowlarr's `magnetUrl`/`downloadUrl`.** They point at Prowlarr
+  itself with the API key in the query string. Rebuild from `infoHash` instead.
+  Guarded by tests.
+- **Always merge default udp trackers into every magnet.** Indexers often return
+  a bare `magnet:?xt=...&dn=...`; with no announce targets the browser finds no
+  peers however many seeders are reported.
+- **Test relay policy from off-box.** `permit_mynetworks`-style trust means a
+  localhost probe proves nothing.

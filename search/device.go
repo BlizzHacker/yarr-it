@@ -29,6 +29,10 @@ type deviceProfile struct {
 	BadCodecs []string
 	// Whether audio-only material is useful on this device.
 	AllowAudio bool
+	// Whether the device can run an emulator or an embedded player at all.
+	// A set-top box has no WebAssembly and no third-party iframe, so a game
+	// result there is a card that can never be opened.
+	AllowInteractive bool
 }
 
 var rokuProfile = deviceProfile{
@@ -92,6 +96,12 @@ func (p *deviceProfile) playable(s source) bool {
 // kindPlayable reports whether a whole card is worth showing on the device.
 // A TV cannot do anything with software, games or ebooks.
 func (p *deviceProfile) kindPlayable(c card) bool {
+	// A game needs an emulator or somebody else's embedded player, and a
+	// set-top box has neither. Showing one there is offering a card that
+	// cannot open.
+	if c.Kind == "game" {
+		return p.AllowInteractive
+	}
 	for _, g := range c.Groups {
 		switch g {
 		case "movies", "tv", "anime":

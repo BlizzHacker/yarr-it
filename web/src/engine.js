@@ -222,10 +222,16 @@ export class StreamEngine {
    * Start streaming a magnet. Resolves with the chosen file once metadata
    * arrives, which is when playback can begin -- not when the download is done.
    */
-  add(magnet, { onReady, onError } = {}) {
+  add(magnet, { onReady, onError, onFiles } = {}) {
     this.destroyTorrent();
 
     const torrent = this.client.add(magnet, { announce: WSS_TRACKERS }, (t) => {
+      // A caller that wants to choose for itself gets the whole torrent first
+      // and returns true to say it has taken over. A 200-ROM pack has no
+      // single right answer, and picking one on the user's behalf is how a
+      // pack of games becomes whichever game happened to be biggest.
+      if (onFiles?.(t)) return;
+
       const file = pickPlayableFile(t.files);
       if (!file) {
         onError?.(new Error('no playable media in this torrent'));
@@ -280,19 +286,45 @@ const VIDEO_EXT = ['.mp4', '.m4v', '.webm', '.mkv', '.avi', '.mov', '.ogv'];
 const AUDIO_EXT = ['.mp3', '.m4a', '.aac', '.flac', '.ogg', '.opus', '.wav'];
 const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp'];
 
+// Flash movies/games and cartridge ROMs are playable too -- just on a canvas,
+// via Ruffle and EmulatorJS, rather than in a media element. Without these the
+// picker below discards them and a ROM torrent reports "no playable media".
+const FLASH_EXT = ['.swf'];
+const ROM_EXT = [
+  '.nes', '.fds', '.unf', '.unif',
+  '.smc', '.sfc', '.swc', '.fig',
+  '.gb', '.gbc', '.gba',
+  '.n64', '.z64', '.v64',
+  '.md', '.gen', '.smd', '.sms', '.gg',
+  '.a26', '.a78', '.lnx', '.pce', '.ws', '.wsc', '.ngp', '.ngc', '.vb',
+];
+
 export function classify(name) {
   const n = name.toLowerCase();
   if (VIDEO_EXT.some((e) => n.endsWith(e))) return 'video';
   if (AUDIO_EXT.some((e) => n.endsWith(e))) return 'audio';
   if (IMAGE_EXT.some((e) => n.endsWith(e))) return 'image';
+  if (FLASH_EXT.some((e) => n.endsWith(e))) return 'flash';
+  if (ROM_EXT.some((e) => n.endsWith(e))) return 'rom';
   return 'other';
 }
 
-/** Largest media file wins; sample clips and extras are always smaller. */
+/**
+ * Largest playable file wins; sample clips and extras are always smaller.
+ *
+ * ROMs are the exception: a ROM torrent is usually a whole collection, and the
+ * biggest file in it is nothing special. Prefer a ROM/Flash file only when the
+ * torrent has no video or audio at all, so a movie torrent that happens to
+ * carry an .swf extra still plays the movie.
+ */
 export function pickPlayableFile(files) {
-  const media = files.filter((f) => classify(f.name) !== 'other');
-  if (!media.length) return null;
-  return media.reduce((a, b) => (b.length > a.length ? b : a));
+  const kindOf = (f) => classify(f.name);
+  const media = files.filter((f) => ['video', 'audio', 'image'].includes(kindOf(f)));
+  const pool = media.length
+    ? media
+    : files.filter((f) => ['flash', 'rom'].includes(kindOf(f)));
+  if (!pool.length) return null;
+  return pool.reduce((a, b) => (b.length > a.length ? b : a));
 }
 
 /** Codecs a browser plays directly. Others need the WebCodecs path. */

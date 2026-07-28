@@ -1,4 +1,15 @@
 import { StreamEngine, classify, needsWebCodecs } from './engine.js';
+import { createRegistry, makeSource, makeCollection, isCollection } from './source.js';
+import { createTorrentResolver, normalizeMagnet } from './resolvers/torrent.js';
+import { urlResolver } from './resolvers/url.js';
+import { embedResolver } from './resolvers/embed.js';
+import { playlistResolver } from './resolvers/playlist.js';
+import { flashResolver } from './resolvers/flash.js';
+import { gameResolver } from './resolvers/game.js';
+import { archiveResolver } from './resolvers/archive.js';
+import { renderPlayable, detachAll } from './player.js';
+import { renderLibrary } from './library.js';
+import { PlaybackError } from './failures.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -13,11 +24,18 @@ const state = {
   facets: null,
   query: '',
   engine: null,
+  registry: null,
+  playable: null,
+  // Bumped at the start of every play() call. A resolve() that finishes
+  // after a newer play() has started is stale -- comparing against the
+  // counter it captured is how play() tells "still the one the user last
+  // clicked" from "lost the race".
+  resolveGen: 0,
   active: null,
   filters: {
     seeders: 1, minSize: '', maxSize: '',
     quality: new Set(), codec: new Set(), groups: new Set(),
-    webSafe: false, adult: false, sort: 'relevance',
+    webSafe: false, adult: false, sort: 'seeders',
   },
 };
 
@@ -43,6 +61,12 @@ async function search({ showSpinner = true } = {}) {
   $('#intro').hidden = true;
   $('#discover').hidden = true;
   $('#get').hidden = true;
+  // A playlist Collection browsed earlier leaves #library visible (it's
+  // only ever shown, never hidden, by renderLibrary). #player is a
+  // full-viewport overlay, so that stays invisible right up until the
+  // player closes -- then the old channel list resurfaces underneath a
+  // brand new, unrelated search. Every fresh search must start clean.
+  $('#library').hidden = true;
   if (showSpinner) {
     $('#status').textContent = 'Searching every indexer…';
     $('#status').hidden = false;
@@ -92,7 +116,11 @@ function debounce(fn, ms) {
 
 function renderFilters() {
   const f = state.facets;
-  $('#filters').hidden = !f;
+  // The filter bar stays visible from the first paint. Hiding it until results
+  // arrive means the one moment you would want to narrow a search -- before
+  // running it -- is the one moment the controls are missing.
+  $('#filters').hidden = false;
+  $('#filters').classList.toggle('awaiting', !f);
   if (!f) return;
 
   groupRow($('#f-groups'), f.groups, state.filters.groups);
@@ -202,10 +230,17 @@ function tile(card) {
     p.append(el('div', 'noart', card.title));
   }
 
-  const seedBadge = el('span', card.seeders > 0 ? 'badge' : 'badge dead', `${card.seeders}▲`);
-  p.append(seedBadge);
+  // A seeder count is a guess at whether something will play. For a result
+  // served by a host that is always up there is nothing to guess, so showing
+  // "0▲" there would read as broken when it is the most reliable card on the
+  // page.
+  if (card.instant) {
+    p.append(el('span', 'badge instant', 'INSTANT'));
+  } else {
+    p.append(el('span', card.seeders > 0 ? 'badge' : 'badge dead', `${card.seeders}▲`));
+  }
   if (card.art?.rating) p.append(el('span', 'rating', card.art.rating.toFixed(1)));
-  const bq = card.sources[card.best]?.quality;
+  const bq = card.platform || card.sources[card.best]?.quality;
   if (bq) p.append(el('span', 'best-q', bq));
   t.append(p);
 
@@ -213,7 +248,11 @@ function tile(card) {
   const bits = [];
   if (card.year) bits.push(card.year);
   if (card.isSeries) bits.push(`S${card.season}E${card.episode}`);
-  bits.push(`${card.sources.length} source${card.sources.length === 1 ? '' : 's'}`);
+  if (card.instant) {
+    bits.push('plays instantly');
+  } else {
+    bits.push(`${card.sources.length} source${card.sources.length === 1 ? '' : 's'}`);
+  }
   t.append(el('div', 'tmeta', bits.join(' · ')));
 
   t.addEventListener('click', () => openDetail(card));
@@ -268,12 +307,23 @@ function discoverTile(item) {
   }
   if (item.rating) p.append(el('span', 'rating', item.rating.toFixed(1)));
   if (item.mediaType === 'tv') p.append(el('span', 'best-q', 'TV'));
+  // An item with a play target IS the thing rather than a name to go looking
+  // for, so it is marked as opening immediately.
+  if (item.play) p.append(el('span', 'badge instant', 'OPEN'));
   t.append(p);
 
   t.append(el('div', 'tname', item.title));
   t.append(el('div', 'tmeta', item.year ? String(item.year) : ''));
 
   t.addEventListener('click', () => {
+    // A film row holds catalogue metadata, so clicking searches for sources.
+    // A row from the archive holds the item itself -- searching for its name
+    // would be a strange detour past the copy we already have.
+    if (item.play) {
+      play({ title: item.title, year: item.year || 0 },
+        { uri: item.play, title: item.title });
+      return;
+    }
     const q = item.year ? `${item.title} ${item.year}` : item.title;
     $('#q').value = q;
     state.query = q;
@@ -298,7 +348,8 @@ function openDetail(card) {
   if (card.year) sub.push(card.year);
   if (card.isSeries) sub.push(`Season ${card.season}, Episode ${card.episode}`);
   if (card.art?.rating) sub.push(`★ ${card.art.rating.toFixed(1)}`);
-  sub.push(`${card.seeders} seeders`);
+  if (card.platform) sub.push(card.platform);
+  sub.push(card.instant ? 'Plays instantly — no download' : `${card.seeders} seeders`);
   $('#d-sub').textContent = sub.join('  ·  ');
 
   $('#d-overview').textContent = card.art?.overview || '';
@@ -308,7 +359,9 @@ function openDetail(card) {
   g.replaceChildren();
   for (const name of card.art?.genres || []) g.append(el('span', 'chip', name));
 
-  $('#d-srch').textContent = `${card.sources.length} source${card.sources.length === 1 ? '' : 's'} — pick one to stream`;
+  $('#d-srch').textContent = card.instant
+    ? 'Hosted by archive.org — press play'
+    : `${card.sources.length} source${card.sources.length === 1 ? '' : 's'} — pick one to stream`;
 
   const list = $('#d-sources');
   list.replaceChildren();
@@ -320,19 +373,31 @@ function sourceRow(card, s, isBest) {
   row.type = 'button';
 
   const l = el('div', 'sl');
-  l.append(el('span', 'q', s.quality || '—'));
-  const codec = el('span', s.webSafe ? 'tag ok' : 'tag warn', s.codec || 'unknown');
-  codec.title = s.webSafe
-    ? 'Plays directly in your browser'
-    : 'Needs hardware decode on your device — no server transcoding';
-  l.append(codec);
-  if (s.source) l.append(el('span', 'tag', s.source));
+  // Quality, codec, size and seeders are all torrent vocabulary. On a hosted
+  // game every one of them renders as "unknown" or "0", which reads as a
+  // broken row rather than the most reliable one on the page.
+  if (card.instant) {
+    l.append(el('span', 'q', 'PLAY'));
+    l.append(el('span', 'tag ok', s.source || 'Game'));
+  } else {
+    l.append(el('span', 'q', s.quality || '—'));
+    const codec = el('span', s.webSafe ? 'tag ok' : 'tag warn', s.codec || 'unknown');
+    codec.title = s.webSafe
+      ? 'Plays directly in your browser'
+      : 'Needs hardware decode on your device — no server transcoding';
+    l.append(codec);
+    if (s.source) l.append(el('span', 'tag', s.source));
+  }
   l.append(el('span', 'name', s.title));
   row.append(l);
 
   const r = el('div', 'sr');
-  r.append(el('span', null, s.sizeHuman));
-  r.append(el('span', s.seeders > 0 ? 'seeds' : 'seeds dead', `${s.seeders}▲`));
+  if (card.instant) {
+    r.append(el('span', 'seeds', 'INSTANT'));
+  } else {
+    r.append(el('span', null, s.sizeHuman));
+    r.append(el('span', s.seeders > 0 ? 'seeds' : 'seeds dead', `${s.seeders}▲`));
+  }
   r.append(el('span', null, s.indexer));
   row.append(r);
 
@@ -347,70 +412,144 @@ function closeDetail() {
 
 // ------------------------------------------------------------------ player --
 
-function play(card, src) {
-  $('#player').hidden = false;
-  $('#player-title').textContent = card.title + (card.year ? ` (${card.year})` : '');
-  $('#player-sub').textContent = src.title;
-  setPlayerStatus('Connecting to the swarm…');
+function playerElements() {
+  return {
+    video: $('#video'),
+    audio: $('#audio'),
+    image: $('#image'),
+    embed: $('#embed'),
+    canvas: $('#canvas'), // Ruffle (.swf) and EmulatorJS (ROMs) mount here
+  };
+}
 
-  const video = $('#video');
-  video.hidden = true;
-  video.removeAttribute('src');
-  $('#image').hidden = true;
-
+function buildRegistry() {
   if (!state.engine) state.engine = new StreamEngine({ onStats: renderStats });
   window.__engine = state.engine; // diagnostics
-
-  state.engine.add(src.magnet, {
-    onReady: (file) => {
-      const kind = classify(file.name);
-      setPlayerStatus(`Buffering ${file.name}…`);
-
-      if (kind === 'image') {
-        file.blob().then((b) => {
-          const img = $('#image');
-          img.src = URL.createObjectURL(b);
-          img.hidden = false;
-          setPlayerStatus('');
-        });
-        return;
-      }
-      if (needsWebCodecs(file.name)) {
-        setPlayerStatus(
-          `${file.name.split('.').pop().toUpperCase()} container — if this stalls, pick an MP4 source.`,
-        );
-      }
-      video.hidden = false;
-      attachMedia(video, file);
-      video.addEventListener('playing', () => setPlayerStatus(''), { once: true });
-    },
-    onError: (err) => setPlayerStatus(`Could not start: ${err.message}`),
-  });
+  const registry = createRegistry()
+    .register(createTorrentResolver({ engine: state.engine, classify }))
+    .register(embedResolver)      // before url: a YouTube link is also an http URL
+    .register(archiveResolver)    // before url/game: archive.org runs its own player
+    .register(flashResolver)      // before url: a .swf is also an http URL
+    .register(gameResolver)       // before url: a .nes/.smc is also an http URL
+    .register(playlistResolver)   // before url: .m3u8 is also an http URL
+    .register(urlResolver);
+  window.__registry = registry; // diagnostics
+  return registry;
 }
 
 /**
- * Point a media element at a torrent file.
+ * Best-effort filename for a resolved Playable, so needsWebCodecs can look at
+ * the actual container extension instead of a magnet link.
  *
- * file.streamURL is served by WebTorrent's service worker, which answers range
- * requests so playback can start and seek while the download is in flight. If
- * the worker is unavailable (private windows, some webviews) we fall back to a
- * blob, which works only once the file is complete.
+ * WebTorrent's file.streamURL (what the torrent resolver sets as `src`) is
+ * `<sw-scope>/<infoHash>/<encoded file path>` -- the final path segment is
+ * the real filename, which is what this recovers. The url/playlist resolvers
+ * set `src` to the source URI itself, which is usually the same shape.
+ *
+ * This is not reliable in every case, and there is nothing to fall back to
+ * that fixes that: source.js's makePlayable (render/src/mime/tier/cleanup)
+ * does not carry the original filename as its own field, so when `src` is
+ * not a filename-shaped URL -- e.g. the no-service-worker torrent fallback in
+ * torrent.js's resolve(), which plays from a bare `blob:` URL -- there is no
+ * filename to recover at all. In that case this just returns `src` itself;
+ * needsWebCodecs will find no matching extension and stay silent rather than
+ * guess. That's a known gap, not a bug: it only affects the rare
+ * service-worker-unavailable fallback path, not normal torrent playback.
  */
-async function attachMedia(elem, file) {
-  const ready = await (state.engine?._serverReady ?? false);
-  if (ready && file.streamURL) {
-    elem.src = file.streamURL;
-    elem.play?.().catch(() => {});
-    return;
-  }
-  setPlayerStatus('Streaming unavailable in this browser — downloading fully first…');
+function playableFilename(playable) {
   try {
-    const blob = await file.blob();
-    elem.src = URL.createObjectURL(blob);
-    setPlayerStatus('');
-    elem.play?.().catch(() => {});
+    const { pathname } = new URL(playable.src, location.href);
+    const last = pathname.split('/').pop();
+    if (last) return decodeURIComponent(last);
+  } catch {
+    /* src isn't a parseable URL (e.g. an opaque blob: id) -- fall through */
+  }
+  return playable.src;
+}
+
+/**
+ * Resolve any source and render whatever comes back. `src.magnet` is still
+ * honoured so existing search results keep working unchanged.
+ *
+ * Two guards protect this against the async gap between "resolve() called"
+ * and "resolve() settles":
+ *
+ *  - The outgoing Playable's cleanup() is called up front, before anything
+ *    else, so a torrent's swarm (or any other resolver's held resource) is
+ *    always released the instant a new source is picked -- not just when
+ *    the player is closed, and not left to whatever side effect the next
+ *    resolver happens to have (StreamEngine.add() tearing down the previous
+ *    torrent is one such side effect, not a substitute for this).
+ *  - `resolveGen` guards overlapping calls: if the user picks a second
+ *    source before the first has finished resolving, only the resolution
+ *    matching the *latest* play() call is allowed to touch the DOM or
+ *    state.playable. A resolution that loses the race still gets its
+ *    Playable cleaned up so it can't leak in the background.
+ */
+async function play(card, src) {
+  const gen = ++state.resolveGen;
+
+  try {
+    state.playable?.cleanup();
   } catch (err) {
-    setPlayerStatus(`Playback error: ${err.message}`);
+    console.warn('[player] cleanup of outgoing playable failed:', err?.message || err);
+  }
+  state.playable = null;
+
+  $('#library').hidden = true;
+  $('#player').hidden = false;
+  $('#player-title').textContent = card.title + (card.year ? ` (${card.year})` : '');
+  $('#player-sub').textContent = src.title ?? '';
+  setPlayerStatus('Resolving…');
+
+  const els = playerElements();
+  detachAll(els);
+
+  if (!state.registry) state.registry = buildRegistry();
+
+  const uri = src.magnet ?? src.uri;
+  try {
+    const out = await state.registry.resolve(makeSource({ kind: 'auto', uri }));
+
+    if (gen !== state.resolveGen) {
+      // A newer play() call has since taken over. Never touch the DOM or
+      // state.playable with a stale result -- but still release whatever
+      // this resolution acquired (a torrent's cleanup destroys its swarm)
+      // so the loser of the race doesn't leak.
+      if (!isCollection(out)) {
+        try {
+          out.cleanup?.();
+        } catch (err) {
+          console.warn('[player] cleanup of abandoned playable failed:', err?.message || err);
+        }
+      }
+      return;
+    }
+
+    if (isCollection(out)) {
+      $('#player').hidden = true;
+      renderLibrary(out, {
+        mount: $('#library'),
+        onPick: (picked) => play({ title: picked.meta.title || picked.uri }, { uri: picked.uri }),
+      });
+      return;
+    }
+
+    $('#library').hidden = true;
+    if (needsWebCodecs(playableFilename(out))) {
+      setPlayerStatus('Unusual container — if this stalls, pick an MP4 source.');
+    }
+    const el = renderPlayable(out, els);
+    state.playable = out;
+    el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
+    // Only <video>/<audio> fire a 'playing' event. An image, an iframe embed and
+    // a canvas player (Ruffle/EmulatorJS) never will, so their status has to be
+    // cleared here or the overlay sits on "Resolving…" forever.
+    if (out.render !== 'video' && out.render !== 'audio') setPlayerStatus('');
+  } catch (err) {
+    if (gen !== state.resolveGen) return;
+    const why = err instanceof PlaybackError ? err.message : `Could not start: ${err.message}`;
+    setPlayerStatus(why);
   }
 }
 
@@ -436,46 +575,143 @@ function renderStats(s) {
 }
 
 function closePlayer() {
+  state.playable?.cleanup();
+  state.playable = null;
   $('#player').hidden = true;
-  const v = $('#video');
-  v.pause?.();
-  v.removeAttribute('src');
-  v.load?.();
-  $('#image').hidden = true;
-  $('#image').removeAttribute('src');
+  $('#library').hidden = true;
+  // detachAll pauses/loads every real media element (video, audio) and clears
+  // src on all of them, not just video+image -- with the audio and embed
+  // elements now in play, leaving those untouched would let a paused-looking
+  // player keep an <audio> element playing invisibly in the background.
+  detachAll(playerElements());
   state.engine?.destroyTorrent();
 }
 
 // ------------------------------------------------------------------ magnet --
 
-/** Accept a full magnet URI or a bare 40-character info hash. */
-function normalizeMagnet(input) {
-  const v = (input || '').trim();
-  if (/^magnet:\?/i.test(v)) return v;
-  if (/^[a-f0-9]{40}$/i.test(v)) {
-    const trackers = [
-      'udp://tracker.opentrackr.org:1337/announce',
-      'udp://open.demonii.com:1337/announce',
-      'udp://open.stealth.si:80/announce',
-      'udp://exodus.desync.com:6969/announce',
-      'udp://tracker.torrent.eu.org:451/announce',
-    ];
-    return `magnet:?xt=urn:btih:${v.toLowerCase()}` +
-      trackers.map((t) => `&tr=${encodeURIComponent(t)}`).join('');
+const PASTE_HINT =
+  'That is not something this can play. Paste a magnet link, an info hash, ' +
+  'a direct media URL, an .m3u/.m3u8 playlist, or a YouTube/Vimeo link.';
+
+/**
+ * Best-effort human title for a non-magnet paste: the URL's last path
+ * segment (e.g. "movie.mp4" or a playlist name), falling back to its
+ * hostname when the path is empty (e.g. a bare "https://example.com/").
+ */
+function titleFromUri(uri) {
+  try {
+    const u = new URL(uri);
+    const last = u.pathname.split('/').filter(Boolean).pop();
+    if (!last) return u.hostname;
+    try {
+      return decodeURIComponent(last);
+    } catch {
+      return last;
+    }
+  } catch {
+    return uri;
   }
-  return null;
 }
 
-function streamPasted() {
-  const magnet = normalizeMagnet($('#magnet').value);
-  if (!magnet) {
-    showRetry('That is not a magnet link or a 40-character info hash.', () => {});
+/**
+ * Pull the playable links out of a web page.
+ *
+ * A browser cannot do this itself. Reading cross-origin HTML needs an
+ * Access-Control-Allow-Origin header and no torrent site sends one, so pasting
+ * a description page produced only a CORS error in the console -- which reads
+ * like a bug here rather than a rule of the platform. The relay fetches the
+ * page instead and returns just the links.
+ */
+async function linksFromPage(pageUrl) {
+  const response = await fetch(`/bridge/page?u=${encodeURIComponent(pageUrl)}`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || 'could not read that page');
+  return body;
+}
+
+/**
+ * Show what a page had on it. One link plays straight away -- a description
+ * page with a single magnet is unambiguous and making somebody click twice for
+ * it is just friction.
+ */
+function offerPageLinks(page) {
+  const links = page.links ?? [];
+  if (links.length === 1) {
+    const only = links[0];
+    play({ title: only.name || page.title || titleFromUri(only.url), year: 0 },
+      { uri: only.url, title: only.url.slice(0, 90) });
     return;
   }
-  const dn = /[?&]dn=([^&]+)/.exec(magnet);
+
+  $('#status').hidden = true;
+  $('#player').hidden = true;
+  renderLibrary(
+    makeCollection({
+      title: page.title || titleFromUri(page.source),
+      sources: links.map((l) => makeSource({
+        kind: 'auto',
+        uri: l.url,
+        meta: { title: l.name || l.url.slice(0, 80) },
+      })),
+    }),
+    {
+      mount: $('#library'),
+      onPick: (picked) => play({ title: picked.meta.title || picked.uri }, { uri: picked.uri }),
+    },
+  );
+  $('#library').hidden = false;
+}
+
+function showStatus(text) {
+  const s = $('#status');
+  s.replaceChildren(document.createTextNode(text));
+  s.hidden = false;
+}
+
+async function streamPasted() {
+  const raw = $('#magnet').value.trim();
+  if (!raw) {
+    showRetry(PASTE_HINT, () => {});
+    return;
+  }
+
+  // normalizeMagnet's real job: turn a bare 40-hex info hash into a magnet
+  // with trackers. If it doesn't recognize the input as a magnet/info hash,
+  // pass the raw trimmed input straight through -- the registry decides
+  // whether any resolver (url/embed/playlist) claims it.
+  const magnet = normalizeMagnet(raw);
+  const uri = magnet ?? raw;
+
+  if (!state.registry) state.registry = buildRegistry();
+  if (!state.registry.find(uri)) {
+    // Nothing here can play a web page, but a torrent site's page is a
+    // perfectly reasonable thing to paste -- it is where the magnet lives.
+    if (/^https?:\/\//i.test(uri)) {
+      showStatus('Reading that page…');
+      try {
+        const page = await linksFromPage(uri);
+        offerPageLinks(page);
+      } catch (err) {
+        showRetry(`${err.message}. ${PASTE_HINT}`, () => {});
+      }
+      return;
+    }
+    showRetry(PASTE_HINT, () => {});
+    return;
+  }
+
+  if (magnet) {
+    const dn = /[?&]dn=([^&]+)/.exec(magnet);
+    play(
+      { title: dn ? decodeURIComponent(dn[1]).replace(/\+/g, ' ') : 'Pasted magnet', year: 0 },
+      { magnet, title: magnet.slice(0, 90) },
+    );
+    return;
+  }
+
   play(
-    { title: dn ? decodeURIComponent(dn[1]).replace(/\+/g, ' ') : 'Pasted magnet', year: 0 },
-    { magnet, title: magnet.slice(0, 90) },
+    { title: titleFromUri(uri), year: 0 },
+    { uri, title: uri.slice(0, 90) },
   );
 }
 
@@ -522,10 +758,10 @@ function init() {
     state.filters = {
       seeders: 1, minSize: '', maxSize: '',
       quality: new Set(), codec: new Set(), groups: new Set(),
-      webSafe: false, adult: false, sort: 'relevance',
+      webSafe: false, adult: false, sort: 'seeders',
     };
     $('#f-seeders').value = 1; $('#f-minsize').value = ''; $('#f-maxsize').value = '';
-    $('#f-sort').value = 'relevance';
+    $('#f-sort').value = 'seeders';
     renderFilters();
     search({ showSpinner: false });
   });

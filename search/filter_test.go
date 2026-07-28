@@ -297,3 +297,66 @@ func TestAdultDetectedFromIndexerWithoutCategory(t *testing.T) {
 		t.Error("false positive on a general indexer")
 	}
 }
+
+// A mis-matched poster used to outrank a healthy swarm by an order of
+// magnitude, which is how junk with the wrong image reached the top of a
+// search. In a SEARCH, health has to win.
+func TestSearchRanksSeedersAboveArtwork(t *testing.T) {
+	terms := queryTerms("zelda")
+	pretty := card{Title: "Zelda", Seeders: 2, Art: artwork{Found: true, Poster: "p.jpg", Rating: 9}}
+	healthy := card{Title: "Zelda", Seeders: 800}
+
+	if relevance(healthy, terms) <= relevance(pretty, terms) {
+		t.Fatalf("a 800-seeder result must outrank a 2-seeder one with art: healthy=%d pretty=%d",
+			relevance(healthy, terms), relevance(pretty, terms))
+	}
+}
+
+// Browsing is the opposite case: with no query it is a poster wall, and a card
+// with artwork is the entire point of it.
+func TestBrowseStillLeadsWithArtwork(t *testing.T) {
+	var none []string
+	pretty := card{Title: "Something", Seeders: 2, Art: artwork{Found: true, Poster: "p.jpg", Rating: 9}}
+	bare := card{Title: "Something", Seeders: 800}
+
+	if relevance(pretty, none) <= relevance(bare, none) {
+		t.Fatal("with no query the card with artwork should still lead")
+	}
+}
+
+func TestSeederRankingIsMonotonic(t *testing.T) {
+	terms := queryTerms("zelda")
+	prev := -1 << 30
+	for _, s := range []int{0, 4, 5, 20, 50, 100, 500, 5000} {
+		got := relevance(card{Title: "Zelda", Seeders: s}, terms)
+		if got < prev {
+			t.Fatalf("relevance fell as seeders rose at %d seeders", s)
+		}
+		prev = got
+	}
+}
+
+func TestConfidentHitRejectsAnUnrelatedFilm(t *testing.T) {
+	hits := []tmdbHit{{ID: 1, Title: "The Super Mario Bros. Movie"}}
+	if _, ok := pickConfidentHit(hits, "Super Mario World SNES"); ok {
+		t.Fatal("a film must not be matched to a SNES ROM release")
+	}
+	if _, ok := pickConfidentHit(hits, "The Super Mario Bros Movie"); !ok {
+		t.Fatal("the actual film should still match itself")
+	}
+}
+
+func TestConfidentHitIgnoresPunctuationAndCase(t *testing.T) {
+	hits := []tmdbHit{{ID: 2, Title: "Blade Runner 2049"}}
+	if _, ok := pickConfidentHit(hits, "blade runner 2049"); !ok {
+		t.Fatal("case and punctuation must not defeat a real match")
+	}
+	if _, ok := pickConfidentHit(hits, "Blade Runner"); !ok {
+		t.Fatal("every significant word of the query is present, so this matches")
+	}
+	// The reverse must NOT match: "2049" is not in the shorter title.
+	hits2 := []tmdbHit{{ID: 3, Title: "Blade Runner"}}
+	if _, ok := pickConfidentHit(hits2, "Blade Runner 2049"); ok {
+		t.Fatal("the 1982 film must not be attached to the 2049 release")
+	}
+}

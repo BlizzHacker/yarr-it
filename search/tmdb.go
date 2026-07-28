@@ -148,29 +148,39 @@ func (c *tmdbClient) lookup(ctx context.Context, title string, year int, isSerie
 	}
 	a := artwork{MediaType: kind}
 	if err := c.getJSON(ctx, u, &out); err == nil && len(out.Results) > 0 {
-		h := out.Results[0]
-		a.TMDBID = h.ID
-		a.Overview = h.Overview
-		a.Rating = h.VoteAverage
-		a.Found = true
-		if h.PosterPath != "" {
-			a.Poster = tmdbImgBase + "/w342" + h.PosterPath
-		}
-		if h.BackdropPath != "" {
-			a.Backdrop = tmdbImgBase + "/w1280" + h.BackdropPath
-		}
-		if h.ReleaseDate != "" {
-			a.Released = h.ReleaseDate
-		} else {
-			a.Released = h.FirstAirDate
-		}
-		c.mu.RLock()
-		for _, id := range h.GenreIDs {
-			if n, ok := c.genres[id]; ok {
-				a.Genres = append(a.Genres, n)
+		// TMDB always returns SOMETHING for a non-empty query. Taking
+		// Results[0] unconditionally is why a game, a piece of software, or a
+		// scene release with an odd name ends up wearing an unrelated film's
+		// poster -- and, because artwork used to outweigh every other ranking
+		// signal, why those results floated to the top of a search.
+		//
+		// Only accept a hit whose own title plausibly IS the thing searched
+		// for. A confident miss leaves Found=false, which is cached below so
+		// the same bad lookup is not retried on every request.
+		if h, ok := pickConfidentHit(out.Results, title); ok {
+			a.TMDBID = h.ID
+			a.Overview = h.Overview
+			a.Rating = h.VoteAverage
+			a.Found = true
+			if h.PosterPath != "" {
+				a.Poster = tmdbImgBase + "/w342" + h.PosterPath
 			}
+			if h.BackdropPath != "" {
+				a.Backdrop = tmdbImgBase + "/w1280" + h.BackdropPath
+			}
+			if h.ReleaseDate != "" {
+				a.Released = h.ReleaseDate
+			} else {
+				a.Released = h.FirstAirDate
+			}
+			c.mu.RLock()
+			for _, id := range h.GenreIDs {
+				if n, ok := c.genres[id]; ok {
+					a.Genres = append(a.Genres, n)
+				}
+			}
+			c.mu.RUnlock()
 		}
-		c.mu.RUnlock()
 	}
 
 	c.mu.Lock()
@@ -194,6 +204,13 @@ func (c *tmdbClient) enrich(ctx context.Context, cards []card, limit int) {
 	sem := make(chan struct{}, 6)
 	var wg sync.WaitGroup
 	for i := 0; i < limit; i++ {
+		// TMDB is a film and television database. Asking it about a game gets
+		// a confident answer about a different work entirely -- "Sonic the
+		// Hedgehog (Genesis)" comes back as the 2020 film. A card that already
+		// has art from the host serving it is likewise better off keeping it.
+		if cards[i].Kind == "game" || cards[i].Art.Found {
+			continue
+		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -203,4 +220,68 @@ func (c *tmdbClient) enrich(ctx context.Context, cards []card, limit int) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// pickConfidentHit returns the first TMDB result whose title genuinely matches
+// the release title, and reports whether one was found.
+//
+// "Matches" means every significant word of the shorter title appears in the
+// longer one. That tolerates "Blade Runner" vs "Blade Runner 2049" being
+// distinct while still matching "The Matrix" to "Matrix, The".
+func pickConfidentHit(hits []tmdbHit, want string) (tmdbHit, bool) {
+	wantWords := significantWords(want)
+	if len(wantWords) == 0 {
+		return tmdbHit{}, false
+	}
+	for _, h := range hits {
+		name := h.Title
+		if name == "" {
+			name = h.Name
+		}
+		if titleConfident(name, wantWords) {
+			return h, true
+		}
+	}
+	return tmdbHit{}, false
+}
+
+func significantWords(s string) []string {
+	var out []string
+	for _, w := range strings.Fields(strings.ToLower(normaliseForMatch(s))) {
+		if len(w) > 2 {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func normaliseForMatch(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + 32)
+		default:
+			b.WriteRune(' ')
+		}
+	}
+	return b.String()
+}
+
+func titleConfident(candidate string, wantWords []string) bool {
+	if candidate == "" {
+		return false
+	}
+	got := normaliseForMatch(candidate)
+	hits := 0
+	for _, w := range wantWords {
+		if strings.Contains(got, w) {
+			hits++
+		}
+	}
+	// Every significant word must be present. A partial match is how "Mario"
+	// becomes "The Super Mario Bros. Movie" on a SNES ROM.
+	return hits == len(wantWords)
 }

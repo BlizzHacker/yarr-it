@@ -40,6 +40,15 @@ push() {
   ssh "$JUMP" "ssh -i $KEY -o BatchMode=yes $VPS 'cat > $WWW/$1'" < "$2"
 }
 
+# Whole directories go over as one tar stream. Ruffle alone is 9 files and 28MB,
+# and a `cat` per file over a double hop is painfully slow.
+pushdir() {
+  local local_dir=$1 remote_dir=$2
+  [ -d "$local_dir" ] || { echo "   skip $remote_dir (not fetched)"; return 0; }
+  echo "   $remote_dir"
+  tar -cz -C "$(dirname "$local_dir")" "$(basename "$local_dir")"     | ssh "$JUMP" "ssh -i $KEY -o BatchMode=yes $VPS 'mkdir -p $WWW/$remote_dir && tar -xz --strip-components=1 -C $WWW/$remote_dir'"
+}
+
 echo "==> deploying"
 push "index.html"          dist/index.html
 push "app.js"              dist/app.js
@@ -60,6 +69,14 @@ push "icon-192.$ICONHASH.png" dist/icon-192.png
 push "icon-512.$ICONHASH.png" dist/icon-512.png
 push "icon-192.png"        dist/icon-192.png
 push "icon-512.png"        dist/icon-512.png
+
+# Ruffle's WASM cores back the Flash resolver. fetch-vendor.sh puts them here;
+# if it has not been run the directory is absent and this is a no-op.
+pushdir "dist/ruffle" "ruffle"
+
+# A public-domain NES test ROM, served so the ROM path can be exercised
+# end to end (it doubles as the web seed for the test torrent).
+pushdir "dist/roms" "roms"
 
 ssh "$JUMP" "ssh -i $KEY $VPS 'chown -R caddy:caddy /srv/stream'"
 echo "==> done ($HASH)"
