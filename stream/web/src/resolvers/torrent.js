@@ -1,6 +1,7 @@
 import { makePlayable, RENDER, TIER } from '../source.js';
 import { mountRuffle } from './flash.js';
-import { mountEmulator, coreFor } from './game.js';
+import { mountEmulator } from './game.js';
+import { detectCore, SNIFF_BYTES } from '../rom-core.js';
 import { PlaybackError, FAILURE } from '../failures.js';
 
 /**
@@ -131,17 +132,41 @@ function canvasPlayable(file, torrent, kind, engine) {
       }, 500);
 
       file.blob()
-        .then((blob) => {
+        .then(async (blob) => {
           stopProgress();
           blobUrl = URL.createObjectURL(blob);
           if (kind === 'flash') {
             handle = mountRuffle(el, blobUrl);
-          } else {
-            handle = mountEmulator(el, blobUrl, {
-              core: coreFor(file.name),
-              name: file.name,
-            });
+            return;
           }
+
+          // A torrent, unlike an archive.org item, declares nothing about what
+          // machine its ROM is for -- and the extension often cannot say
+          // either, since `.bin` is Colecovision, Atari 2600 and Mega Drive
+          // alike. Booting the wrong core is silent: the emulator starts, the
+          // ROM loads, and the screen stays black forever.
+          //
+          // The file is already downloaded here, so the ROM's own header is
+          // available to answer the question properly.
+          const head = new Uint8Array(await blob.slice(0, SNIFF_BYTES).arrayBuffer());
+          const { core, via } = detectCore({
+            name: file.name,
+            bytes: head,
+            // The release and folder names are how a torrent says what a
+            // headerless `.bin` actually is.
+            context: `${torrent?.name ?? ''} ${file.path ?? ''}`,
+            length: blob.size,
+          });
+
+          if (!core) {
+            label.textContent = `${file.name} is a ROM, but its system could not be `
+              + 'identified, so it would boot the wrong emulator. Try a file whose '
+              + 'name gives the system, or play this title from archive.org.';
+            el.replaceChildren(label);
+            return;
+          }
+
+          handle = mountEmulator(el, blobUrl, { core, name: file.name, via });
         })
         .catch((err) => {
           stopProgress();

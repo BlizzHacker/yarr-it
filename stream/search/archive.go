@@ -26,17 +26,17 @@ import (
 
 const archiveSearchAPI = "https://archive.org/advancedsearch.php"
 
-// The emulation collections. Restricting to these keeps a game search from
-// returning concert bootlegs and scanned magazines.
-var archiveCollections = []string{
-	"consolelivingroom",           // console games, browser-playable
-	"internetarcade",              // coin-op arcade
-	"softwarelibrary_msdos_games", // MS-DOS
-	"softwarelibrary_flash_games", // Flash, the other half of the games ask
-	"gamegear_library",
-	"nintendo_entertainment_system_library",
-	"softwarelibrary_apple",
-}
+// What counts as a playable game.
+//
+// This was a hand-written list of collections, which was both wrong and
+// narrow: it was guessed rather than derived, and it missed roughly half the
+// catalogue (52 Zelda items against 27, 313 Tetris against 119) because games
+// live in far more collections than anyone can enumerate.
+//
+// An item that declares an `emulator` is exactly an item archive.org will run
+// in a browser -- that field is the definition, not a proxy for it. Pairing it
+// with mediatype:software keeps out anything that is not a program.
+const archiveScope = `emulator:[* TO *] AND mediatype:(software)`
 
 type archiveDoc struct {
 	Identifier string          `json:"identifier"`
@@ -63,8 +63,7 @@ type archiveResponse struct {
 func archiveQuery(q string) string {
 	safe := strings.NewReplacer(`"`, " ", `\`, " ").Replace(q)
 	safe = strings.TrimSpace(safe)
-	return fmt.Sprintf(`title:(%q) AND collection:(%s)`,
-		safe, strings.Join(archiveCollections, " OR "))
+	return fmt.Sprintf(`title:(%q) AND %s`, safe, archiveScope)
 }
 
 // archiveSystems maps archive.org's emulator id to a name a person reads.

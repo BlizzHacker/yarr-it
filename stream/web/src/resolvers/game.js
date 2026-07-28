@@ -1,4 +1,5 @@
 import { makePlayable, RENDER } from '../source.js';
+import { coreFromExtension } from '../rom-core.js';
 
 /**
  * Game ROMs via EmulatorJS, the way archive.org's web emulators work.
@@ -37,32 +38,19 @@ export function dataPath() {
   return DEFAULT_DATA_PATH;
 }
 
-// Extension -> EmulatorJS core. Kept to cartridge-era systems whose ROMs are
-// small enough to finish downloading before anyone loses patience.
-const CORES = {
-  nes: 'nes', fds: 'nes', unf: 'nes', unif: 'nes',
-  smc: 'snes', sfc: 'snes', swc: 'snes', fig: 'snes',
-  gb: 'gb', gbc: 'gb',
-  gba: 'gba',
-  n64: 'n64', z64: 'n64', v64: 'n64',
-  md: 'segaMD', gen: 'segaMD', smd: 'segaMD',
-  sms: 'segaMS', gg: 'segaGG',
-  a26: 'atari2600', a78: 'atari7800',
-  lnx: 'lynx',
-  pce: 'pce',
-  ws: 'ws', wsc: 'ws',
-  ngp: 'ngp', ngc: 'ngp',
-  vb: 'vb',
-};
-
+/**
+ * Which core a ROM needs is its own problem, and a harder one than it looks --
+ * see rom-core.js. This resolver only handles a bare http(s) URL, where the
+ * name is all there is to go on; the torrent path reads the ROM's header
+ * instead, which is far more reliable.
+ */
 export function coreFor(name = '') {
-  const ext = String(name).toLowerCase().split('.').pop();
-  return CORES[ext] ?? null;
+  return coreFromExtension(name);
 }
 
 export function isRom(input) {
   try {
-    return coreFor(new URL(input).pathname) !== null;
+    return coreFromExtension(new URL(input).pathname) !== null;
   } catch {
     return false;
   }

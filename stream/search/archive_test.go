@@ -6,13 +6,13 @@ import (
 	"testing"
 )
 
-func TestArchiveQueryScopesToEmulationCollections(t *testing.T) {
+func TestArchiveQueryScopesToBrowserPlayableItems(t *testing.T) {
 	q := archiveQuery("mario")
 	if !strings.Contains(q, `title:("mario")`) {
 		t.Fatalf("query does not search the title: %s", q)
 	}
-	if !strings.Contains(q, "consolelivingroom") {
-		t.Fatalf("query is not scoped to the emulation collections: %s", q)
+	if !strings.Contains(q, "emulator:[* TO *]") {
+		t.Fatalf("query is not scoped to browser-playable items: %s", q)
 	}
 }
 
@@ -28,8 +28,8 @@ func TestArchiveQueryNeutralisesSolrSyntax(t *testing.T) {
 	if strings.Count(q, `title:(`) != 1 {
 		t.Fatalf("query structure was broken by input: %s", q)
 	}
-	if !strings.Contains(q, "consolelivingroom") {
-		t.Fatalf("collection scope was escaped: %s", q)
+	if !strings.Contains(q, "emulator:[* TO *]") {
+		t.Fatalf("scope was escaped: %s", q)
 	}
 }
 
