@@ -185,15 +185,20 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if q == "" {
-		writeJSON(w, 400, map[string]string{"error": "missing q"})
-		return
-	}
 	if len(q) > 128 {
 		q = q[:128]
 	}
 	f := parseFilters(r.URL.Query())
 	kind := f.Kind
+
+	// A category with no words is a browse: "show me games". Requiring a query
+	// meant the category chips could only ever narrow results that a text
+	// search had already produced -- so there was no way to simply ask for a
+	// category, which is the first thing anyone tries.
+	if q == "" && len(f.Groups) == 0 {
+		writeJSON(w, 400, map[string]string{"error": "missing q"})
+		return
+	}
 	// A set-top box cannot fall back to software decode the way a browser can,
 	// so unplayable sources are removed rather than shown and failed.
 	dev := deviceProfileFor(r.URL.Query().Get("device"))
@@ -403,6 +408,8 @@ func categoriesFor(kind string) []int {
 	case "game":
 		// 1000-1999 is console, 4050-4069 is PC games.
 		return []int{1000, 4050}
+	case "comic":
+		return []int{7030}
 	default:
 		return nil
 	}

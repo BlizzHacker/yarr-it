@@ -36,7 +36,7 @@ func parseFilters(q url.Values) filters {
 		Indexers:   splitCSV(q.Get("indexer")),
 		WebSafe:    q.Get("webSafe") == "1" || q.Get("webSafe") == "true",
 		Sort:       q.Get("sort"),
-		Kind:       q.Get("kind"),
+		Kind:       kindFor(q),
 		Query:      q.Get("q"),
 		Groups:     splitCSV(q.Get("groups")),
 		// Adult results are hidden unless explicitly asked for.
@@ -413,4 +413,34 @@ func sortedFacets(m map[string]int, byQuality bool) []facetCount {
 		return out[i].Count > out[j].Count
 	})
 	return out
+}
+
+// kindFor decides which Newznab categories to ask the indexers for.
+//
+// An explicit ?kind= wins. Otherwise a single chosen category implies one:
+// picking "Games" should make the indexer query itself narrower, not just hide
+// rows after the fact -- which is the difference between a narrow search and a
+// broad search with most of it filtered away.
+//
+// Several categories at once imply nothing, since there is no single Newznab
+// bucket covering them.
+func kindFor(q url.Values) string {
+	if k := q.Get("kind"); k != "" {
+		return k
+	}
+	groups := splitCSV(q.Get("groups"))
+	if len(groups) != 1 {
+		return ""
+	}
+	switch groups[0] {
+	case "games":
+		return "game"
+	case "movies", "tv", "anime":
+		return "video"
+	case "music":
+		return "audio"
+	case "comics":
+		return "comic"
+	}
+	return ""
 }

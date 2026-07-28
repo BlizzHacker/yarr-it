@@ -63,6 +63,13 @@ type archiveResponse struct {
 func archiveQuery(q string) string {
 	safe := strings.NewReplacer(`"`, " ", `\`, " ").Replace(q)
 	safe = strings.TrimSpace(safe)
+	// An empty term is a browse rather than a search: everything playable,
+	// which the caller then orders by how often it has been downloaded. Without
+	// this, `title:("")` is a syntax error and picking a category with no query
+	// returns nothing.
+	if safe == "" {
+		return archiveScope
+	}
 	return fmt.Sprintf(`title:(%q) AND %s`, safe, archiveScope)
 }
 

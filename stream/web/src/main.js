@@ -57,7 +57,8 @@ function filterParams() {
 }
 
 async function search({ showSpinner = true } = {}) {
-  if (!state.query) return;
+  // A category with no words is a valid search: "show me games".
+  if (!state.query && !state.filters.groups.size) return;
   $('#intro').hidden = true;
   $('#discover').hidden = true;
   $('#get').hidden = true;
@@ -121,9 +122,15 @@ function renderFilters() {
   // running it -- is the one moment the controls are missing.
   $('#filters').hidden = false;
   $('#filters').classList.toggle('awaiting', !f);
-  if (!f) return;
 
-  groupRow($('#f-groups'), f.groups, state.filters.groups);
+  // The categories are drawn from the start, with counts filled in once a
+  // search has produced them. Rendering them only from facets meant they did
+  // not exist until after a search had already run, so a category could only
+  // ever narrow results you had -- never ask for a category in the first
+  // place, which is the first thing anyone tries.
+  groupRow($('#f-groups'), f?.groups ?? ALL_GROUPS.map((value) => ({ value })),
+    state.filters.groups);
+  if (!f) return;
   $('#f-adult').classList.toggle('on', state.filters.adult);
   $('#f-adult').textContent = f.adultCount ? `18+ ${f.adultCount}` : '18+';
   chipRow($('#f-quality'), f.qualities, state.filters.quality);
@@ -132,9 +139,14 @@ function renderFilters() {
 }
 
 // Human labels for the Newznab buckets the API reports.
+// Every category the indexers bucket into, so the chips exist before any
+// search has run. 'adult' is deliberately absent -- it has its own explicit
+// 18+ toggle and must never be enabled by ticking a category box.
+const ALL_GROUPS = ['movies', 'tv', 'anime', 'games', 'comics', 'music', 'books', 'apps', 'other'];
+
 const GROUP_LABELS = {
   movies: 'Movies', tv: 'TV', anime: 'Anime', music: 'Music',
-  games: 'Games', apps: 'Apps', books: 'Books', other: 'Other',
+  games: 'Games', comics: 'Comics', apps: 'Apps', books: 'Books', other: 'Other',
 };
 
 /**
@@ -147,12 +159,20 @@ function groupRow(host, values, selected) {
   for (const { value, count } of (values || [])) {
     if (value === 'adult') continue;
     const c = el('span', 'chip', GROUP_LABELS[value] || value);
-    c.append(el('span', 'cnt', String(count)));
+    // Before a search there is nothing to count yet.
+    if (count != null) c.append(el('span', 'cnt', String(count)));
     if (selected.has(value)) c.classList.add('on');
     c.addEventListener('click', () => {
       selected.has(value) ? selected.delete(value) : selected.add(value);
       c.classList.toggle('on');
-      refilter();
+      // With no words typed, picking a category IS the search -- "show me
+      // games" -- so it runs one rather than re-filtering an empty result set.
+      if (!state.query) {
+        if (selected.size) search();
+        else restoreLanding();
+      } else {
+        refilter();
+      }
     });
     host.append(c);
   }
@@ -197,8 +217,13 @@ function renderResults(data) {
   bar.replaceChildren();
   bar.hidden = false;
   bar.append(el('b', null, `${state.cards.length}`));
+  // A category browse has no query, so naming one renders as empty quotes.
+  const picked = [...state.filters.groups].map((g) => GROUP_LABELS[g] || g);
+  const what = state.query
+    ? `for “${state.query}”`
+    : (picked.length ? `in ${picked.join(' + ')}` : '');
   bar.append(el('span', null,
-    `result${state.cards.length === 1 ? '' : 's'} for “${state.query}”` +
+    `result${state.cards.length === 1 ? '' : 's'} ${what}`.trim() +
     (data.total && data.total !== state.cards.length ? ` · ${data.total} before filters` : '')));
 
   if (data.stale) {
@@ -268,6 +293,26 @@ function tile(card) {
  * hosted. Clicking one runs an ordinary search for its title, which is where
  * any actual sources come from.
  */
+/**
+ * Put the landing page back after the last category is deselected.
+ *
+ * Deselecting into an empty search would otherwise leave the results grid
+ * showing whatever the previous category returned, with nothing selected to
+ * explain it.
+ */
+function restoreLanding() {
+  state.cards = [];
+  state.facets = null;
+  $('#grid').replaceChildren();
+  $('#resultbar').hidden = true;
+  $('#status').hidden = true;
+  $('#library').hidden = true;
+  $('#intro').hidden = false;
+  $('#discover').hidden = false;
+  $('#get').hidden = false;
+  renderFilters();
+}
+
 async function loadDiscover() {
   const host = $('#discover');
   try {
@@ -774,6 +819,11 @@ function init() {
     if (!$('#player').hidden) closePlayer();
     else if (!$('#detail').hidden) closeDetail();
   });
+
+  // Draw the category chips immediately. Without this they appear only once a
+  // search has returned facets, which is exactly the state where you cannot
+  // use them to choose what to search for.
+  renderFilters();
 
   const params = new URLSearchParams(location.search);
   const initial = params.get('q');

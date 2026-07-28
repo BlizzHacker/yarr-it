@@ -22,25 +22,28 @@ var categoryGroups = []categoryGroup{
 	{"music", "Music", [][2]int{{3000, 4000}}},
 	{"games", "Games", [][2]int{{1000, 2000}, {4050, 4060}}},
 	{"apps", "Apps", [][2]int{{4000, 4050}, {4060, 5000}}},
+	{"comics", "Comics", [][2]int{{7030, 7031}}},
 	{"books", "Books", [][2]int{{7000, 8000}}},
 	{"anime", "Anime", [][2]int{{5070, 5081}}},
 	{"adult", "Adult", [][2]int{{6000, 7000}}},
 }
 
 func groupForCategory(id int) string {
-	// Anime overlaps the TV range, so it is checked first.
+	// Anime overlaps the TV range and comics sit inside the books range, so the
+	// narrower bucket is checked first -- otherwise whichever is scanned first
+	// claims every id it happens to span.
 	for _, g := range categoryGroups {
-		if g.Key != "anime" {
+		if g.Key != "anime" && g.Key != "comics" {
 			continue
 		}
 		for _, r := range g.Ranges {
 			if id >= r[0] && id < r[1] {
-				return "anime"
+				return g.Key
 			}
 		}
 	}
 	for _, g := range categoryGroups {
-		if g.Key == "anime" {
+		if g.Key == "anime" || g.Key == "comics" {
 			continue
 		}
 		for _, r := range g.Ranges {
