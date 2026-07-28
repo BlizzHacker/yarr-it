@@ -29,9 +29,16 @@ export function makeSource({ kind, uri, meta = {} }) {
   return { kind, uri, meta };
 }
 
-export function makePlayable({ render, src, mime, tier = TIER.DIRECT, cleanup }) {
+export function makePlayable({ render, src, mime, tier = TIER.DIRECT, cleanup, mount }) {
   if (!RENDERS.has(render)) throw new Error(`unknown render kind: ${render}`);
-  return { render, src, mime, tier, cleanup: cleanup ?? (() => {}) };
+  // A canvas render is driven by code, not by a src attribute: Ruffle and
+  // EmulatorJS are WASM players that need to be handed a container element and
+  // told to boot. `mount(el)` is how they get it, and it is required for that
+  // render kind precisely because a silent no-op would look like a blank screen.
+  if (render === RENDER.CANVAS && typeof mount !== 'function') {
+    throw new Error('a canvas playable needs a mount(el) function');
+  }
+  return { render, src, mime, tier, cleanup: cleanup ?? (() => {}), mount: mount ?? null };
 }
 
 /**

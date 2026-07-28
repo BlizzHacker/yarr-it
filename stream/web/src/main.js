@@ -4,6 +4,8 @@ import { createTorrentResolver, normalizeMagnet } from './resolvers/torrent.js';
 import { urlResolver } from './resolvers/url.js';
 import { embedResolver } from './resolvers/embed.js';
 import { playlistResolver } from './resolvers/playlist.js';
+import { flashResolver } from './resolvers/flash.js';
+import { gameResolver } from './resolvers/game.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
 import { PlaybackError } from './failures.js';
@@ -374,7 +376,7 @@ function playerElements() {
     audio: $('#audio'),
     image: $('#image'),
     embed: $('#embed'),
-    canvas: null, // arrives with Ruffle and EmulatorJS
+    canvas: $('#canvas'), // Ruffle (.swf) and EmulatorJS (ROMs) mount here
   };
 }
 
@@ -384,6 +386,8 @@ function buildRegistry() {
   const registry = createRegistry()
     .register(createTorrentResolver({ engine: state.engine, classify }))
     .register(embedResolver)      // before url: a YouTube link is also an http URL
+    .register(flashResolver)      // before url: a .swf is also an http URL
+    .register(gameResolver)       // before url: a .nes/.smc is also an http URL
     .register(playlistResolver)   // before url: .m3u8 is also an http URL
     .register(urlResolver);
   window.__registry = registry; // diagnostics
@@ -495,7 +499,10 @@ async function play(card, src) {
     const el = renderPlayable(out, els);
     state.playable = out;
     el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
-    if (out.render === 'image' || out.render === 'embed') setPlayerStatus('');
+    // Only <video>/<audio> fire a 'playing' event. An image, an iframe embed and
+    // a canvas player (Ruffle/EmulatorJS) never will, so their status has to be
+    // cleared here or the overlay sits on "Resolving…" forever.
+    if (out.render !== 'video' && out.render !== 'audio') setPlayerStatus('');
   } catch (err) {
     if (gen !== state.resolveGen) return;
     const why = err instanceof PlaybackError ? err.message : `Could not start: ${err.message}`;
