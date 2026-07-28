@@ -31,6 +31,10 @@ type discoverItm struct {
 	Overview  string  `json:"overview,omitempty"`
 	Rating    float64 `json:"rating,omitempty"`
 	MediaType string  `json:"mediaType"`
+	// Play is set when the item IS the thing rather than a pointer to look for
+	// it. TMDB rows leave it empty and a click runs a search; archive.org rows
+	// set it and a click opens the item itself.
+	Play string `json:"play,omitempty"`
 }
 
 type discoverCache struct {
@@ -52,11 +56,6 @@ var discoverSources = []struct {
 }
 
 func (s *server) handleDiscover(w http.ResponseWriter, r *http.Request) {
-	if !s.tmdb.enabled() {
-		writeJSON(w, 200, map[string]any{"rows": []discoverRow{}})
-		return
-	}
-
 	s.discover.mu.RLock()
 	if time.Now().Before(s.discover.expires) && len(s.discover.rows) > 0 {
 		rows := s.discover.rows
@@ -71,23 +70,39 @@ func (s *server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rows := make([]discoverRow, len(discoverSources))
+	var archive []discoverRow
 	var wg sync.WaitGroup
-	for i, src := range discoverSources {
-		wg.Add(1)
-		go func(i int, key, title, path string) {
-			defer wg.Done()
-			rows[i] = discoverRow{Title: title, Key: key, Items: s.tmdb.list(ctx, path)}
-		}(i, src.key, src.title, src.path)
+
+	// The archive rows are what make this more than a movie site, and they
+	// need no TMDB key -- so they are fetched alongside rather than after, and
+	// a deployment with no key still gets a landing page.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		archive = s.archiveDiscover(ctx, 24)
+	}()
+
+	if s.tmdb.enabled() {
+		for i, src := range discoverSources {
+			wg.Add(1)
+			go func(i int, key, title, path string) {
+				defer wg.Done()
+				rows[i] = discoverRow{Title: title, Key: key, Items: s.tmdb.list(ctx, path)}
+			}(i, src.key, src.title, src.path)
+		}
 	}
 	wg.Wait()
 
-	// Drop rows TMDB failed to return rather than rendering empty shelves.
-	live := make([]discoverRow, 0, len(rows))
+	// Drop rows a source failed to return rather than rendering empty shelves.
+	live := make([]discoverRow, 0, len(rows)+len(archive))
 	for _, row := range rows {
 		if len(row.Items) > 0 {
 			live = append(live, row)
 		}
 	}
+	// Films first -- they are still what most people arrive for -- then games,
+	// books and comics underneath.
+	live = append(live, archive...)
 
 	if len(live) > 0 {
 		s.discover.mu.Lock()

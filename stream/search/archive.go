@@ -136,7 +136,7 @@ var ejsCores = map[string]string{
 	"nes": "nes", "famicom": "nes",
 	"snes": "snes", "superfamicom": "snes",
 	"gameboy": "gb", "gb": "gb", "gbcolor": "gb", "gbc": "gb",
-	"gba": "gba",
+	"gba":      "gba",
 	"n64":      "n64",
 	"genesis":  "segaMD",
 	"megadriv": "segaMD",
@@ -144,14 +144,14 @@ var ejsCores = map[string]string{
 	"32x":      "sega32x",
 	"sms":      "segaMS", "smsj": "segaMS",
 	"gamegear": "segaGG", "gg": "segaGG",
-	"psx":      "psx",
-	"coleco":   "coleco",
-	"a2600":    "atari2600",
-	"a7800":    "atari7800",
-	"lynx":     "lynx",
-	"intv2":    "atari2600", // Intellivision has no EmulatorJS core; excluded below
-	"tg16":     "pce",
-	"wswan":    "ws", "wscolor": "ws",
+	"psx":    "psx",
+	"coleco": "coleco",
+	"a2600":  "atari2600",
+	"a7800":  "atari7800",
+	"lynx":   "lynx",
+	"intv2":  "atari2600", // Intellivision has no EmulatorJS core; excluded below
+	"tg16":   "pce",
+	"wswan":  "ws", "wscolor": "ws",
 	"ngpc": "ngp", "ngp": "ngp",
 	"vb": "vb",
 }
@@ -262,7 +262,7 @@ func archiveCards(docs []archiveDoc) []card {
 			Platform: system,
 			// The "Games" chip filters on this, and a card without it would be
 			// hidden the moment somebody narrowed to exactly what they wanted.
-			Groups: []string{"games"},
+			Groups:  []string{"games"},
 			Sources: sourcesFor(d, title, system),
 			Art: artwork{
 				// Their thumbnail service. An <img> is not subject to CORS, so

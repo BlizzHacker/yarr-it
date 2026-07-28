@@ -307,12 +307,23 @@ function discoverTile(item) {
   }
   if (item.rating) p.append(el('span', 'rating', item.rating.toFixed(1)));
   if (item.mediaType === 'tv') p.append(el('span', 'best-q', 'TV'));
+  // An item with a play target IS the thing rather than a name to go looking
+  // for, so it is marked as opening immediately.
+  if (item.play) p.append(el('span', 'badge instant', 'OPEN'));
   t.append(p);
 
   t.append(el('div', 'tname', item.title));
   t.append(el('div', 'tmeta', item.year ? String(item.year) : ''));
 
   t.addEventListener('click', () => {
+    // A film row holds catalogue metadata, so clicking searches for sources.
+    // A row from the archive holds the item itself -- searching for its name
+    // would be a strange detour past the copy we already have.
+    if (item.play) {
+      play({ title: item.title, year: item.year || 0 },
+        { uri: item.play, title: item.title });
+      return;
+    }
     const q = item.year ? `${item.title} ${item.year}` : item.title;
     $('#q').value = q;
     state.query = q;
