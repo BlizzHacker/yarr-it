@@ -65,6 +65,12 @@ cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
 Address = 10.10.10.3/24
 ListenPort = 51820
+# Path MTU through this tunnel is 1400. At the 1420 default, packets of
+# 1401-1420 bytes are silently blackholed: small requests work fine and large
+# transfers hang forever, which is a miserable thing to debug. It broke
+# Prowlarr search over the tunnel, and would break the first inbound mail
+# carrying an attachment. Must match on LXC 160.
+MTU = 1380
 PostUp = wg set %i private-key /etc/wireguard/vps_private.key
 
 [Peer]
@@ -145,9 +151,13 @@ systemctl enable --now sync-recipients.timer >/dev/null 2>&1
 echo "==> firewall"
 printf '%s\n' '
 set -euo pipefail
-ufw allow 22/udp >/dev/null 2>&1 || true
 ufw allow 22/tcp >/dev/null 2>&1
 ufw allow 25/tcp >/dev/null 2>&1
+ufw allow 587/tcp >/dev/null 2>&1
+# 80/443 belong to the stream stack, which shares this host. Opened here so a
+# mail-only provision does not leave the site unreachable behind the firewall.
+ufw allow 80/tcp >/dev/null 2>&1
+ufw allow 443/tcp >/dev/null 2>&1
 ufw allow 51820/udp >/dev/null 2>&1
 ufw --force enable >/dev/null 2>&1 || true
 ' | on_vps
