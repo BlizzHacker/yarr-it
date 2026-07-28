@@ -167,3 +167,25 @@ test('a named file in a multi-rom item is the one that gets played', async () =>
   const target = decodeURIComponent(out.src.split('u=')[1]);
   assert.ok(target.endsWith(encodeURIComponent('Zelda (USA).nes')), target);
 });
+
+// The Flash rail used archive.org's own player, so this app's vendored Ruffle
+// never actually ran on anything a user clicked.
+test('#swf plays Flash through our own Ruffle', async () => {
+  const out = await archiveResolver.resolve(
+    { uri: 'https://archive.org/details/waluigigame#swf' },
+    { fetchImpl: metaFetch({ emulator: 'ruffle-swf',
+      files: [{ name: 'cover.png', size: 900 }, { name: 'game.swf', size: 1_241_144 }] }) },
+  );
+  assert.equal(out.render, RENDER.CANVAS);
+  assert.ok(decodeURIComponent(out.src.split('u=')[1]).endsWith('game.swf'));
+});
+
+test('an item with no Flash file says so rather than mounting nothing', async () => {
+  await assert.rejects(
+    () => archiveResolver.resolve(
+      { uri: 'https://archive.org/details/x#swf' },
+      { fetchImpl: metaFetch({ files: [{ name: 'readme.txt', size: 10 }] }) },
+    ),
+    /no Flash file/,
+  );
+});

@@ -23,7 +23,13 @@ type filters struct {
 	Query      string
 	Groups     []string // movies, tv, music, games, apps, books, anime, adult
 	ShowAdult  bool
-	Kind       string // video | audio | image
+	Kind       string // video | audio | image | game | comic
+	// Source separates the two fundamentally different ways a result arrives:
+	// "instant" is hosted by somebody who is always up (archive.org), "swarm"
+	// is a torrent that depends on whoever is seeding. They behave so
+	// differently -- one always plays, one might not -- that mixing them with
+	// no way to choose makes the result list harder to reason about.
+	Source string // "" (both) | instant | swarm
 }
 
 func parseFilters(q url.Values) filters {
@@ -37,6 +43,7 @@ func parseFilters(q url.Values) filters {
 		WebSafe:    q.Get("webSafe") == "1" || q.Get("webSafe") == "true",
 		Sort:       q.Get("sort"),
 		Kind:       kindFor(q),
+		Source:     strings.ToLower(strings.TrimSpace(q.Get("source"))),
 		Query:      q.Get("q"),
 		Groups:     splitCSV(q.Get("groups")),
 		// Adult results are hidden unless explicitly asked for.
@@ -96,6 +103,12 @@ func (f filters) apply(cards []card) []card {
 			continue
 		}
 		if len(f.Groups) > 0 && !anyGroupMatches(c.Groups, f.Groups) {
+			continue
+		}
+		if f.Source == "instant" && !c.Instant {
+			continue
+		}
+		if f.Source == "swarm" && c.Instant {
 			continue
 		}
 		kept := make([]source, 0, len(c.Sources))
@@ -356,8 +369,12 @@ type facets struct {
 	Indexers   []facetCount `json:"indexers"`
 	Groups     []facetCount `json:"groups"`
 	AdultCount int          `json:"adultCount"`
-	MaxSeed    int          `json:"maxSeeders"`
-	MaxSizeMB  int64        `json:"maxSizeMB"`
+	// How many results arrive each way, so the source toggle can say so
+	// rather than making you click to find out one of them is empty.
+	InstantCount int   `json:"instantCount"`
+	SwarmCount   int   `json:"swarmCount"`
+	MaxSeed      int   `json:"maxSeeders"`
+	MaxSizeMB    int64 `json:"maxSizeMB"`
 }
 
 type facetCount struct {
@@ -375,6 +392,11 @@ func buildFacets(cards []card) facets {
 		}
 		if c.Adult {
 			f.AdultCount++
+		}
+		if c.Instant {
+			f.InstantCount++
+		} else {
+			f.SwarmCount++
 		}
 		for _, s := range c.Sources {
 			if s.Quality != "" {

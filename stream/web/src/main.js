@@ -36,6 +36,9 @@ const state = {
     seeders: 1, minSize: '', maxSize: '',
     quality: new Set(), codec: new Set(), groups: new Set(),
     webSafe: false, adult: false, sort: 'seeders',
+    // '' means both. A hosted backup always plays; a torrent depends on who
+    // is seeding, so which you want is a real question.
+    source: '',
   },
 };
 
@@ -50,6 +53,7 @@ function filterParams() {
   if (f.quality.size) p.set('quality', [...f.quality].join(','));
   if (f.codec.size) p.set('codec', [...f.codec].join(','));
   if (f.webSafe) p.set('webSafe', '1');
+  if (f.source) p.set('source', f.source);
   if (f.groups.size) p.set('groups', [...f.groups].join(','));
   // Adult results are excluded server-side unless explicitly requested.
   if (f.adult) p.set('adult', '1');
@@ -136,6 +140,10 @@ function renderFilters() {
   chipRow($('#f-quality'), f.qualities, state.filters.quality);
   chipRow($('#f-codec'), f.codecs, state.filters.codec);
   $('#f-websafe').classList.toggle('on', state.filters.webSafe);
+  $('#f-instant').classList.toggle('on', state.filters.source === 'instant');
+  $('#f-swarm').classList.toggle('on', state.filters.source === 'swarm');
+  $('#f-instant').textContent = f.instantCount ? `Backups ${f.instantCount}` : 'Backups';
+  $('#f-swarm').textContent = f.swarmCount ? `Torrents ${f.swarmCount}` : 'Torrents';
 }
 
 // Human labels for the Newznab buckets the API reports.
@@ -167,12 +175,16 @@ function groupRow(host, values, selected) {
       c.classList.toggle('on');
       // With no words typed, picking a category IS the search -- "show me
       // games" -- so it runs one rather than re-filtering an empty result set.
-      if (!state.query) {
-        if (selected.size) search();
-        else restoreLanding();
-      } else {
-        refilter();
-      }
+      // A chip is a choice, not a command. Firing a search the instant one is
+      // ticked means the page runs off and fetches something while you are
+      // still deciding what you want -- and ticking two categories fired two
+      // searches, the first of them wasted.
+      //
+      // So: if results are already on screen, narrowing them is instant and
+      // free (the server filters its cache). If there are none, the chip just
+      // arms the search and the Search button runs it.
+      if (state.cards.length) refilter();
+      else armSearch();
     });
     host.append(c);
   }
@@ -707,6 +719,27 @@ function offerPageLinks(page) {
   $('#library').hidden = false;
 }
 
+/**
+ * Show what pressing Search will do, once a category is ticked but nothing has
+ * been searched for yet.
+ *
+ * Without this a ticked chip appears to do nothing at all, which reads as
+ * broken rather than as staged.
+ */
+function armSearch() {
+  const picked = [...state.filters.groups].map((g) => GROUP_LABELS[g] || g);
+  const btn = $('#search-form button[type=submit]');
+  if (picked.length) {
+    btn.textContent = 'Browse';
+    showStatus(`Press Browse to see everything in ${picked.join(' + ')}`
+      + ', or type a title to search within it.');
+  } else {
+    btn.textContent = 'Search';
+    $('#status').hidden = true;
+    restoreLanding();
+  }
+}
+
 function showStatus(text) {
   const s = $('#status');
   s.replaceChildren(document.createTextNode(text));
@@ -772,8 +805,10 @@ function init() {
   $('#search-form').addEventListener('submit', (e) => {
     e.preventDefault();
     state.query = $('#q').value.trim();
-    if (!state.query) return;
-    history.replaceState(null, '', `?q=${encodeURIComponent(state.query)}`);
+    // No words but a category ticked is a browse: "show me games".
+    if (!state.query && !state.filters.groups.size) return;
+    history.replaceState(null, '', state.query ? `?q=${encodeURIComponent(state.query)}` : '?');
+    $('#search-form button[type=submit]').textContent = 'Search';
     search();
   });
 
@@ -799,11 +834,22 @@ function init() {
     $('#f-websafe').classList.toggle('on', state.filters.webSafe);
     refilter();
   });
+  for (const [id, value] of [['#f-instant', 'instant'], ['#f-swarm', 'swarm']]) {
+    $(id).addEventListener('click', () => {
+      // Clicking the one already active clears back to showing both, which is
+      // what every other toggle on this bar does.
+      state.filters.source = state.filters.source === value ? '' : value;
+      $('#f-instant').classList.toggle('on', state.filters.source === 'instant');
+      $('#f-swarm').classList.toggle('on', state.filters.source === 'swarm');
+      if (state.cards.length) refilter();
+    });
+  }
+
   $('#filter-reset').addEventListener('click', () => {
     state.filters = {
       seeders: 1, minSize: '', maxSize: '',
       quality: new Set(), codec: new Set(), groups: new Set(),
-      webSafe: false, adult: false, sort: 'seeders',
+      webSafe: false, adult: false, sort: 'seeders', source: '',
     };
     $('#f-seeders').value = 1; $('#f-minsize').value = ''; $('#f-maxsize').value = '';
     $('#f-sort').value = 'seeders';

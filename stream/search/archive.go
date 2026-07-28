@@ -183,6 +183,20 @@ func sourcesFor(d archiveDoc, title, system string) []source {
 	details := "https://archive.org/details/" + d.Identifier
 	out := make([]source, 0, 2)
 
+	// Flash is the same trade as a console game: their player works, ours has
+	// touch support and our own controls. A SWF is about a megabyte, so
+	// relaying one costs almost nothing -- much less than a ROM.
+	if d.Emulator == "ruffle-swf" || d.Emulator == "flash" {
+		out = append(out, source{
+			Title:   title,
+			Indexer: "Ruffle",
+			Magnet:  details + "#swf",
+			Source:  system,
+			Quality: "TOUCH",
+			WebSafe: true,
+		})
+	}
+
 	if core := ejsCoreFor(d.Emulator); core != "" {
 		out = append(out, source{
 			Title:   title,

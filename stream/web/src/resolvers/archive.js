@@ -1,6 +1,7 @@
 import { makePlayable, RENDER } from '../source.js';
 import { kindOf, bestFile } from '../pickfile.js';
 import { mountEmulator } from './game.js';
+import { mountRuffle } from './flash.js';
 import { PlaybackError, FAILURE } from '../failures.js';
 
 /**
@@ -127,6 +128,9 @@ export function viaRelay(url) {
  */
 export const MAX_RELAY_ROM = 48 << 20;
 
+/** A SWF is typically about a megabyte, so this is generous rather than tight. */
+export const MAX_RELAY_SWF = 24 << 20;
+
 /**
  * Play an archive.org item with EmulatorJS instead of the archive's player.
  *
@@ -176,6 +180,44 @@ async function playHere(id, wantFile, { fetchImpl }) {
   });
 }
 
+/**
+ * Play an archive.org Flash item with our own Ruffle.
+ *
+ * Same trade as playHere: their player works, ours has touch support and sits
+ * inside this app's controls. The trade is much cheaper here -- a SWF is about
+ * a megabyte where a ROM can be tens -- so the ceiling is lower and it is
+ * rarely reached.
+ */
+async function playFlashHere(id, wantFile, { fetchImpl }) {
+  const info = await itemInfo(id, { fetchImpl });
+  const named = wantFile && info.files.find((f) => f.name === wantFile);
+  const swf = named || info.files.find((f) => kindOf(f.name) === 'flash');
+  if (!swf) {
+    throw new PlaybackError(FAILURE.UNSUPPORTED_CODEC, 'no Flash file in this item');
+  }
+  if (swf.length > MAX_RELAY_SWF) {
+    throw new PlaybackError(
+      FAILURE.UNSUPPORTED_CODEC,
+      `${swf.name} is too large to play here — use Play at archive.org.`,
+    );
+  }
+
+  const url = viaRelay(`${DOWNLOAD}${encodeURIComponent(id)}/${encodeURIComponent(swf.name)}`);
+  let handle = null;
+  return makePlayable({
+    render: RENDER.CANVAS,
+    src: url,
+    mime: 'application/x-shockwave-flash',
+    mount(el) {
+      handle = mountRuffle(el, url);
+    },
+    cleanup() {
+      handle?.destroy();
+      handle = null;
+    },
+  });
+}
+
 export const archiveResolver = {
   name: 'archive',
   canHandle(input) {
@@ -186,9 +228,13 @@ export const archiveResolver = {
     const id = identifierFrom(source.uri);
     const file = fileFrom(source.uri);
 
-    // `#ejs` is how a search result asks for the touch-capable player.
+    // `#ejs` and `#swf` are how a search result asks for our own player
+    // rather than the archive's.
     if (/#ejs$/.test(source.uri)) {
       return playHere(id, file, { fetchImpl });
+    }
+    if (/#swf$/.test(source.uri)) {
+      return playFlashHere(id, file, { fetchImpl });
     }
 
     // A direct link to plain media is worth playing natively: a video element

@@ -530,7 +530,7 @@ func rankSources(c *card) {
 		// A player with a touch pad outranks one without, because the archive's
 		// own emulator expects a keyboard and offers no on-screen controls --
 		// on a phone that is a game you can watch but not play.
-		if s.Indexer == "EmulatorJS" {
+		if s.Indexer == "EmulatorJS" || s.Indexer == "Ruffle" {
 			n += 200
 		}
 		n += qualityRank(s.Quality) * 3

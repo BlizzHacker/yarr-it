@@ -289,15 +289,33 @@ func TestASystemWithNoCoreOffersOnlyTheArchivePlayer(t *testing.T) {
 	}
 }
 
-// MS-DOS and Flash items play in their player only; offering "touch controls"
-// for a keyboard-and-mouse DOS game would be a lie.
-func TestDosAndFlashKeepTheArchivePlayerOnly(t *testing.T) {
-	for _, emulator := range []string{"dosbox", "ruffle-swf"} {
-		cards := archiveCards([]archiveDoc{{
-			Identifier: "x_" + emulator, Title: "X", Emulator: emulator,
-		}})
-		if n := len(cards[0].Sources); n != 1 {
-			t.Errorf("%s: want 1 source, got %d", emulator, n)
-		}
+// An MS-DOS game plays in their player only. Offering "touch controls" for
+// something that wants a keyboard and a mouse would be a lie.
+func TestDosKeepsTheArchivePlayerOnly(t *testing.T) {
+	cards := archiveCards([]archiveDoc{{
+		Identifier: "x_dos", Title: "X", Emulator: "dosbox",
+	}})
+	if n := len(cards[0].Sources); n != 1 {
+		t.Errorf("want 1 source for MS-DOS, got %d", n)
+	}
+}
+
+// Flash is the same trade as a console game, and a SWF is about a megabyte --
+// far cheaper to relay than a ROM -- so both players are offered and ours,
+// which has touch support, leads.
+func TestFlashIsAlsoOfferedThroughOurOwnRuffle(t *testing.T) {
+	cards := archiveCards([]archiveDoc{{
+		Identifier: "waluigigame", Title: "Waluigi Game", Emulator: "ruffle-swf",
+	}})
+	c := cards[0]
+	if len(c.Sources) != 2 {
+		t.Fatalf("want both players for Flash, got %d", len(c.Sources))
+	}
+	rankSources(&c)
+	if c.Sources[c.Best].Indexer != "Ruffle" {
+		t.Errorf("best = %q, want Ruffle to lead", c.Sources[c.Best].Indexer)
+	}
+	if got := c.Sources[c.Best].Magnet; !strings.HasSuffix(got, "#swf") {
+		t.Errorf("ruffle target = %q, want the #swf fragment", got)
 	}
 }
