@@ -72,7 +72,7 @@ test('a canvas playable without a mount is rejected at construction', async () =
 
 test('bootEmulator sets every global the loader reads BEFORE injecting it', () => {
   const appended = [];
-  const el = {};
+  const el = {};  // no id: bootEmulator must assign one
   const fakeDoc = {
     createElement: () => ({ set src(v) { this._src = v; }, get src() { return this._src; } }),
     body: {
@@ -84,6 +84,7 @@ test('bootEmulator sets every global the loader reads BEFORE injecting it', () =
           core: globalThis.EJS_core,
           gameUrl: globalThis.EJS_gameUrl,
           player: globalThis.EJS_player,
+          playerIsSelector: typeof globalThis.EJS_player === 'string',
         });
       },
     },
@@ -94,5 +95,9 @@ test('bootEmulator sets every global the loader reads BEFORE injecting it', () =
   assert.match(appended[0].src, /loader\.js$/);
   assert.equal(appended[0].core, 'nes');
   assert.equal(appended[0].gameUrl, 'https://x/Z.nes');
-  assert.equal(appended[0].player, el);
+  // EJS_player must be a CSS selector string; an element makes the loader
+  // run and then never construct the emulator, with no error raised.
+  assert.equal(appended[0].playerIsSelector, true);
+  assert.equal(appended[0].player, `#${el.id}`);
+  assert.ok(el.id, 'bootEmulator must give the host an id to select');
 });

@@ -43,9 +43,11 @@ browser instead of a faked single stream.
 | `torrent` | magnet, 40-char info hash | playable — wraps `StreamEngine` unchanged |
 | `embed` | YouTube, Vimeo | playable, official iframe only — never extraction |
 | `playlist` | `.m3u`, `.m3u8` | collection, or a playable when the body is an HLS manifest |
+| `flash` | `.swf` | playable, `canvas` — Ruffle (vendored, dual MIT/Apache) |
+| `game` | ROM (`.nes`, `.smc`, `.gba`, `.z64`, `.md`, …) | playable, `canvas` — EmulatorJS |
 | `url` | direct media URL | playable, `render` chosen by sniffed content-type |
 
-Registration order is `torrent, embed, playlist, url`. `url` is the catch-all and
+Registration order is `torrent, embed, flash, game, playlist, url`. `url` is the catch-all and
 must stay last: a YouTube link and an `.m3u8` link are both http(s) URLs, so the
 specific resolvers need first refusal.
 
@@ -53,6 +55,25 @@ specific resolvers need first refusal.
 extension proves nothing — the body decides. HLS manifests carry `#EXT-X-*` tags
 at the start of a line; channel lists do not. That is one fetch, sniffed, which
 is why these are one resolver rather than two.
+
+### Flash and games out of torrents
+
+The torrent resolver classifies `.swf` and cartridge ROMs alongside video and
+audio, so a torrent carrying either renders on the canvas rather than being
+handed to a `<video>` that can never play it. Neither can be streamed — Ruffle
+needs the whole SWF and an emulator needs the whole cartridge before it boots —
+so those wait for the file to complete, showing progress, then hand the bytes
+over as a blob. Cartridge-era ROMs are kilobytes to a few megabytes, so that is
+seconds on a healthy swarm.
+
+`pickPlayableFile` prefers real media when a torrent has both, so a film that
+happens to ship an `.swf` extra still plays the film.
+
+**`.torrent` file URLs work as well as magnets, and are more reliable for this.**
+A magnet carries no metadata: WebTorrent has to fetch the file list from a peer
+via `ut_metadata` first, and a BEP-19 web seed serves content, not metadata — so
+a magnet with only a web seed and no peers never becomes ready. A `.torrent`
+file has the metadata inline and starts immediately.
 
 ### The playback ladder
 

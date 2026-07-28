@@ -72,9 +72,15 @@ export function isRom(input) {
  * Inject the EmulatorJS loader. Exported so tests can drive it without a DOM.
  */
 export function bootEmulator(el, { gameUrl, core, name, doc = document }) {
+  // EJS_player is a CSS SELECTOR STRING, not an element. Handing it the node
+  // itself makes the loader run, fetch emulator.min.js and define its globals,
+  // and then silently never construct the emulator -- an empty container with
+  // no error anywhere. The element therefore needs an id to point at.
+  if (!el.id) el.id = `ejs-${Math.random().toString(36).slice(2, 10)}`;
+
   // These globals ARE the configuration API -- they must be set before the
   // loader script executes, not after.
-  globalThis.EJS_player = el;
+  globalThis.EJS_player = `#${el.id}`;
   globalThis.EJS_core = core;
   globalThis.EJS_gameUrl = gameUrl;
   globalThis.EJS_gameName = name;
@@ -90,40 +96,53 @@ export function bootEmulator(el, { gameUrl, core, name, doc = document }) {
   return tag;
 }
 
+/**
+ * Boot EmulatorJS into `el` against any URL -- an http(s) ROM or a blob: URL
+ * from a completed torrent file. Returns a handle whose destroy() stops it.
+ */
+export function mountEmulator(el, url, { core, name }) {
+  // EmulatorJS replaces its host element's contents with its own UI, so give it
+  // a child of its own rather than the shared container.
+  const host = document.createElement('div');
+  host.style.width = '100%';
+  host.style.height = '100%';
+  el.replaceChildren(host);
+
+  const tag = bootEmulator(host, { gameUrl: url, core, name });
+
+  return {
+    destroy() {
+      try {
+        tag?.remove();
+        globalThis.EJS_emulator?.pause?.();
+      } catch {
+        /* nothing running */
+      }
+    },
+  };
+}
+
 export const gameResolver = {
   name: 'game',
   canHandle(input) {
     return typeof input === 'string' && /^https?:\/\//i.test(input) && isRom(input);
   },
   async resolve(source) {
-    const core = coreFor(new URL(source.uri).pathname);
-    const name = decodeURIComponent(new URL(source.uri).pathname.split('/').pop() || 'game');
-    let tag = null;
+    const path = new URL(source.uri).pathname;
+    const core = coreFor(path);
+    const name = decodeURIComponent(path.split('/').pop() || 'game');
+    let handle = null;
 
     return makePlayable({
       render: RENDER.CANVAS,
       src: source.uri,
       mime: 'application/octet-stream',
       mount(el) {
-        // EmulatorJS replaces the element's contents with its own UI, so give
-        // it a child of its own rather than the shared container.
-        const host = document.createElement('div');
-        host.style.width = '100%';
-        host.style.height = '100%';
-        el.append(host);
-        tag = bootEmulator(host, { gameUrl: source.uri, core, name });
+        handle = mountEmulator(el, source.uri, { core, name });
       },
       cleanup() {
-        // The emulator keeps a RAF loop and an audio context alive. Removing
-        // the loader tag and clearing the globals lets a later boot start
-        // clean; the container itself is emptied by detachAll.
-        try {
-          tag?.remove();
-          globalThis.EJS_emulator?.pause?.();
-        } catch {
-          /* nothing running */
-        }
-        tag = null;
+        handle?.destroy();
+        handle = null;
       },
     });
   },

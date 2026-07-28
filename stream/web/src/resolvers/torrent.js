@@ -1,4 +1,6 @@
 import { makePlayable, RENDER, TIER } from '../source.js';
+import { mountRuffle } from './flash.js';
+import { mountEmulator, coreFor } from './game.js';
 import { PlaybackError, FAILURE } from '../failures.js';
 
 /**
@@ -24,11 +26,26 @@ function loadEngineClassify() {
 
 const INFOHASH = /^[0-9a-f]{40}$/i;
 
+/** An http(s) URL whose PATH ends in .torrent -- not merely one that mentions it. */
+export function isTorrentFile(input) {
+  try {
+    const u = new URL(input);
+    return /^https?:$/.test(u.protocol) && u.pathname.toLowerCase().endsWith('.torrent');
+  } catch {
+    return false;
+  }
+}
+
 const KIND_TO_RENDER = {
   video: RENDER.VIDEO,
   audio: RENDER.AUDIO,
   image: RENDER.IMAGE,
+  flash: RENDER.CANVAS,
+  rom: RENDER.CANVAS,
 };
+
+/** Kinds that a canvas player (Ruffle, EmulatorJS) drives rather than an element. */
+const CANVAS_KINDS = new Set(['flash', 'rom']);
 
 const MIME_BY_EXT = {
   mp4: 'video/mp4',
@@ -72,14 +89,98 @@ export function normalizeMagnet(input) {
   return null;
 }
 
+/**
+ * A Flash movie or a ROM out of a torrent.
+ *
+ * Neither can be streamed. Ruffle needs the whole SWF and an emulator needs the
+ * whole cartridge before it can boot -- there is no "start at the first byte you
+ * need" for a ROM image. So this waits for the file to finish, showing progress
+ * rather than a frozen blank canvas, and only then hands the bytes to a player.
+ *
+ * That is fine for what it targets: cartridge-era ROMs and Flash files are
+ * kilobytes to a few megabytes, so the wait is seconds on a healthy swarm.
+ */
+function canvasPlayable(file, torrent, kind, engine) {
+  let handle = null;
+  let blobUrl = null;
+  let progressTimer = null;
+
+  const stopProgress = () => {
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = null;
+  };
+
+  return makePlayable({
+    render: RENDER.CANVAS,
+    src: '',
+    mime: mimeForName(file.name),
+    tier: TIER.DIRECT,
+    mount(el) {
+      const label = document.createElement('div');
+      label.style.padding = '18px';
+      label.style.textAlign = 'center';
+      label.textContent = `Downloading ${file.name}…`;
+      el.replaceChildren(label);
+
+      // file.progress is 0..1 while the piece picker works through the file.
+      progressTimer = setInterval(() => {
+        const pct = Math.round((file.progress ?? 0) * 100);
+        if (Number.isFinite(pct)) {
+          label.textContent = `Downloading ${file.name}… ${pct}%`;
+        }
+      }, 500);
+
+      file.blob()
+        .then((blob) => {
+          stopProgress();
+          blobUrl = URL.createObjectURL(blob);
+          if (kind === 'flash') {
+            handle = mountRuffle(el, blobUrl);
+          } else {
+            handle = mountEmulator(el, blobUrl, {
+              core: coreFor(file.name),
+              name: file.name,
+            });
+          }
+        })
+        .catch((err) => {
+          stopProgress();
+          label.textContent = `Could not load ${file.name}: ${err.message}`;
+        });
+    },
+    cleanup: () => {
+      stopProgress();
+      handle?.destroy();
+      handle = null;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      blobUrl = null;
+      // Scoped teardown: only destroy the torrent if the engine is still on
+      // the one this Playable was built for.
+      try {
+        if (!engine?.torrent || engine.torrent === torrent) engine?.destroyTorrent?.();
+      } catch {
+        /* engine already torn down */
+      }
+    },
+  });
+}
+
 export function createTorrentResolver({ engine, classify, timeoutMs = 90000 }) {
   return {
     name: 'torrent',
     canHandle(input) {
-      return typeof input === 'string' && (input.startsWith('magnet:') || INFOHASH.test(input.trim()));
+      if (typeof input !== 'string') return false;
+      const v = input.trim();
+      return /^magnet:/i.test(v) || INFOHASH.test(v) || isTorrentFile(v);
     },
     resolve(source, _ctx) {
-      const uri = normalizeMagnet(source.uri);
+      // A .torrent FILE carries the metadata inline, so the file list is known
+      // immediately. A magnet does not -- WebTorrent has to fetch metadata from
+      // a peer via ut_metadata first, and a BEP-19 web seed serves content, not
+      // metadata. So a magnet with only a web seed and no peers never becomes
+      // ready. Pass a .torrent URL through untouched; WebTorrent fetches and
+      // parses it itself.
+      const uri = isTorrentFile(source.uri) ? source.uri.trim() : normalizeMagnet(source.uri);
 
       return new Promise((resolve, reject) => {
         let settled = false;
@@ -108,7 +209,13 @@ export function createTorrentResolver({ engine, classify, timeoutMs = 90000 }) {
             clear();
             try {
               const classifyFn = classify ?? (await loadEngineClassify());
-              const render = renderForKind(classifyFn(file.name));
+              const kind = classifyFn(file.name);
+              const render = renderForKind(kind);
+
+              if (CANVAS_KINDS.has(kind)) {
+                resolve(canvasPlayable(file, torrent, kind, engine));
+                return;
+              }
 
               // file.streamURL is served by WebTorrent's service worker,
               // which answers range requests so playback can start and seek

@@ -48,41 +48,57 @@ export function isSwf(input) {
   }
 }
 
+/**
+ * Boot Ruffle into `el` against any URL -- an http(s) SWF or a blob: URL from a
+ * completed torrent file. Returns a handle whose destroy() stops it.
+ */
+export function mountRuffle(el, url) {
+  const handle = { player: null, destroyed: false };
+  loadRuffle()
+    .then((RufflePlayer) => {
+      if (handle.destroyed) return null;
+      const player = RufflePlayer.newest().createPlayer();
+      player.style.width = '100%';
+      player.style.height = '100%';
+      el.replaceChildren(player);
+      handle.player = player;
+      return player.load(url);
+    })
+    .catch((err) => {
+      if (!handle.destroyed) el.textContent = `Flash player failed: ${err.message}`;
+    });
+
+  handle.destroy = () => {
+    handle.destroyed = true;
+    // Ruffle keeps an audio context and a render loop alive until the player
+    // element itself is destroyed; removing the node is not enough.
+    try {
+      handle.player?.remove();
+    } catch {
+      /* already gone */
+    }
+    handle.player = null;
+  };
+  return handle;
+}
+
 export const flashResolver = {
   name: 'flash',
   canHandle(input) {
     return typeof input === 'string' && /^https?:\/\//i.test(input) && isSwf(input);
   },
   async resolve(source) {
-    let player = null;
-
+    let handle = null;
     return makePlayable({
       render: RENDER.CANVAS,
       src: source.uri,
       mime: 'application/x-shockwave-flash',
       mount(el) {
-        loadRuffle()
-          .then((RufflePlayer) => {
-            const ruffle = RufflePlayer.newest();
-            player = ruffle.createPlayer();
-            player.style.width = '100%';
-            player.style.height = '100%';
-            el.append(player);
-            return player.load(source.uri);
-          })
-          .catch((err) => {
-            el.textContent = `Flash player failed: ${err.message}`;
-          });
+        handle = mountRuffle(el, source.uri);
       },
       cleanup() {
-        // Ruffle keeps an audio context and a render loop alive until the
-        // player element is destroyed; removing the node is not enough.
-        try {
-          player?.remove();
-        } catch {
-          /* already gone */
-        }
-        player = null;
+        handle?.destroy();
+        handle = null;
       },
     });
   },

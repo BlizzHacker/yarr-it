@@ -74,5 +74,9 @@ push "icon-512.png"        dist/icon-512.png
 # if it has not been run the directory is absent and this is a no-op.
 pushdir "dist/ruffle" "ruffle"
 
+# A public-domain NES test ROM, served so the ROM path can be exercised
+# end to end (it doubles as the web seed for the test torrent).
+pushdir "dist/roms" "roms"
+
 ssh "$JUMP" "ssh -i $KEY $VPS 'chown -R caddy:caddy /srv/stream'"
 echo "==> done ($HASH)"
