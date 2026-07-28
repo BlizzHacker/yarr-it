@@ -113,6 +113,7 @@ type server struct {
 	inflight map[string]chan struct{}
 
 	tmdb     *tmdbClient
+	igdb     *igdbClient
 	discover discoverCache
 	warm     *warmer
 }
@@ -135,6 +136,10 @@ func main() {
 		cache:       make(map[string]cacheEntry),
 		inflight:    make(map[string]chan struct{}),
 		tmdb:        newTMDB(os.Getenv("TMDB_API_KEY")),
+		// Reuses the RomM installation's IGDB credentials. That is the part of
+		// RomM that describes games in general; its own API is library-bound
+		// and would only describe this installation's shelf.
+		igdb: newIGDB(os.Getenv("IGDB_CLIENT_ID"), os.Getenv("IGDB_CLIENT_SECRET")),
 	}
 	s.warm = newWarmer(s)
 	go s.evictLoop()

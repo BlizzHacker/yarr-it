@@ -70,8 +70,16 @@ func (s *server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rows := make([]discoverRow, len(discoverSources))
-	var archive []discoverRow
+	var archive, games []discoverRow
 	var wg sync.WaitGroup
+
+	// IGDB answers in well under a second while TMDB's five lists and the
+	// archive queries take longer, so this runs alongside rather than after.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		games = s.igdb.discoverGames(ctx)
+	}()
 
 	// The archive rows are what make this more than a movie site, and they
 	// need no TMDB key -- so they are fetched alongside rather than after, and
@@ -100,8 +108,10 @@ func (s *server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			live = append(live, row)
 		}
 	}
-	// Films first -- they are still what most people arrive for -- then games,
-	// books and comics underneath.
+	// Films first -- they are still what most people arrive for. Then the
+	// rated game shelves, which answer "what is worth playing", and only then
+	// the archive.org rows, which answer "what can I start this second".
+	live = append(live, games...)
 	live = append(live, archive...)
 
 	if len(live) > 0 {
