@@ -204,6 +204,11 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	dev := deviceProfileFor(r.URL.Query().Get("device"))
 	cacheKey := kind + "\x00" + strings.ToLower(q)
 
+	// Set when the indexers failed but archive.org answered, so the response
+	// can admit it is incomplete rather than presenting a partial result as a
+	// whole one.
+	partial := false
+
 	// Filters are applied to the cached result set, so changing one is instant
 	// and costs no indexer traffic.
 	respond := func(cards []card, cacheState string, stale bool) {
@@ -220,6 +225,9 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		if stale {
 			body["stale"] = true
+		}
+		if partial {
+			body["partial"] = true
 		}
 		w.Header().Set("X-Cache", cacheState)
 		writeJSON(w, 200, body)
@@ -272,7 +280,16 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			log.Printf("archive.org search %q: %v", q, got.err)
 		} else if len(got.cards) > 0 {
 			cards = append(cards, got.cards...)
-			err = nil // archive.org alone is a usable answer
+			// archive.org alone is a usable answer, but saying so silently
+			// turned "the indexers failed" into "there are only six results",
+			// which is indistinguishable from a working search that found
+			// little -- and cost an hour of chasing a break that was not one.
+			if err != nil {
+				log.Printf("search %q: indexers failed, serving %d archive.org results only: %v",
+					q, len(got.cards), err)
+				partial = true
+			}
+			err = nil
 		}
 	}
 

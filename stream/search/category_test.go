@@ -59,3 +59,21 @@ func TestAnEmptyTermBrowsesRatherThanErroring(t *testing.T) {
 		t.Errorf("browse lost its scope: %s", q)
 	}
 }
+
+// "books" and "other" both map to kind "", so without the categories in the
+// key one cache entry answered for every category browse.
+func TestEachCategoryBrowseGetsItsOwnCacheEntry(t *testing.T) {
+	key := func(vals url.Values) string {
+		f := parseFilters(vals)
+		return f.Kind + "\x00" + strings.ToLower(vals.Get("q")) + "\x00" + strings.Join(f.Groups, ",")
+	}
+	books := key(url.Values{"groups": {"books"}})
+	other := key(url.Values{"groups": {"other"}})
+	if books == other {
+		t.Errorf("books and other share a cache key: %q", books)
+	}
+	// And a browse must not collide with a text search.
+	if key(url.Values{"groups": {"games"}}) == key(url.Values{"q": {"zelda"}}) {
+		t.Error("a category browse collides with a text search")
+	}
+}
