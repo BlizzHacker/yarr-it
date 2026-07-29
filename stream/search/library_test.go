@@ -239,3 +239,24 @@ func TestFlushIsAtomic(t *testing.T) {
 		}
 	}
 }
+
+// A TV player has a position and nothing else. The resume rail must still show
+// a title, or it renders raw keys.
+func TestContinueWatchingBorrowsTitleFromTheLibrary(t *testing.T) {
+	s, _ := libServer(t)
+	s.library.add("wade", libraryItem{Key: "k", Title: "Dune", Poster: "p.jpg"})
+	s.library.setProgress("wade", progress{Key: "k", Position: 600, Duration: 9000})
+
+	got := s.library.continueWatching("wade", 10)
+	if len(got) != 1 {
+		t.Fatalf("continue row has %d entries", len(got))
+	}
+	if got[0].Title != "Dune" || got[0].Poster != "p.jpg" {
+		t.Errorf("row is %+v, want the library's title and poster", got[0])
+	}
+	// The stored record must stay as the client sent it; this is display-time
+	// enrichment, not a write.
+	if p, _ := s.library.progressFor("wade", "k"); p.Title != "" {
+		t.Error("enrichment leaked back into stored progress")
+	}
+}

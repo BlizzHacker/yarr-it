@@ -9,6 +9,9 @@ import { gameResolver } from './resolvers/game.js';
 import { archiveResolver } from './resolvers/archive.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
+import {
+  getContinueWatching, trackProgress, watchedFraction, isSignedIn,
+} from './shelf.js';
 import { PlaybackError } from './failures.js';
 
 const $ = (s) => document.querySelector(s);
@@ -334,6 +337,16 @@ async function loadDiscover() {
     if (!rows?.length) return;
 
     host.replaceChildren();
+
+    // What you already started comes first. Anyone signed out gets an empty
+    // list and no row, which is the correct amount of nagging.
+    try {
+      const resume = await getContinueWatching();
+      if (resume.length) host.append(resumeShelf(resume));
+    } catch {
+      /* the resume row is a bonus; the catalogue still renders without it */
+    }
+
     for (const row of rows) {
       const shelf = el('section', 'shelf');
       shelf.append(el('h3', null, row.title));
@@ -345,6 +358,55 @@ async function loadDiscover() {
   } catch {
     /* discovery is a nicety; a failure just leaves the intro copy in place */
   }
+}
+
+/** The Continue Watching row, newest first. */
+function resumeShelf(items) {
+  const shelf = el('section', 'shelf');
+  shelf.append(el('h3', null, 'Continue watching'));
+  const rail = el('div', 'rail');
+  for (const p of items) rail.append(resumeTile(p));
+  shelf.append(rail);
+  return shelf;
+}
+
+function resumeTile(p) {
+  const t = el('button', 'tile');
+  t.type = 'button';
+  const label = p.title || p.key;
+  t.title = `Resume ${label}`;
+
+  const poster = el('div', 'poster');
+  if (p.poster) {
+    const img = el('img');
+    img.loading = 'lazy';
+    img.alt = label;
+    img.src = p.poster;
+    poster.append(img);
+  } else {
+    poster.append(el('div', 'noart', label));
+  }
+
+  // A bar across the artwork says how far in you are without needing a number.
+  const bar = el('div', 'progress');
+  const fill = el('div', 'progress-fill');
+  fill.style.width = `${Math.round(watchedFraction(p) * 100)}%`;
+  bar.append(fill);
+  poster.append(bar);
+  t.append(poster);
+
+  t.append(el('div', 'tname', label));
+  const mins = Math.max(0, Math.round((p.duration - p.position) / 60));
+  t.append(el('div', 'tmeta', p.duration ? `${mins} min left` : 'Resume'));
+
+  t.addEventListener('click', () => {
+    const q = p.title || p.key;
+    $('#q').value = q;
+    state.query = q;
+    history.replaceState(null, '', `?q=${encodeURIComponent(q)}`);
+    search();
+  });
+  return t;
 }
 
 function discoverTile(item) {
@@ -598,6 +660,14 @@ async function play(card, src) {
     }
     const el = renderPlayable(out, els);
     state.playable = out;
+
+    // Remember where this viewer gets to, so the same title resumes on any
+    // other device. Only real media has a position; an image or an emulator
+    // has nothing to record.
+    state.stopTracking?.();
+    state.stopTracking = (out.render === 'video' || out.render === 'audio')
+      ? trackProgress(el, card)
+      : null;
     el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
     // Only <video>/<audio> fire a 'playing' event. An image, an iframe embed and
     // a canvas player (Ruffle/EmulatorJS) never will, so their status has to be
@@ -640,6 +710,12 @@ function closePlayer() {
   // src on all of them, not just video+image -- with the audio and embed
   // elements now in play, leaving those untouched would let a paused-looking
   // player keep an <audio> element playing invisibly in the background.
+  // Flush the final position before the element is torn down: after
+  // detachAll, currentTime is gone, and that last position is the one
+  // somebody actually wants back.
+  state.stopTracking?.();
+  state.stopTracking = null;
+
   detachAll(playerElements());
   state.engine?.destroyTorrent();
 }

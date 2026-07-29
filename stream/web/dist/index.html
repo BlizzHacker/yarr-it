@@ -117,6 +117,14 @@
   /* A hosted result is the one thing on the page guaranteed to play, so it
      gets a solid badge rather than the translucent seeder pill. */
   .badge.instant { background:var(--ok,#2dd4bf); color:#04202b; letter-spacing:.04em; }
+  /* Continue Watching: a bar across the foot of the artwork, so how far in
+     you are reads at a glance without a number competing with the title. */
+  .progress {
+    position:absolute; left:0; right:0; bottom:0; height:4px;
+    background:rgba(0,0,0,.55);
+  }
+  .progress-fill { height:100%; background:var(--accent, #e5b567); }
+
   .rating {
     position:absolute; top:8px; right:8px; font-size:11px; font-weight:650;
     padding:3px 7px; border-radius:6px; background:rgba(4,6,9,.82); color:var(--warn);
@@ -454,6 +462,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=2dca1dbdd3e0"></script>
+<script type="module" src="/app.js?v=81d0f93c026e"></script>
 </body>
 </html>

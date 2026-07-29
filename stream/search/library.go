@@ -212,9 +212,21 @@ func (s *libraryStore) continueWatching(userID string, limit int) []progress {
 	}
 	out := make([]progress, 0, len(u.Progress))
 	for _, p := range u.Progress {
-		if p.resumable() {
-			out = append(out, p)
+		if !p.resumable() {
+			continue
 		}
+		// A client that only reports a position -- which is all a TV player
+		// naturally has -- would otherwise put a raw key on the shelf. If the
+		// title is in the library, use what it knows.
+		if it, ok := u.Items[p.Key]; ok {
+			if p.Title == "" {
+				p.Title = it.Title
+			}
+			if p.Poster == "" {
+				p.Poster = it.Poster
+			}
+		}
+		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
 	if limit > 0 && len(out) > limit {
