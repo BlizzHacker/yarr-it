@@ -1,5 +1,8 @@
 # vps-edge
 
+> **Yarr.It is dedicated to the memory of Samuel Thomas Trimble Cliffe
+> (1992–2011), who wanted it to exist.** See [DEDICATION.md](DEDICATION.md).
+
 Configuration and tooling for the MoveWeight VPS mail edge.
 
 **Host:** `104.129.28.137` (RackNerd, Chicago) — `relay.moveweight.net`
