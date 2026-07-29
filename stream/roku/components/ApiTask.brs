@@ -103,8 +103,12 @@ function httpGetJson(url as String, timeoutSec as Integer) as Object
 
     if msg.getResponseCode() <> 200 then return invalid
 
-    parsed = ParseJson(msg.getString())
-    return parsed
+    ' Same guard as the POST path: an empty body must not reach ParseJson,
+    ' which logs an error for every occurrence rather than returning quietly.
+    text = msg.getString()
+    if text = invalid or text = "" then return invalid
+
+    return ParseJson(text)
 end function
 
 ' httpPostJson posts a form body and parses the JSON reply.
@@ -132,7 +136,15 @@ function httpPostJson(url as String, body as String, timeoutSec as Integer) as O
         return invalid
     end if
 
-    return ParseJson(msg.getString())
+    ' An empty body is a normal outcome here -- the device poll gets one
+    ' whenever the request is cancelled or the peer closes early -- and handing
+    ' it to ParseJson logs "Data is empty" on every single poll. That buries
+    ' any genuine error in a scrolling wall of noise, which is the state the
+    ' log was in when this was found.
+    text = msg.getString()
+    if text = invalid or text = "" then return invalid
+
+    return ParseJson(text)
 end function
 
 ' urlEncode escapes a value for use in a query string. roUrlTransfer.escape()
