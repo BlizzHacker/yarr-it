@@ -38,6 +38,28 @@ stream.moveweight.com {
 		reverse_proxy 127.0.0.1:8802
 	}
 
+	# Sign-in endpoints. These must be reachable WITHOUT a session -- somebody
+	# who cannot load the login page can never get through it -- so they are
+	# routed before the gate below rather than behind it.
+	handle /auth/* {
+		reverse_proxy 127.0.0.1:8802
+	}
+
+	# The gate. Every remaining request is checked against a session before any
+	# markup is served, so an unauthenticated visitor -- or a store reviewer --
+	# sees a sign-in page rather than a catalogue.
+	@needsAuth not path /auth/* /api/health /favicon.ico
+	handle @needsAuth {
+		forward_auth 127.0.0.1:8802 {
+			uri /auth/verify
+			copy_headers X-Yarrit-User X-Yarrit-Email
+			@denied status 401
+			handle_response @denied {
+				redir * /auth/login?next={http.request.uri}
+			}
+		}
+	}
+
 	# index.html carries a hashed script URL, so it must never be cached or a
 	# returning visitor keeps loading the previous build's assets.
 	@html path / /index.html

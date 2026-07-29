@@ -148,8 +148,28 @@ func main() {
 	go s.warm.run()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/search", s.handleSearch)
-	mux.HandleFunc("/api/discover", s.handleDiscover)
+	auth := loadAuthConfig()
+	if auth.Enabled {
+		log.Printf("sign-in required (client %s…)", auth.ClientID[:8])
+	} else {
+		log.Printf("sign-in NOT configured; the site is open")
+	}
+
+	// Sign-in endpoints are deliberately outside the gate: a person who cannot
+	// reach the login page cannot ever get through it.
+	mux.HandleFunc("/auth/login", auth.handleLogin)
+	mux.HandleFunc("/auth/callback", auth.handleCallback)
+	mux.HandleFunc("/auth/logout", auth.handleLogout)
+	mux.HandleFunc("/auth/verify", auth.handleVerify)
+	mux.HandleFunc("/auth/me", auth.handleMe)
+
+	// The data is what actually needs protecting. Gating it here means the API
+	// is safe even if the edge is ever misconfigured -- the check does not
+	// depend on Caddy getting its forward_auth right.
+	mux.HandleFunc("/api/search", auth.requireAuth(s.handleSearch))
+	mux.HandleFunc("/api/discover", auth.requireAuth(s.handleDiscover))
+	// Health stays open so a monitor does not need a session to see the
+	// service is alive.
 	mux.HandleFunc("/api/health", s.handleHealth)
 
 	srv := &http.Server{
