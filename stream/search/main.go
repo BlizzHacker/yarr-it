@@ -430,7 +430,8 @@ func (s *server) searchProwlarr(ctx context.Context, q, kind string) ([]card, er
 	// Stragglers must outlive this request: the whole point is to answer now
 	// and let the rest land in the cache for the next one. A child of the
 	// request context would be cancelled the moment the response is written.
-	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Second)
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx),
+		fanoutDeadline+stragglerBudget)
 
 	res, err := s.searchFanout(detached, q, kind, fanoutDeadline, func(full []card) {
 		defer cancel()

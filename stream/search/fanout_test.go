@@ -150,3 +150,31 @@ func TestSearchCacheKeyMatchesTheWarmerFormat(t *testing.T) {
 		t.Error("different kinds must not share a cache entry")
 	}
 }
+
+// The global budget is what stops one search's stragglers from starving the
+// next one. Per-search limits let five cold searches degrade to zero indexers.
+func TestFanoutSlotsAreGlobalAndAlwaysReturned(t *testing.T) {
+	if cap(prowlarrSlots) != fanoutConcurrency {
+		t.Fatalf("slot budget is %d, want %d", cap(prowlarrSlots), fanoutConcurrency)
+	}
+
+	srv := fakeProwlarr(t, 3, 300*time.Millisecond)
+	s := fanoutServer(t, srv)
+
+	// Run several searches back to back, the pattern that broke it.
+	for i := 0; i < 4; i++ {
+		if _, err := s.searchFanout(context.Background(), fmt.Sprintf("q%d", i), "",
+			80*time.Millisecond, func([]card) {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Every slot must come back, or the next search blocks forever.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(prowlarrSlots) > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := len(prowlarrSlots); n != 0 {
+		t.Errorf("%d slot(s) still held after every search finished: they leak", n)
+	}
+}

@@ -35,15 +35,29 @@ const (
 	// tail runs to 30.
 	fanoutDeadline = 5 * time.Second
 
-	// Concurrent requests to Prowlarr. The total work is unchanged -- Prowlarr
-	// queries these same indexers itself -- but this bounds how much of it is
-	// in flight at once.
-	fanoutConcurrency = 12
+	// Concurrent requests to Prowlarr, across every search in flight.
+	//
+	// This has to be global, not per-search. Per-search it let five cold
+	// searches in a row starve each other into uselessness: the first answered
+	// with 29 of 42 indexers, the fifth with 0, because each one left ~35
+	// stragglers running that the next one then competed with. A burst of
+	// visitors does exactly that.
+	fanoutConcurrency = 16
+
+	// How long a straggler may keep running after its search has answered.
+	// Long enough to finish and fill the cache, short enough that a slow
+	// stretch cannot accumulate hundreds of abandoned requests.
+	stragglerBudget = 30 * time.Second
 
 	// Enabled indexers change rarely, so the list is re-read occasionally
 	// rather than on every search.
 	indexerListTTL = 10 * time.Minute
 )
+
+// One budget for the whole process. A search takes a slot per indexer query
+// and returns it immediately, so foreground work and stragglers queue in the
+// same line instead of one drowning the other.
+var prowlarrSlots = make(chan struct{}, fanoutConcurrency)
 
 type indexerRef struct {
 	ID   int
@@ -156,15 +170,21 @@ func (s *server) searchFanout(ctx context.Context, q, kind string,
 		answered int
 		wg       sync.WaitGroup
 	)
-	sem := make(chan struct{}, fanoutConcurrency)
 	done := make(chan struct{})
 
 	for _, ix := range list {
 		wg.Add(1)
 		go func(ix indexerRef) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			// Give up the slot rather than queue forever once the caller has
+			// stopped caring; an abandoned query holding a global slot is how
+			// the next search ends up with nothing.
+			select {
+			case prowlarrSlots <- struct{}{}:
+				defer func() { <-prowlarrSlots }()
+			case <-ctx.Done():
+				return
+			}
 
 			got, err := s.searchOne(ctx, ix.ID, q, kind)
 			if err != nil {
