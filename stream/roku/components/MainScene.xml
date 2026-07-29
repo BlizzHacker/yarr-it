@@ -72,6 +72,28 @@
       </Label>
     </Group>
 
+    <!-- Sign-in gate. Drawn last so it covers everything: nothing behind it
+         is reachable until a real Authentik account has approved this TV. -->
+    <Group id="signIn" visible="false">
+      <Rectangle width="1920" height="1080" color="0x0b0d11ff" />
+      <Label text="Sign in to Yarr.It" translation="[160,200]" color="0x5eead4ff">
+        <Font role="font" uri="font:BoldSystemFontFile" size="56" />
+      </Label>
+      <Label id="signInStep1" translation="[160,300]" width="1600" wrap="true" color="0xe9edf3ff">
+        <Font role="font" uri="font:SystemFontFile" size="32" />
+      </Label>
+      <Label id="signInCode" translation="[160,400]" width="1600" color="0xffffffff">
+        <Font role="font" uri="font:BoldSystemFontFile" size="110" />
+      </Label>
+      <Label id="signInHint" translation="[160,560]" width="1600" wrap="true" color="0x8b96a8ff">
+        <Font role="font" uri="font:SystemFontFile" size="28" />
+      </Label>
+      <Label id="signInStatus" translation="[160,680]" width="1600" wrap="true" color="0x8b96a8ff">
+        <Font role="font" uri="font:SystemFontFile" size="26" />
+      </Label>
+      <Timer id="pollTimer" repeat="true" duration="5" />
+    </Group>
+
     <ApiTask id="api" />
   </children>
 </component>

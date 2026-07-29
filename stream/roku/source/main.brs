@@ -19,6 +19,10 @@ sub Main()
     globalNode.addFields({
         searchBase: "https://stream.moveweight.com"
         gatewayBase: "http://192.168.0.118:8900"
+        ssoBase: "https://authentik.moveweight.com"
+        ' Public client: a TV cannot hold a secret, so the device-code flow is
+        ' used and there is nothing here worth extracting from the package.
+        tvClientId: "OCXCp0GZKbRpcppKPvKwUhHp2B8lDVHZLpJ5Mznt"
     })
 
     while true

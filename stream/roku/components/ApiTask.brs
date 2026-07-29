@@ -55,6 +55,22 @@ sub runRequest()
 
         m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 150) }
 
+    else if kind = "deviceStart"
+        ' RFC 8628. The TV asks for a code; the person approves it on a phone.
+        ' No secret is involved because a client secret shipped inside a TV
+        ' binary is not a secret.
+        body = "client_id=" + urlEncode(globalNode.tvClientId) + "&scope=" + urlEncode("openid profile email")
+        m.top.response = { kind: kind, ok: true, data: httpPostJson(globalNode.ssoBase + "/application/o/device/", body, 25) }
+
+    else if kind = "devicePoll"
+        body = "client_id=" + urlEncode(globalNode.tvClientId)
+        body = body + "&grant_type=" + urlEncode("urn:ietf:params:oauth:grant-type:device_code")
+        body = body + "&device_code=" + urlEncode(req.deviceCode)
+        result = httpPostJson(globalNode.ssoBase + "/application/o/token/", body, 25)
+        ' A pending authorisation is the normal case while somebody is still
+        ' typing on their phone, so it is reported as data rather than failure.
+        m.top.response = { kind: kind, ok: true, data: result }
+
     else if kind = "prepare"
         ' The gateway joins the swarm and waits for metadata, which can take a
         ' while, so this gets a long timeout and its own error surface.
@@ -89,6 +105,34 @@ function httpGetJson(url as String, timeoutSec as Integer) as Object
 
     parsed = ParseJson(msg.getString())
     return parsed
+end function
+
+' httpPostJson posts a form body and parses the JSON reply.
+'
+' Errors are parsed too rather than discarded: the device flow signals
+' "still waiting" with a 400 and an error code in the body, so throwing away
+' non-200 responses would make a normal pending poll indistinguishable from a
+' dead network.
+function httpPostJson(url as String, body as String, timeoutSec as Integer) as Object
+    xfer = CreateObject("roUrlTransfer")
+    xfer.setUrl(url)
+    xfer.setCertificatesFile("common:/certs/ca-bundle.crt")
+    xfer.initClientCertificates()
+    xfer.addHeader("Content-Type", "application/x-www-form-urlencoded")
+    xfer.addHeader("Accept", "application/json")
+
+    port = CreateObject("roMessagePort")
+    xfer.setMessagePort(port)
+
+    if not xfer.asyncPostFromString(body) then return invalid
+
+    msg = wait(timeoutSec * 1000, port)
+    if type(msg) <> "roUrlEvent"
+        xfer.asyncCancel()
+        return invalid
+    end if
+
+    return ParseJson(msg.getString())
 end function
 
 ' urlEncode escapes a value for use in a query string. roUrlTransfer.escape()

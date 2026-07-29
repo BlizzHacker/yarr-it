@@ -19,6 +19,12 @@ sub init()
     m.api           = m.top.findNode("api")
     m.filterButtons = m.top.findNode("filterButtons")
     m.filterEcho    = m.top.findNode("filterEcho")
+    m.signIn        = m.top.findNode("signIn")
+    m.signInStep1   = m.top.findNode("signInStep1")
+    m.signInCode    = m.top.findNode("signInCode")
+    m.signInHint    = m.top.findNode("signInHint")
+    m.signInStatus  = m.top.findNode("signInStatus")
+    m.pollTimer     = m.top.findNode("pollTimer")
 
     m.api.observeField("response", "onApiResponse")
     m.grid.observeField("itemSelected", "onTitleSelected")
@@ -50,6 +56,121 @@ sub init()
     m.filterButtons.observeField("buttonSelected", "onFilterSelected")
     updateFilterEcho()
 
+    m.pollTimer.observeField("fire", "onPollTick")
+
+    ' Nothing loads until this TV belongs to a real account. The check is here
+    ' rather than after the first screen so no content is ever fetched, let
+    ' alone shown, by an unauthenticated device.
+    if hasValidToken()
+        startBrowsing()
+    else
+        beginSignIn()
+    end if
+end sub
+
+' ------------------------------------------------------------------ auth ----
+'
+' RFC 8628 device flow against Authentik. The TV shows a short code; the person
+' approves it on a phone. Only Authentik accounts can complete it, so the
+' channel is closed to anyone without one -- which is the point.
+
+
+function tokenStore() as Object
+    return CreateObject("roRegistrySection", "yarrit")
+end function
+
+function hasValidToken() as Boolean
+    reg = tokenStore()
+    if not reg.exists("access_token") then return false
+    if not reg.exists("expires_at") then return false
+    ' Treated as expired a minute early so a token cannot die mid-request.
+    return Val(reg.read("expires_at")) > (nowSeconds() + 60)
+end function
+
+function nowSeconds() as Integer
+    d = CreateObject("roDateTime")
+    return d.asSeconds()
+end function
+
+sub beginSignIn()
+    m.signIn.visible = true
+    m.grid.setFocus(false)
+    m.signInStep1.text = "On your phone or computer, go to:"
+    m.signInCode.text = "…"
+    m.signInHint.text = ""
+    m.signInStatus.text = "Requesting a code…"
+    dispatch({ kind: "deviceStart" })
+end sub
+
+sub onDeviceStart(data as Object)
+    if data = invalid or data.user_code = invalid
+        m.signInStatus.text = "Could not reach the sign-in service. It will retry shortly."
+        m.pollTimer.duration = 15
+        m.pollTimer.control = "start"
+        return
+    end if
+
+    m.deviceCode = data.device_code
+    m.signInStep1.text = "On your phone or computer, go to:  " + data.verification_uri
+    m.signInCode.text = data.user_code
+    m.signInHint.text = "Enter this code to sign in. It expires in " + Str(Int(data.expires_in / 60)).trim() + " minutes."
+    m.signInStatus.text = "Waiting for you to approve this TV…"
+
+    ' The server states its own poll interval; honouring it is what keeps a
+    ' fleet of TVs from hammering the identity provider.
+    interval = 5
+    if data.interval <> invalid and data.interval > 0 then interval = data.interval
+    m.pollTimer.duration = interval
+    m.pollTimer.control = "start"
+end sub
+
+sub onPollTick()
+    if m.deviceCode = invalid
+        dispatch({ kind: "deviceStart" })
+        return
+    end if
+    dispatch({ kind: "devicePoll", deviceCode: m.deviceCode })
+end sub
+
+sub onDevicePoll(data as Object)
+    if data = invalid then return
+
+    if data.access_token <> invalid
+        reg = tokenStore()
+        reg.write("access_token", data.access_token)
+        ttl = 3600
+        if data.expires_in <> invalid then ttl = data.expires_in
+        reg.write("expires_at", Str(nowSeconds() + ttl).trim())
+        if data.refresh_token <> invalid then reg.write("refresh_token", data.refresh_token)
+        reg.flush()
+
+        m.pollTimer.control = "stop"
+        m.signIn.visible = false
+        startBrowsing()
+        return
+    end if
+
+    err = ""
+    if data.error <> invalid then err = data.error
+
+    if err = "authorization_pending" or err = "slow_down"
+        ' Normal: the person has not finished on their phone yet.
+        if err = "slow_down" then m.pollTimer.duration = m.pollTimer.duration + 5
+        return
+    end if
+
+    if err = "expired_token" or err = "access_denied"
+        m.signInStatus.text = "That code expired. Getting a new one…"
+        m.deviceCode = invalid
+        dispatch({ kind: "deviceStart" })
+        return
+    end if
+
+    if err <> "" then m.signInStatus.text = "Sign-in failed: " + err
+end sub
+
+sub startBrowsing()
+    m.signIn.visible = false
     m.grid.setFocus(true)
     showBusy("Loading…")
     dispatch({ kind: "discover" })
@@ -129,6 +250,12 @@ end sub
 function onKeyEvent(key as String, press as Boolean) as Boolean
     if not press then return false
 
+    ' While the gate is up every key is consumed except Back, so no amount of
+    ' button-mashing reaches the catalogue behind it.
+    if m.signIn.visible
+        return key <> "back"
+    end if
+
     ' UP from the grid reaches the filter bar; DOWN comes back. Without an
     ' explicit hop the bar is unreachable, because a MarkupGrid consumes UP to
     ' move between its own rows and never yields focus upward.
@@ -207,6 +334,14 @@ end sub
 sub onApiResponse()
     resp = m.api.response
     if resp = invalid then return
+
+    if resp.kind = "deviceStart"
+        onDeviceStart(resp.data)
+        return
+    else if resp.kind = "devicePoll"
+        onDevicePoll(resp.data)
+        return
+    end if
 
     if resp.kind = "discover"
         hideBusy()
