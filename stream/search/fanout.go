@@ -1,122 +1,146 @@
 package main
 
-// Per-indexer search fan-out.
+// Two-tier search: fast indexers answer the request, slow ones fill the cache.
 //
 // The single aggregate call to Prowlarr returns only once every indexer has
-// answered or timed out, so one slow indexer sets the response time for the
-// whole search -- 8 to 29 seconds, against a floor of about 3.
+// answered or timed out, so one slow indexer set the response time for the
+// whole search -- 8 to 29 seconds against a floor of about 3.
 //
-// That was believed to be unavoidable because `indexerIds` was thought to be
-// ignored. It is not: scoping a query to three indexers returns in 3.1s where
-// the unscoped call takes 24.7s, and returns results from exactly those three.
-// So the work can be split, and a straggler no longer has to hold the page.
+// That looked unavoidable because `indexerIds` was believed to be ignored. It
+// is not: a query scoped to three indexers returns in 3.1s where the unscoped
+// call takes 24.7s, with results from exactly those three.
 //
-// Nothing is dropped to achieve it. Every indexer is still queried; the
-// response is simply sent once the deadline passes, and indexers still running
-// finish into the cache. The next request for the same query -- the refresh, or
-// the next visitor -- gets the complete set.
+// The obvious use of that -- query every indexer separately and answer on a
+// deadline -- was measured and is worse. It turns one request into 42, which
+// Prowlarr cannot absorb: five cold searches in a row degraded from 13 of 42
+// indexers answering to 0 of 42, because each search queued behind the
+// previous one's outstanding work. Load, not latency, became the limit.
+//
+// So the split is by tier, not by indexer. Two calls: the fast indexers, whose
+// result is the response, and the slow ones, which land in the cache for the
+// next request. Same request count as the original design, without the tail.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 const (
-	// How long a search may take before it answers with what it has. Chosen
-	// from measured behaviour: the bulk of indexers land inside 3s, and the
-	// tail runs to 30.
-	fanoutDeadline = 5 * time.Second
+	// An indexer slower than this goes in the background tier. Measured: most
+	// indexers land under 3s and the tail runs past 30.
+	slowIndexerThreshold = 3500 * time.Millisecond
 
-	// Concurrent requests to Prowlarr, across every search in flight.
-	//
-	// This has to be global, not per-search. Per-search it let five cold
-	// searches in a row starve each other into uselessness: the first answered
-	// with 29 of 42 indexers, the fifth with 0, because each one left ~35
-	// stragglers running that the next one then competed with. A burst of
-	// visitors does exactly that.
-	fanoutConcurrency = 16
+	// Ceiling on the foreground call, in case a "fast" indexer has a bad day.
+	fastTierDeadline = 8 * time.Second
 
-	// How long a straggler may keep running after its search has answered.
-	// Long enough to finish and fill the cache, short enough that a slow
-	// stretch cannot accumulate hundreds of abandoned requests.
-	stragglerBudget = 30 * time.Second
+	// How long the background tier may run before it is abandoned.
+	slowTierBudget = 45 * time.Second
 
-	// Enabled indexers change rarely, so the list is re-read occasionally
-	// rather than on every search.
+	// Tiers are recomputed occasionally; indexer performance drifts slowly.
 	indexerListTTL = 10 * time.Minute
 )
 
-// One budget for the whole process. A search takes a slot per indexer query
-// and returns it immediately, so foreground work and stragglers queue in the
-// same line instead of one drowning the other.
-var prowlarrSlots = make(chan struct{}, fanoutConcurrency)
-
-type indexerRef struct {
-	ID   int
-	Name string
+type indexerTiers struct {
+	fast []int
+	slow []int
 }
 
-// indexers returns the enabled indexer ids, cached.
-func (s *server) indexers(ctx context.Context) ([]indexerRef, error) {
+// tiers splits the enabled indexers by measured response time, from Prowlarr's
+// own statistics. Cached, because it changes slowly and costs two calls.
+func (s *server) tiers(ctx context.Context) (indexerTiers, error) {
 	s.ixMu.Lock()
-	if time.Now().Before(s.ixExpires) && len(s.ixCache) > 0 {
+	if time.Now().Before(s.ixExpires) && len(s.ixCache.fast)+len(s.ixCache.slow) > 0 {
 		defer s.ixMu.Unlock()
 		return s.ixCache, nil
 	}
 	s.ixMu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", s.prowlarrURL+"/api/v1/indexer", nil)
+	var enabled []int
+	var raw []struct {
+		ID     int  `json:"id"`
+		Enable bool `json:"enable"`
+	}
+	if err := s.prowlarrJSON(ctx, "/api/v1/indexer", &raw); err != nil {
+		return indexerTiers{}, err
+	}
+	for _, r := range raw {
+		if r.Enable {
+			enabled = append(enabled, r.ID)
+		}
+	}
+	if len(enabled) == 0 {
+		return indexerTiers{}, fmt.Errorf("no enabled indexers")
+	}
+
+	var stats struct {
+		Indexers []struct {
+			IndexerID           int `json:"indexerId"`
+			AverageResponseTime int `json:"averageResponseTime"`
+		} `json:"indexers"`
+	}
+	slowSet := map[int]bool{}
+	if err := s.prowlarrJSON(ctx, "/api/v1/indexerstats", &stats); err == nil {
+		for _, st := range stats.Indexers {
+			if time.Duration(st.AverageResponseTime)*time.Millisecond > slowIndexerThreshold {
+				slowSet[st.IndexerID] = true
+			}
+		}
+	}
+	// If the statistics are unavailable every indexer is treated as fast, which
+	// degrades to the original single-call behaviour rather than to an empty
+	// result.
+
+	var t indexerTiers
+	for _, id := range enabled {
+		if slowSet[id] {
+			t.slow = append(t.slow, id)
+		} else {
+			t.fast = append(t.fast, id)
+		}
+	}
+	sort.Ints(t.fast)
+	sort.Ints(t.slow)
+
+	s.ixMu.Lock()
+	s.ixCache, s.ixExpires = t, time.Now().Add(indexerListTTL)
+	s.ixMu.Unlock()
+	return t, nil
+}
+
+func (s *server) prowlarrJSON(ctx context.Context, path string, into any) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", s.prowlarrURL+path, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("X-Api-Key", s.apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("prowlarr indexer list status %d", resp.StatusCode)
+		return fmt.Errorf("prowlarr %s: status %d", path, resp.StatusCode)
 	}
-
-	var raw []struct {
-		ID     int    `json:"id"`
-		Name   string `json:"name"`
-		Enable bool   `json:"enable"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, err
-	}
-
-	out := make([]indexerRef, 0, len(raw))
-	for _, r := range raw {
-		if r.Enable {
-			out = append(out, indexerRef{ID: r.ID, Name: r.Name})
-		}
-	}
-	// Stable order keeps logs and tests comparable between runs.
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-
-	s.ixMu.Lock()
-	s.ixCache, s.ixExpires = out, time.Now().Add(indexerListTTL)
-	s.ixMu.Unlock()
-	return out, nil
+	return json.NewDecoder(resp.Body).Decode(into)
 }
 
-// searchOne queries a single indexer.
-func (s *server) searchOne(ctx context.Context, id int, q, kind string) ([]card, error) {
-	u := fmt.Sprintf("%s/api/v1/search?query=%s&limit=200&indexerIds=%d",
-		s.prowlarrURL, url.QueryEscape(q), id)
+// searchTier runs one scoped Prowlarr search. An empty id list means every
+// indexer, which is the unscoped call.
+func (s *server) searchTier(ctx context.Context, ids []int, q, kind string) ([]card, error) {
+	u := fmt.Sprintf("%s/api/v1/search?query=%s&limit=200", s.prowlarrURL, url.QueryEscape(q))
 	for _, c := range categoriesFor(kind) {
 		u += "&categories=" + strconv.Itoa(c)
+	}
+	for _, id := range ids {
+		u += "&indexerIds=" + strconv.Itoa(id)
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
@@ -130,7 +154,7 @@ func (s *server) searchOne(ctx context.Context, id int, q, kind string) ([]card,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("indexer %d: status %d", id, resp.StatusCode)
+		return nil, fmt.Errorf("prowlarr status %d", resp.StatusCode)
 	}
 	var raw []prowlarrResult
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
@@ -139,108 +163,75 @@ func (s *server) searchOne(ctx context.Context, id int, q, kind string) ([]card,
 	return buildCards(raw), nil
 }
 
-// fanoutResult is what a search knows once it stops waiting.
-type fanoutResult struct {
-	cards    []card
-	answered int  // indexers that returned in time
-	total    int  // indexers asked
-	partial  bool // true when the deadline cut it short
+// mergeCards concatenates two result sets, dropping repeats by cache key.
+// The tiers are disjoint sets of indexers, but the same release is often
+// listed by several of them.
+func mergeCards(a, b []card) []card {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]card, 0, len(a)+len(b))
+	for _, c := range append(append([]card{}, a...), b...) {
+		if c.Key != "" && seen[c.Key] {
+			continue
+		}
+		if c.Key != "" {
+			seen[c.Key] = true
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
-// searchFanout queries every enabled indexer concurrently and returns once the
-// deadline passes or all have answered, whichever comes first.
-//
-// The context governs only this call. Stragglers are deliberately given a
-// detached context by the caller so that returning early does not cancel the
-// work whose results the cache still wants.
-func (s *server) searchFanout(ctx context.Context, q, kind string,
-	deadline time.Duration, onComplete func([]card)) (fanoutResult, error) {
+// searchTiered answers from the fast indexers and folds the slow ones into the
+// cache behind the response.
+func (s *server) searchTiered(ctx context.Context, q, kind string,
+	onFull func([]card)) ([]card, bool, error) {
 
-	list, err := s.indexers(ctx)
+	t, err := s.tiers(ctx)
 	if err != nil {
-		return fanoutResult{}, err
-	}
-	if len(list) == 0 {
-		return fanoutResult{}, fmt.Errorf("no enabled indexers")
+		return nil, false, err
 	}
 
-	var (
-		mu       sync.Mutex
-		cards    []card
-		answered int
-		wg       sync.WaitGroup
-	)
-	done := make(chan struct{})
-
-	for _, ix := range list {
-		wg.Add(1)
-		go func(ix indexerRef) {
-			defer wg.Done()
-			// Give up the slot rather than queue forever once the caller has
-			// stopped caring; an abandoned query holding a global slot is how
-			// the next search ends up with nothing.
-			select {
-			case prowlarrSlots <- struct{}{}:
-				defer func() { <-prowlarrSlots }()
-			case <-ctx.Done():
-				return
-			}
-
-			got, err := s.searchOne(ctx, ix.ID, q, kind)
-			if err != nil {
-				// A single failing indexer is normal and must not fail the
-				// search; it simply contributes nothing.
-				return
-			}
-			mu.Lock()
-			cards = append(cards, got...)
-			answered++
-			mu.Unlock()
-		}(ix)
+	fastCtx, cancel := context.WithTimeout(ctx, fastTierDeadline)
+	defer cancel()
+	fast, err := s.searchTier(fastCtx, t.fast, q, kind)
+	if err != nil {
+		return nil, false, err
 	}
 
+	if len(t.slow) == 0 {
+		return fast, false, nil
+	}
+
+	// The slow tier must outlive this request -- that is the whole point -- so
+	// it runs on a context detached from the caller's.
 	go func() {
-		wg.Wait()
-		close(done)
+		slowCtx, slowCancel := context.WithTimeout(
+			context.WithoutCancel(ctx), slowTierBudget)
+		defer slowCancel()
+
+		slow, err := s.searchTier(slowCtx, t.slow, q, kind)
+		if err != nil {
+			// The slow tier failing costs the next request some coverage, not
+			// this one an answer, so it is logged and dropped.
+			log.Printf("slow tier %q: %v", q, err)
+		}
+
+		if len(slow) > 0 && onFull != nil {
+			onFull(mergeCards(fast, slow))
+		}
+		// Per-server, not package-level: background passes outlive the call
+		// that started them, so a shared hook lets one test's leftover
+		// goroutine fire the next test's callback.
+		if s.onSlowTierDone != nil {
+			s.onSlowTierDone()
+		}
 	}()
 
-	timer := time.NewTimer(deadline)
-	defer timer.Stop()
-
-	partial := false
-	select {
-	case <-done:
-	case <-timer.C:
-		partial = true
-	case <-ctx.Done():
-		partial = true
-	}
-
-	mu.Lock()
-	out := make([]card, len(cards))
-	copy(out, cards)
-	n := answered
-	mu.Unlock()
-
-	if partial && onComplete != nil {
-		// Let the rest finish and hand the full set to the caller, which puts
-		// it in the cache. Without this the slow indexers would be queried on
-		// every request and never actually contribute.
-		go func() {
-			<-done
-			mu.Lock()
-			full := make([]card, len(cards))
-			copy(full, cards)
-			mu.Unlock()
-			onComplete(full)
-		}()
-	}
-
-	return fanoutResult{cards: out, answered: n, total: len(list), partial: partial}, nil
+	return fast, true, nil
 }
 
 // searchCacheKey is the one place the cache key is built. The warmer, the
-// handler and the fan-out's deferred write must agree on it exactly, or a
+// handler and the background tier's cache write must agree on it exactly, or a
 // warmed entry is stored under a key nothing ever reads.
 func searchCacheKey(q, kind string) string {
 	return kind + "\x00" + strings.ToLower(q)

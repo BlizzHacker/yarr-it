@@ -3,46 +3,55 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// fakeProwlarr serves an indexer list and per-indexer searches, with one
-// indexer deliberately slower than the deadline.
-func fakeProwlarr(t *testing.T, slowID int, slowFor time.Duration) *httptest.Server {
+// fakeProwlarr serves an indexer list, stats marking id 3 as slow, and scoped
+// searches where the slow indexer takes longer than the fast ones.
+func fakeProwlarr(t *testing.T, slowFor time.Duration) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/v1/indexer", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{"id": 1, "name": "fast-one", "enable": true},
-			{"id": 2, "name": "fast-two", "enable": true},
-			{"id": slowID, "name": "slow", "enable": true},
-			{"id": 9, "name": "disabled", "enable": false},
+			{"id": 1, "enable": true},
+			{"id": 2, "enable": true},
+			{"id": 3, "enable": true},
+			{"id": 9, "enable": false},
 		})
 	})
 
-	mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
-		id := r.URL.Query().Get("indexerIds")
-		if id == fmt.Sprint(slowID) {
-			select {
-			case <-time.After(slowFor):
-			case <-r.Context().Done():
-				return
-			}
-		}
-		_ = json.NewEncoder(w).Encode([]prowlarrResult{{
-			Title:     "result from indexer " + id,
-			Indexer:   "ix" + id,
-			Seeders:   10,
-			Protocol:  "torrent",
-			MagnetURL: "magnet:?xt=urn:btih:" + id,
-			GUID:      "guid-" + id,
+	mux.HandleFunc("/api/v1/indexerstats", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"indexers": []map[string]any{
+			{"indexerId": 1, "averageResponseTime": 200},
+			{"indexerId": 2, "averageResponseTime": 400},
+			{"indexerId": 3, "averageResponseTime": 30000},
 		}})
+	})
+
+	mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		ids := r.URL.Query()["indexerIds"]
+		out := []prowlarrResult{}
+		for _, id := range ids {
+			if id == "3" {
+				select {
+				case <-time.After(slowFor):
+				case <-r.Context().Done():
+					return
+				}
+			}
+			out = append(out, prowlarrResult{
+				Title: "from " + id, Indexer: "ix" + id, Seeders: 5,
+				Protocol: "torrent", MagnetURL: "magnet:?xt=urn:btih:" + id,
+				GUID: "guid-" + id,
+			})
+		}
+		_ = json.NewEncoder(w).Encode(out)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -50,7 +59,7 @@ func fakeProwlarr(t *testing.T, slowID int, slowFor time.Duration) *httptest.Ser
 	return srv
 }
 
-func fanoutServer(t *testing.T, srv *httptest.Server) *server {
+func tierServer(t *testing.T, srv *httptest.Server) *server {
 	t.Helper()
 	return &server{
 		prowlarrURL: srv.URL,
@@ -61,87 +70,131 @@ func fanoutServer(t *testing.T, srv *httptest.Server) *server {
 	}
 }
 
-// The whole point: a slow indexer delays itself, not the response.
-func TestFanoutAnswersOnDeadlineWithoutTheSlowIndexer(t *testing.T) {
-	srv := fakeProwlarr(t, 3, 2*time.Second)
-	s := fanoutServer(t, srv)
+// Prowlarr's own statistics decide the split, so it adapts as indexers change.
+func TestTiersSplitOnMeasuredResponseTime(t *testing.T) {
+	s := tierServer(t, fakeProwlarr(t, 0))
+	got, err := s.tiers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.fast) != 2 || len(got.slow) != 1 {
+		t.Fatalf("split was fast=%v slow=%v, want 2 fast and 1 slow", got.fast, got.slow)
+	}
+	if got.slow[0] != 3 {
+		t.Errorf("slow tier is %v, want the 30s indexer (id 3)", got.slow)
+	}
+	for _, id := range append(got.fast, got.slow...) {
+		if id == 9 {
+			t.Error("a disabled indexer was included")
+		}
+	}
+}
+
+// The response must not wait on the slow tier.
+func TestTieredSearchDoesNotWaitForTheSlowTier(t *testing.T) {
+	s := tierServer(t, fakeProwlarr(t, 2*time.Second))
 
 	start := time.Now()
-	res, err := s.searchFanout(context.Background(), "matrix", "", 300*time.Millisecond, nil)
+	cards, deferred, err := s.searchTiered(context.Background(), "matrix", "", nil)
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if elapsed > time.Second {
-		t.Fatalf("waited %s for a 300ms deadline: the slow indexer held the response", elapsed)
+		t.Fatalf("took %s: the slow tier held the response", elapsed)
 	}
-	if !res.partial {
-		t.Error("result should be marked partial when the deadline cut it short")
+	if !deferred {
+		t.Error("should report that a slow tier is still running")
 	}
-	if res.answered != 2 || res.total != 3 {
-		t.Errorf("answered %d of %d, want 2 of 3 (the disabled one must not be asked)",
-			res.answered, res.total)
-	}
-	if len(res.cards) != 2 {
-		t.Errorf("got %d cards, want the 2 fast indexers", len(res.cards))
+	if len(cards) != 2 {
+		t.Errorf("got %d cards, want the 2 fast indexers", len(cards))
 	}
 }
 
-// Answering early is only acceptable because the rest still arrive.
-func TestFanoutDeliversStragglersToTheCallback(t *testing.T) {
-	srv := fakeProwlarr(t, 3, 400*time.Millisecond)
-	s := fanoutServer(t, srv)
+// Answering early is only acceptable because the slow tier still lands.
+func TestSlowTierReachesTheCache(t *testing.T) {
+	s := tierServer(t, fakeProwlarr(t, 150*time.Millisecond))
 
 	var (
 		mu   sync.Mutex
 		full []card
 	)
 	done := make(chan struct{})
-	res, err := s.searchFanout(context.Background(), "matrix", "", 100*time.Millisecond,
-		func(c []card) {
-			mu.Lock()
-			full = c
-			mu.Unlock()
-			close(done)
-		})
-	if err != nil {
+	s.onSlowTierDone = func() { close(done) }
+
+	if _, _, err := s.searchTiered(context.Background(), "matrix", "", func(c []card) {
+		mu.Lock()
+		full = c
+		mu.Unlock()
+	}); err != nil {
 		t.Fatal(err)
-	}
-	if len(res.cards) != 2 {
-		t.Fatalf("immediate answer had %d cards, want 2", len(res.cards))
 	}
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the slow indexer never reported; its results would be lost every time")
+		t.Fatal("the slow tier never completed; its results would be lost every time")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(full) != 3 {
-		t.Errorf("callback got %d cards, want all 3 including the straggler", len(full))
+		t.Errorf("cache got %d cards, want all 3 tiers merged", len(full))
 	}
 }
 
-// When everything is quick there is no reason to report a partial answer.
-func TestFanoutIsNotPartialWhenAllAnswer(t *testing.T) {
-	srv := fakeProwlarr(t, 3, 0)
-	s := fanoutServer(t, srv)
+// The tiers overlap in content even though they do not overlap in indexers.
+func TestMergeCardsDropsDuplicatesByKey(t *testing.T) {
+	a := []card{{Key: "x"}, {Key: "y"}}
+	b := []card{{Key: "y"}, {Key: "z"}}
+	if got := mergeCards(a, b); len(got) != 3 {
+		t.Errorf("merged to %d cards, want 3 with the repeat dropped", len(got))
+	}
+	// A card with no key must not collapse into other keyless cards.
+	if got := mergeCards([]card{{}, {}}, nil); len(got) != 2 {
+		t.Errorf("keyless cards collapsed to %d, want 2", len(got))
+	}
+}
 
-	res, err := s.searchFanout(context.Background(), "matrix", "", 3*time.Second, nil)
+// Without stats every indexer is treated as fast, which is the original
+// single-call behaviour -- never an empty result.
+func TestMissingStatsDegradesToOneCall(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/indexer", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "enable": true}, {"id": 2, "enable": true},
+		})
+	})
+	mux.HandleFunc("/api/v1/indexerstats", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/api/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]prowlarrResult{
+			{Title: "a", GUID: "g1", MagnetURL: "magnet:?xt=urn:btih:1", Protocol: "torrent"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	s := tierServer(t, srv)
+	got, err := s.tiers(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.partial {
-		t.Error("marked partial even though every indexer answered")
+	if len(got.slow) != 0 || len(got.fast) != 2 {
+		t.Fatalf("fast=%v slow=%v, want everything fast when stats are missing",
+			got.fast, got.slow)
 	}
-	if len(res.cards) != 3 {
-		t.Errorf("got %d cards, want 3", len(res.cards))
+	_, deferred, err := s.searchTiered(context.Background(), "q", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deferred {
+		t.Error("nothing should be deferred when there is no slow tier")
 	}
 }
 
-// The handler, the warmer and the deferred cache write must agree on the key.
+// The handler, the warmer and the cache write must agree on the key.
 func TestSearchCacheKeyMatchesTheWarmerFormat(t *testing.T) {
 	if got, want := searchCacheKey("The Matrix", ""), "\x00the matrix"; got != want {
 		t.Errorf("key %q, want %q -- the warmer writes this form", got, want)
@@ -149,32 +202,7 @@ func TestSearchCacheKeyMatchesTheWarmerFormat(t *testing.T) {
 	if searchCacheKey("x", "game") == searchCacheKey("x", "video") {
 		t.Error("different kinds must not share a cache entry")
 	}
-}
-
-// The global budget is what stops one search's stragglers from starving the
-// next one. Per-search limits let five cold searches degrade to zero indexers.
-func TestFanoutSlotsAreGlobalAndAlwaysReturned(t *testing.T) {
-	if cap(prowlarrSlots) != fanoutConcurrency {
-		t.Fatalf("slot budget is %d, want %d", cap(prowlarrSlots), fanoutConcurrency)
-	}
-
-	srv := fakeProwlarr(t, 3, 300*time.Millisecond)
-	s := fanoutServer(t, srv)
-
-	// Run several searches back to back, the pattern that broke it.
-	for i := 0; i < 4; i++ {
-		if _, err := s.searchFanout(context.Background(), fmt.Sprintf("q%d", i), "",
-			80*time.Millisecond, func([]card) {}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Every slot must come back, or the next search blocks forever.
-	deadline := time.Now().Add(5 * time.Second)
-	for len(prowlarrSlots) > 0 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if n := len(prowlarrSlots); n != 0 {
-		t.Errorf("%d slot(s) still held after every search finished: they leak", n)
+	if !strings.HasPrefix(searchCacheKey("A", "game"), "game\x00") {
+		t.Error("kind must prefix the key")
 	}
 }

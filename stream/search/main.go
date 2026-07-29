@@ -112,10 +112,13 @@ type server struct {
 	flightMu sync.Mutex
 	inflight map[string]chan struct{}
 
-	// The enabled-indexer list, so the fan-out does not re-read it per search.
+	// Fast/slow indexer split, so it is not recomputed per search.
 	ixMu      sync.Mutex
-	ixCache   []indexerRef
+	ixCache   indexerTiers
 	ixExpires time.Time
+
+	// Test hook, fired when a background slow-tier pass finishes.
+	onSlowTierDone func()
 
 	tmdb     *tmdbClient
 	igdb     *igdbClient
@@ -427,30 +430,17 @@ func (s *server) evictLoop() {
 // only itself. It falls back to the single aggregate call if the fan-out cannot
 // start -- that path still works, it is just as slow as its slowest indexer.
 func (s *server) searchProwlarr(ctx context.Context, q, kind string) ([]card, error) {
-	// Stragglers must outlive this request: the whole point is to answer now
-	// and let the rest land in the cache for the next one. A child of the
-	// request context would be cancelled the moment the response is written.
-	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx),
-		fanoutDeadline+stragglerBudget)
-
-	res, err := s.searchFanout(detached, q, kind, fanoutDeadline, func(full []card) {
-		defer cancel()
-		if len(full) > 0 {
-			s.putCached(searchCacheKey(q, kind), full)
-		}
+	cards, deferred, err := s.searchTiered(ctx, q, kind, func(full []card) {
+		s.putCached(searchCacheKey(q, kind), full)
 	})
 	if err == nil {
-		if !res.partial {
-			cancel()
+		if deferred {
+			log.Printf("search %q: %d cards from the fast tier, slow tier landing in cache",
+				q, len(cards))
 		}
-		if res.partial {
-			log.Printf("search %q: answered with %d/%d indexers, rest landing in cache",
-				q, res.answered, res.total)
-		}
-		return res.cards, nil
+		return cards, nil
 	}
-	cancel()
-	log.Printf("search %q: fan-out unavailable (%v), using the aggregate call", q, err)
+	log.Printf("search %q: tiering unavailable (%v), using the aggregate call", q, err)
 
 	return s.searchProwlarrAggregate(ctx, q, kind)
 }
