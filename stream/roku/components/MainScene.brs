@@ -121,6 +121,15 @@ sub onDeviceStart(data as Object)
     m.signInHint.text = "Then enter this code. It expires in " + Str(Int(data.expires_in / 60)).trim() + " minutes."
     m.signInStatus.text = "Waiting for you to approve this TV…"
 
+    ' Roku's screensaver takes over an idle sign-in screen and the flow stalls
+    ' behind it: the code quietly expires and nothing asks for another, so
+    ' somebody who walked away returns to a dead number. Remembering the
+    ' deadline lets the screen heal itself rather than depend on a timer that
+    ' may not have been running.
+    ttl = 600
+    if data.expires_in <> invalid then ttl = data.expires_in
+    m.codeExpiresAt = nowSeconds() + ttl
+
     ' The server states its own poll interval; honouring it is what keeps a
     ' fleet of TVs from hammering the identity provider.
     interval = 5
@@ -131,6 +140,16 @@ end sub
 
 sub onPollTick()
     if m.deviceCode = invalid
+        dispatch({ kind: "deviceStart" })
+        return
+    end if
+
+    ' Self-heal: a code that has aged out is replaced without waiting for the
+    ' server to tell us, which it only does when a poll actually gets through.
+    if m.codeExpiresAt <> invalid and nowSeconds() > m.codeExpiresAt
+        m.signInStatus.text = "That code expired. Getting a new one…"
+        m.deviceCode = invalid
+        m.codeExpiresAt = invalid
         dispatch({ kind: "deviceStart" })
         return
     end if
@@ -258,6 +277,15 @@ function onKeyEvent(key as String, press as Boolean) as Boolean
     ' While the gate is up every key is consumed except Back, so no amount of
     ' button-mashing reaches the catalogue behind it.
     if m.signIn.visible
+        ' Waking the TV is exactly when a returning viewer looks at the code,
+        ' so a stale one is refreshed on the first press rather than after the
+        ' next poll interval.
+        if m.codeExpiresAt <> invalid and nowSeconds() > m.codeExpiresAt
+            m.deviceCode = invalid
+            m.codeExpiresAt = invalid
+            m.signInStatus.text = "Refreshing your code…"
+            dispatch({ kind: "deviceStart" })
+        end if
         return key <> "back"
     end if
 
