@@ -17,18 +17,21 @@
 
     <!-- Browse grid. MarkupGrid rather than RowList: a flat grid of posters is
          easier to navigate with a D-pad than nested rows. -->
+    <!-- vertFocusAnimationStyle is deliberately NOT fixedFocusWrap: wrapping
+         makes the grid consume Up on the top row to jump to the bottom, so the
+         key never reaches the scene and the filter bar becomes unreachable. -->
     <MarkupGrid id="grid" translation="[80,330]"
                 itemComponentName="PosterTile"
                 numRows="2" numColumns="6"
                 itemSize="[280,420]" itemSpacing="[16,24]"
-                vertFocusAnimationStyle="fixedFocusWrap"
+                vertFocusAnimationStyle="fixedFocus"
                 drawFocusFeedback="true" />
 
     <!-- Filter bar, drawn after the grid so it is never covered by it.
          ButtonGroup because LabelList is vertical-only on Roku;
          this is the node that actually lays out horizontally and gives D-pad
          focus for free. The active filter is echoed in filterEcho, because a
-         ButtonGroup shows focus but has no notion of a current selection --
+         ButtonGroup shows focus but has no notion of a current selection —
          so once focus returns to the grid there would otherwise be nothing on
          screen saying what is being filtered. -->
     <ButtonGroup id="filterButtons" translation="[80,96]"

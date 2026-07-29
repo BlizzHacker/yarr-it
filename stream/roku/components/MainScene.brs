@@ -64,6 +64,12 @@ sub onFilterSelected()
     m.filterIndex = idx
     updateFilterEcho()
 
+    ' The source list belongs to a title from the previous result set. Leaving
+    ' it up means the new results load behind a pane describing something that
+    ' is no longer on screen.
+    m.sourcePane.visible = false
+    m.activeCard = invalid
+
     ' Focus goes back to the results, because choosing a filter is a request to
     ' look at them -- leaving focus on the bar means every selection needs an
     ' extra press to get anywhere.
@@ -126,7 +132,11 @@ function onKeyEvent(key as String, press as Boolean) as Boolean
     ' UP from the grid reaches the filter bar; DOWN comes back. Without an
     ' explicit hop the bar is unreachable, because a MarkupGrid consumes UP to
     ' move between its own rows and never yields focus upward.
-    if key = "up" and m.grid.hasFocus() and not m.sourcePane.visible and not m.player.visible
+    ' Keyed on what is NOT showing rather than on the grid holding focus:
+    ' while results are still loading the grid has not taken focus yet, so a
+    ' hasFocus() test silently dropped the key and UP appeared to do nothing.
+    if key = "up" and not m.sourcePane.visible and not m.player.visible and not m.filterButtons.hasFocus()
+        ' Only from the top row, so UP still moves between rows everywhere else.
         if m.grid.itemFocused < m.grid.numColumns
             m.filterButtons.setFocus(true)
             return true

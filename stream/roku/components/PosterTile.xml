@@ -26,10 +26,17 @@
           c = m.top.itemContent
           if c = invalid then return
           m.top.findNode("name").text = c.title
-          m.top.findNode("seeds").text = c.seedText
-          if c.HDGRIDPOSTERURL <> invalid and c.HDGRIDPOSTERURL <> ""
-              m.top.findNode("art").uri = c.HDGRIDPOSTERURL
-          end if
+          seeds = ""
+          if c.seedText <> invalid then seeds = c.seedText
+          m.top.findNode("seeds").text = seeds
+
+          ' Assigned unconditionally. A MarkupGrid recycles its item
+          ' components, so skipping the assignment when the new item has no
+          ' poster leaves the PREVIOUS item's artwork on screen -- which reads
+          ' as the wrong cover for the title underneath it.
+          art = ""
+          if c.HDGRIDPOSTERURL <> invalid then art = c.HDGRIDPOSTERURL
+          m.top.findNode("art").uri = art
       end sub
 
     ]]>
