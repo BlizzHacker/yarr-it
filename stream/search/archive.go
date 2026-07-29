@@ -38,6 +38,35 @@ const archiveSearchAPI = "https://archive.org/advancedsearch.php"
 // with mediatype:software keeps out anything that is not a program.
 const archiveScope = `emulator:[* TO *] AND mediatype:(software)`
 
+// Scopes for the other kinds. Each is the narrowest query that returns only
+// things of that kind, for the same reason archiveScope uses `emulator`: a
+// mediatype is a fact archive.org asserts, not a keyword we hope appears.
+//
+// Without these, `kind=image` and `kind=comic` had no source at all -- they
+// searched the games scope, matched nothing of their own, and the results the
+// caller saw were whatever the torrent indexers happened to return. A filter
+// that changes nothing is worse than one that is absent, because it looks like
+// an answer.
+var archiveScopes = map[string]string{
+	"game":  archiveScope,
+	"image": `mediatype:(image)`,
+	// Comics live in texts. The collection narrows it to scanned comics rather
+	// than the whole book library, which is otherwise almost entirely prose.
+	"comic": `mediatype:(texts) AND collection:(comics OR comicbooks)`,
+	"video": `mediatype:(movies)`,
+}
+
+// scopeFor returns the archive.org scope for a kind, and whether one exists.
+// An unknown kind has no scope rather than falling back to games: silently
+// searching the wrong catalogue is how "comics" returned emulators.
+func scopeFor(kind string) (string, bool) {
+	if kind == "" {
+		return archiveScope, true
+	}
+	scope, ok := archiveScopes[kind]
+	return scope, ok
+}
+
 type archiveDoc struct {
 	Identifier string          `json:"identifier"`
 	Title      string          `json:"title"`
@@ -60,7 +89,13 @@ type archiveResponse struct {
 // than interpolated raw because a stray `:` or `AND` in a search box would
 // otherwise become Solr syntax and either error or silently search for
 // something else.
-func archiveQuery(q string) string {
+func archiveQuery(q string) string { return archiveQueryFor(q, "") }
+
+func archiveQueryFor(q, kind string) string {
+	scope, ok := scopeFor(kind)
+	if !ok {
+		return ""
+	}
 	safe := strings.NewReplacer(`"`, " ", `\`, " ").Replace(q)
 	safe = strings.TrimSpace(safe)
 	// An empty term is a browse rather than a search: everything playable,
@@ -68,9 +103,9 @@ func archiveQuery(q string) string {
 	// this, `title:("")` is a syntax error and picking a category with no query
 	// returns nothing.
 	if safe == "" {
-		return archiveScope
+		return scope
 	}
-	return fmt.Sprintf(`title:(%q) AND %s`, safe, archiveScope)
+	return fmt.Sprintf(`title:(%q) AND %s`, safe, scope)
 }
 
 // archiveSystems maps archive.org's emulator id to a name a person reads.
@@ -219,9 +254,13 @@ func sourcesFor(d archiveDoc, title, system string) []source {
 }
 
 // searchArchive queries archive.org and returns one card per game.
-func (s *server) searchArchive(ctx context.Context, q string) ([]card, error) {
+func (s *server) searchArchive(ctx context.Context, q, kind string) ([]card, error) {
+	query := archiveQueryFor(q, kind)
+	if query == "" {
+		return nil, nil
+	}
 	params := url.Values{}
-	params.Set("q", archiveQuery(q))
+	params.Set("q", query)
 	for _, f := range []string{"identifier", "title", "emulator", "downloads", "year", "collection"} {
 		params.Add("fl[]", f)
 	}
@@ -254,10 +293,13 @@ func (s *server) searchArchive(ctx context.Context, q string) ([]card, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("archive.org search: %w", err)
 	}
-	return archiveCards(out.Response.Docs), nil
+	return archiveCards(out.Response.Docs, kind), nil
 }
 
-func archiveCards(docs []archiveDoc) []card {
+func archiveCards(docs []archiveDoc, kind string) []card {
+	if kind == "" {
+		kind = "game"
+	}
 	cards := make([]card, 0, len(docs))
 	seen := make(map[string]bool, len(docs))
 	for _, d := range docs {
@@ -272,18 +314,25 @@ func archiveCards(docs []archiveDoc) []card {
 			title = d.Identifier
 		}
 
+		// The kind and group must match what was asked for, or the Kind
+		// filter discards every card the archive just returned.
+		group := map[string]string{
+			"game": "games", "image": "images", "comic": "comics",
+			"video": "movies",
+		}[kind]
+
 		cards = append(cards, card{
 			Key:      "ia:" + d.Identifier,
 			Title:    title,
 			Year:     archiveYear(d.Year),
-			Kind:     "game",
+			Kind:     kind,
 			Instant:  true,
 			Seeders:  0,
 			Popular:  d.Downloads,
 			Platform: system,
 			// The "Games" chip filters on this, and a card without it would be
 			// hidden the moment somebody narrowed to exactly what they wanted.
-			Groups:  []string{"games"},
+			Groups:  []string{group},
 			Sources: sourcesFor(d, title, system),
 			Art: artwork{
 				// Their thumbnail service. An <img> is not subject to CORS, so

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func mkCards() []card {
 	return []card{
@@ -358,5 +361,51 @@ func TestConfidentHitIgnoresPunctuationAndCase(t *testing.T) {
 	hits2 := []tmdbHit{{ID: 3, Title: "Blade Runner"}}
 	if _, ok := pickConfidentHit(hits2, "Blade Runner 2049"); ok {
 		t.Fatal("the 1982 film must not be attached to the 2049 release")
+	}
+}
+
+// The kind filter was parsed, used for the cache key, and then never applied.
+// `kind=image` returned videos, which reads as an answer rather than a bug.
+func TestKindFilterActuallyExcludes(t *testing.T) {
+	src := []source{{Title: "s", Seeders: 5, Size: 100 << 20, WebSafe: true}}
+	cards := []card{
+		{Key: "a", Title: "A Movie", Kind: "video", Seeders: 5, Sources: src},
+		{Key: "b", Title: "A Photo", Kind: "image", Seeders: 5, Sources: src},
+		{Key: "c", Title: "A Comic", Kind: "comic", Seeders: 5, Sources: src},
+	}
+	for _, tc := range []struct {
+		kind string
+		want string
+	}{{"image", "b"}, {"comic", "c"}, {"video", "a"}} {
+		got := filters{Kind: tc.kind, Sort: "relevance"}.apply(cards)
+		if len(got) != 1 || got[0].Key != tc.want {
+			t.Fatalf("kind=%q: got %d cards %v, want just %q",
+				tc.kind, len(got), keysOf(got), tc.want)
+		}
+	}
+	// No kind means no narrowing.
+	if got := (filters{Sort: "relevance"}).apply(cards); len(got) != 3 {
+		t.Fatalf("empty kind should keep all 3, got %d", len(got))
+	}
+}
+
+func keysOf(cards []card) []string {
+	out := make([]string, 0, len(cards))
+	for _, c := range cards {
+		out = append(out, c.Key)
+	}
+	return out
+}
+
+// An unknown kind must not silently fall back to the games catalogue.
+func TestUnknownKindHasNoArchiveScope(t *testing.T) {
+	if q := archiveQueryFor("zelda", "teleport"); q != "" {
+		t.Fatalf("unknown kind produced a query: %q", q)
+	}
+	if q := archiveQueryFor("nasa", "image"); !strings.Contains(q, "mediatype:(image)") {
+		t.Fatalf("image scope missing from %q", q)
+	}
+	if q := archiveQueryFor("batman", "comic"); !strings.Contains(q, "mediatype:(texts)") {
+		t.Fatalf("comic scope missing from %q", q)
 	}
 }

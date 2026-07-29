@@ -40,7 +40,7 @@ func TestArchiveCardsAreInstantAndCarryTheirOwnArt(t *testing.T) {
 		Emulator:   "coleco",
 		Collection: []string{"consolelivingroom"},
 		Downloads:  4200,
-	}})
+	}}, "game")
 	if len(cards) != 1 {
 		t.Fatalf("want 1 card, got %d", len(cards))
 	}
@@ -84,7 +84,7 @@ func TestArchiveCardsAreOrderedByDemandAndDeduplicated(t *testing.T) {
 		{Identifier: "a", Title: "Quiet", Downloads: 10},
 		{Identifier: "b", Title: "Popular", Downloads: 90000},
 		{Identifier: "a", Title: "Quiet again", Downloads: 10},
-	})
+	}, "game")
 	if len(cards) != 2 {
 		t.Fatalf("duplicate identifier was not collapsed: %d cards", len(cards))
 	}
@@ -217,7 +217,7 @@ func TestSizeFiltersDoNotHideHostedGames(t *testing.T) {
 
 // Narrowing to exactly what you wanted must not hide it.
 func TestClickingTheGamesChipKeepsHostedGames(t *testing.T) {
-	games := archiveCards([]archiveDoc{{Identifier: "dk", Title: "Donkey Kong", Emulator: "coleco"}})
+	games := archiveCards([]archiveDoc{{Identifier: "dk", Title: "Donkey Kong", Emulator: "coleco"}}, "game")
 	f := filters{Groups: []string{"games"}, Sort: "seeders"}
 	if got := f.apply(games); len(got) != 1 {
 		t.Fatalf("the Games filter hid a game: %d cards", len(got))
@@ -266,7 +266,7 @@ func TestAWellSeededTorrentStillOutranksAHostedGame(t *testing.T) {
 func TestTheTouchCapablePlayerIsRankedFirst(t *testing.T) {
 	cards := archiveCards([]archiveDoc{{
 		Identifier: "sonic", Title: "Sonic", Emulator: "genesis", Downloads: 500,
-	}})
+	}}, "game")
 	c := cards[0]
 	rankSources(&c)
 	if c.Sources[c.Best].Indexer != "EmulatorJS" {
@@ -280,7 +280,7 @@ func TestASystemWithNoCoreOffersOnlyTheArchivePlayer(t *testing.T) {
 	cards := archiveCards([]archiveDoc{{
 		Identifier: "intv_game", Title: "Astrosmash", Emulator: "intv2",
 		Collection: []string{"consolelivingroom"},
-	}})
+	}}, "game")
 	if n := len(cards[0].Sources); n != 1 {
 		t.Fatalf("want only the archive player, got %d sources", n)
 	}
@@ -294,7 +294,7 @@ func TestASystemWithNoCoreOffersOnlyTheArchivePlayer(t *testing.T) {
 func TestDosKeepsTheArchivePlayerOnly(t *testing.T) {
 	cards := archiveCards([]archiveDoc{{
 		Identifier: "x_dos", Title: "X", Emulator: "dosbox",
-	}})
+	}}, "game")
 	if n := len(cards[0].Sources); n != 1 {
 		t.Errorf("want 1 source for MS-DOS, got %d", n)
 	}
@@ -306,7 +306,7 @@ func TestDosKeepsTheArchivePlayerOnly(t *testing.T) {
 func TestFlashIsAlsoOfferedThroughOurOwnRuffle(t *testing.T) {
 	cards := archiveCards([]archiveDoc{{
 		Identifier: "waluigigame", Title: "Waluigi Game", Emulator: "ruffle-swf",
-	}})
+	}}, "game")
 	c := cards[0]
 	if len(c.Sources) != 2 {
 		t.Fatalf("want both players for Flash, got %d", len(c.Sources))

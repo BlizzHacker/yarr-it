@@ -262,17 +262,21 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		err   error
 	}
 	ia := make(chan iaResult, 1)
-	wantGames := kind == "" || kind == "game"
-	if wantGames {
+	// archive.org is asked for any kind it has a scope for, not just games.
+	// Restricting it to games was why `kind=image` and `kind=comic` had no
+	// source of their own -- the torrent indexers carry almost no images, so
+	// the honest answer for those kinds comes from here.
+	_, wantArchive := scopeFor(kind)
+	if wantArchive {
 		go func() {
-			c, err := s.searchArchive(r.Context(), q)
+			c, err := s.searchArchive(r.Context(), q, kind)
 			ia <- iaResult{c, err}
 		}()
 	}
 
 	cards, err := s.searchProwlarr(r.Context(), q, kind)
 
-	if wantGames {
+	if wantArchive {
 		got := <-ia
 		if got.err != nil {
 			// A dead archive.org must not take the torrent results down with
@@ -441,6 +445,13 @@ func kindOf(r prowlarrResult) string {
 			return "video"
 		case c.ID >= 3000 && c.ID < 4000:
 			return "audio"
+		// 7030 is comics, which sits inside the 7000-7999 book range -- so a
+		// bare "is it 7000-8000" test swallows it and every comic is filed as
+		// a book. Checked first for that reason.
+		case c.ID == 7030:
+			return "comic"
+		case c.ID >= 7000 && c.ID < 8000:
+			return "book"
 		}
 	}
 	return "other"

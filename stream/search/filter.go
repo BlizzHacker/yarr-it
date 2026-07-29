@@ -105,6 +105,13 @@ func (f filters) apply(cards []card) []card {
 		if len(f.Groups) > 0 && !anyGroupMatches(c.Groups, f.Groups) {
 			continue
 		}
+		// Kind was parsed, used for the cache key, and then never applied --
+		// so `kind=image` returned whatever the query found, video included.
+		// A filter that changes nothing is worse than a missing one: it reads
+		// as an answer.
+		if f.Kind != "" && c.Kind != f.Kind {
+			continue
+		}
 		if f.Source == "instant" && !c.Instant {
 			continue
 		}

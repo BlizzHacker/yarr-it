@@ -33,6 +33,10 @@ type deviceProfile struct {
 	// A set-top box has no WebAssembly and no third-party iframe, so a game
 	// result there is a card that can never be opened.
 	AllowInteractive bool
+	// Whether the device can show a still image or a scanned comic page.
+	// A TV has no browser but does have a Poster node, so unlike a game these
+	// are genuinely viewable.
+	AllowStills bool
 }
 
 var rokuProfile = deviceProfile{
@@ -41,8 +45,9 @@ var rokuProfile = deviceProfile{
 	BadContainers: []string{".avi", ".wmv", ".flv", ".rmvb", ".ogv", ".ogm", ".divx", ".iso", ".img"},
 	// AV1 only decodes on 2023+ hardware and XviD/DivX not at all, so both are
 	// excluded rather than gambling on the specific model.
-	BadCodecs:  []string{"xvid", "divx", "av1", "mpeg2", "vc1", "wmv"},
-	AllowAudio: true,
+	BadCodecs:   []string{"xvid", "divx", "av1", "mpeg2", "vc1", "wmv"},
+	AllowAudio:  true,
+	AllowStills: true,
 }
 
 // deviceProfileFor maps a client hint to a profile. An unknown or absent hint
@@ -102,6 +107,13 @@ func (p *deviceProfile) kindPlayable(c card) bool {
 	if c.Kind == "game" {
 		return p.AllowInteractive
 	}
+	// A set-top box has no browser, but it does have a Poster node: it can
+	// display a still image and it can page through a scanned comic. These
+	// were dropped alongside games because the rule keyed on "not video",
+	// which meant asking a TV for images returned nothing at all.
+	if c.Kind == "image" || c.Kind == "comic" {
+		return p.AllowStills
+	}
 	for _, g := range c.Groups {
 		switch g {
 		case "movies", "tv", "anime":
@@ -154,6 +166,17 @@ func (p *deviceProfile) applyDevice(cards []card) []card {
 	}
 	out := make([]card, 0, len(cards))
 	for _, c := range cards {
+		// The per-source checks below are about video decoding: containers and
+		// codecs. They are meaningless for a still image or a scanned comic,
+		// and applying them discarded every such source for want of an H.264
+		// stream -- which is why asking a TV for images returned nothing even
+		// after the kind filter was fixed.
+		if c.Kind == "image" || c.Kind == "comic" {
+			if p.kindPlayable(c) {
+				out = append(out, c)
+			}
+			continue
+		}
 		kept := make([]source, 0, len(c.Sources))
 		for _, s := range c.Sources {
 			if p.playable(s) {
