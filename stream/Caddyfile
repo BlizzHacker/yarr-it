@@ -45,20 +45,17 @@ stream.moveweight.com {
 		reverse_proxy 127.0.0.1:8802
 	}
 
-	# The gate. Every remaining request is checked against a session before any
-	# markup is served, so an unauthenticated visitor -- or a store reviewer --
-	# sees a sign-in page rather than a catalogue.
-	@needsAuth not path /auth/* /api/health /favicon.ico
-	handle @needsAuth {
-		forward_auth 127.0.0.1:8802 {
-			uri /auth/verify
-			copy_headers X-Yarrit-User X-Yarrit-Email
-			@denied status 401
-			handle_response @denied {
-				redir * /auth/login?next={http.request.uri}
-			}
-		}
-	}
+	# There is deliberately no gate here. The site itself is open: a browser
+	# gets the catalogue, and sign-in is offered rather than demanded.
+	#
+	# The requirement the gate exists for -- an account behind every viewer on
+	# the living-room apps -- is enforced in mw-search instead, which can tell a
+	# TV client from a browser and is checked on the API rather than on markup.
+	# Doing it there also means the rule holds even if this file is wrong, which
+	# is the right place for a rule that matters.
+	#
+	# To put the whole site back behind sign-in, set AUTH_SCOPE=all in
+	# /etc/default/mw-search -- no change here is needed for that.
 
 	# index.html carries a hashed script URL, so it must never be cached or a
 	# returning visitor keeps loading the previous build's assets.

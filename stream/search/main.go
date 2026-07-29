@@ -150,7 +150,14 @@ func main() {
 	mux := http.NewServeMux()
 	auth := loadAuthConfig()
 	if auth.Enabled {
-		log.Printf("sign-in required (client %s…)", auth.ClientID[:8])
+		switch auth.Scope {
+		case scopeAll:
+			log.Printf("sign-in required for everyone (client %s…)", auth.ClientID[:8])
+		case scopeOff:
+			log.Printf("sign-in configured but switched off (AUTH_SCOPE=off)")
+		default:
+			log.Printf("sign-in required for TV clients only (client %s…)", auth.ClientID[:8])
+		}
 	} else {
 		log.Printf("sign-in NOT configured; the site is open")
 	}

@@ -29,6 +29,30 @@ const (
 	sessionTTL    = 30 * 24 * time.Hour
 )
 
+// How much of the service the sign-in gate covers.
+//
+// The TV apps are the surface that has to demonstrate an account behind every
+// viewer; a browser is not what gets a channel pulled from a store. Gating
+// everything also gates the people we hand the URL to for testing, so the two
+// need to be separable.
+const (
+	scopeTV  = "tv"  // TV clients must sign in; browsers are open. The default.
+	scopeAll = "all" // Everything requires a session.
+	scopeOff = "off" // Nothing does.
+)
+
+// Clients that identify as living-room devices. A TV app names itself with
+// ?device=, which is the same parameter that already selects its playback
+// profile -- so a client that can play anything at all has told us what it is.
+var tvDevices = map[string]bool{
+	"roku":      true,
+	"androidtv": true,
+	"firetv":    true,
+	"tizen":     true,
+	"tvos":      true,
+	"webos":     true,
+}
+
 type authConfig struct {
 	Issuer       string // https://authentik.moveweight.com/application/o/yarrit-web/
 	AuthorizeURL string
@@ -38,6 +62,7 @@ type authConfig struct {
 	RedirectURI  string
 	Secret       []byte // signs session cookies
 	Enabled      bool
+	Scope        string // scopeTV, scopeAll or scopeOff
 }
 
 func loadAuthConfig() *authConfig {
@@ -56,6 +81,15 @@ func loadAuthConfig() *authConfig {
 		ClientSecret: os.Getenv("SSO_CLIENT_SECRET"),
 		RedirectURI:  os.Getenv("SSO_REDIRECT_URI"),
 		Issuer:       base + "/application/o/" + slug + "/",
+		Scope:        strings.ToLower(strings.TrimSpace(os.Getenv("AUTH_SCOPE"))),
+	}
+	switch c.Scope {
+	case scopeTV, scopeAll, scopeOff:
+	default:
+		// An unset or misspelt scope lands on TV-only rather than on "all".
+		// Getting this wrong should lock out the surface that can survive it,
+		// not every visitor.
+		c.Scope = scopeTV
 	}
 	if c.RedirectURI == "" {
 		c.RedirectURI = "https://stream.moveweight.com/auth/callback"
@@ -275,9 +309,27 @@ func (c *authConfig) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireAuth wraps a handler so the data behind it needs a session.
+// isTVRequest reports whether the caller is one of the living-room apps.
+//
+// The ?device= parameter is the declaration, but a TV app that omits it would
+// silently fall through to the open path -- so Roku, which announces itself in
+// its User-Agent, is also recognised there. Anything that fails both checks is
+// treated as a browser, which is the safe direction to be wrong in for a gate
+// whose purpose is the app stores rather than access control.
+func isTVRequest(r *http.Request) bool {
+	if tvDevices[strings.ToLower(strings.TrimSpace(r.URL.Query().Get("device")))] {
+		return true
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("User-Agent")), "roku")
+}
+
 func (c *authConfig) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !c.Enabled {
+		if !c.Enabled || c.Scope == scopeOff {
+			next(w, r)
+			return
+		}
+		if c.Scope == scopeTV && !isTVRequest(r) {
 			next(w, r)
 			return
 		}

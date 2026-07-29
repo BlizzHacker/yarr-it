@@ -112,6 +112,19 @@ IGDB_CLIENT_ID=
 IGDB_CLIENT_SECRET=
 PROWLARR_API_KEY=
 TMDB_API_KEY=
+
+# Sign-in. The gate only switches on once both SSO values are set, so a
+# half-filled file leaves the site open rather than locking everyone out.
+SSO_CLIENT_ID=
+SSO_CLIENT_SECRET=
+# Persist this or every restart signs everybody out.
+SESSION_SECRET=
+
+# How far the gate reaches:
+#   tv  - TV apps must sign in, browsers are open (default, and what ships)
+#   all - everybody signs in, browsers included
+#   off - nobody does
+AUTH_SCOPE=tv
 EOF
   chmod 0640 /etc/mw-search.env
   chown root:mw-search /etc/mw-search.env
