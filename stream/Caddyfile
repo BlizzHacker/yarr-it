@@ -22,6 +22,12 @@ stream.moveweight.com {
 
 	encode zstd gzip
 
+	# The URL a TV puts on screen for someone to type into a phone. It has to
+	# be short enough to read across a room and retype without a mistake, which
+	# the identity provider's own hostname is not.
+	redir /tv https://authentik.moveweight.com/device 302
+	redir /tv/ https://authentik.moveweight.com/device 302
+
 	# Torrent peer relay (WebSocket). Long-lived connections, no compression.
 	handle /bridge* {
 		reverse_proxy 127.0.0.1:8801

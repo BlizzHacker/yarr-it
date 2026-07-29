@@ -24,6 +24,7 @@ sub init()
     m.signInCode    = m.top.findNode("signInCode")
     m.signInHint    = m.top.findNode("signInHint")
     m.signInStatus  = m.top.findNode("signInStatus")
+    m.signInUrl     = m.top.findNode("signInUrl")
     m.pollTimer     = m.top.findNode("pollTimer")
 
     m.api.observeField("response", "onApiResponse")
@@ -111,9 +112,13 @@ sub onDeviceStart(data as Object)
     end if
 
     m.deviceCode = data.device_code
-    m.signInStep1.text = "On your phone or computer, go to:  " + data.verification_uri
+    ' The provider's own hostname is long and easy to mistype from across a
+    ' room. stream.moveweight.com/tv redirects to exactly the same page and is
+    ' short enough to read off a screen and get right first time.
+    m.signInStep1.text = "On your phone or computer, go to:"
     m.signInCode.text = data.user_code
-    m.signInHint.text = "Enter this code to sign in. It expires in " + Str(Int(data.expires_in / 60)).trim() + " minutes."
+    m.signInUrl.text = "stream.moveweight.com/tv"
+    m.signInHint.text = "Then enter this code. It expires in " + Str(Int(data.expires_in / 60)).trim() + " minutes."
     m.signInStatus.text = "Waiting for you to approve this TV…"
 
     ' The server states its own poll interval; honouring it is what keeps a
