@@ -319,3 +319,50 @@ func TestFlashIsAlsoOfferedThroughOurOwnRuffle(t *testing.T) {
 		t.Errorf("ruffle target = %q, want the #swf fragment", got)
 	}
 }
+
+// archive.org results never passed through isAdult, which only sees Prowlarr
+// rows, so erotica reached a plain Comics browse untagged. That is the kind of
+// thing a store review finds.
+func TestArchiveCardsAreScreenedForAdultContent(t *testing.T) {
+	cards := archiveCards([]archiveDoc{
+		{Identifier: "savita-bhabhi-01", Title: "Savita Bhabhi Episode 1"},
+		{Identifier: "tintin01", Title: "The Adventures of Tintin"},
+		{Identifier: "x1", Title: "Some Scan", Collection: []string{"eroticabooks"}},
+		{Identifier: "x2", Title: "Another Scan", Collection: []string{"comics"}},
+	}, "comic")
+
+	got := map[string]bool{}
+	for _, c := range cards {
+		got[c.Title] = c.Adult
+	}
+	if !got["Savita Bhabhi Episode 1"] {
+		t.Error("adult title was not flagged")
+	}
+	if !got["Some Scan"] {
+		t.Error("item in an erotica collection was not flagged")
+	}
+	if got["The Adventures of Tintin"] {
+		t.Error("Tintin was flagged as adult")
+	}
+	if got["Another Scan"] {
+		t.Error("an ordinary comics collection was flagged as adult")
+	}
+}
+
+// The filter must actually drop them unless they are asked for.
+func TestAdultArchiveCardsAreHiddenByDefault(t *testing.T) {
+	cards := archiveCards([]archiveDoc{
+		{Identifier: "a", Title: "Savita Bhabhi Episode 1"},
+		{Identifier: "b", Title: "The Adventures of Tintin"},
+	}, "comic")
+
+	visible := filters{Sort: "relevance"}.apply(cards)
+	for _, c := range visible {
+		if c.Adult {
+			t.Fatalf("adult card %q survived the default filter", c.Title)
+		}
+	}
+	if len(visible) != 1 {
+		t.Fatalf("expected only Tintin to survive, got %d", len(visible))
+	}
+}

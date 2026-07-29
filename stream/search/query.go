@@ -41,6 +41,13 @@ func queryTerms(q string) []string {
 var adultMarkers = []string{
 	"xxx", "porn", "brazzers", "onlyfans", "hentai", "jav ",
 	"anal", "milf", "creampie", "blowjob", "s3xus", "sexart",
+	// Added for the archive.org text catalogue, which carries no category to
+	// key on: its erotica is titled plainly and reached a Comics browse
+	// untagged. These are title words, so they are chosen to be words that do
+	// not appear in the name of something innocent.
+	"erotic", "nsfw", "playboy", "penthouse", "hustler",
+	"savita bhabhi", "savita bhabi", "kamasutra", "kama sutra",
+	"lustomic", "bdsm", "futanari", "doujin", "ecchi",
 }
 
 func looksAdult(title string) bool {

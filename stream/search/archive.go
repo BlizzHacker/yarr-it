@@ -67,6 +67,18 @@ func scopeFor(kind string) (string, bool) {
 	return scope, ok
 }
 
+// Collections archive.org uses for erotica. Their texts carry no Newznab
+// category, so without this an adult scan is indistinguishable from any other
+// book and reaches a Comics browse untagged.
+var adultArchiveCollections = map[string]bool{
+	"eroticabooks":                true,
+	"adultmagazines":              true,
+	"tijuanabibles":               true,
+	"eroticacomics":               true,
+	"vintageerotica":              true,
+	"pulpmagazinearchive_erotica": true,
+}
+
 type archiveDoc struct {
 	Identifier string          `json:"identifier"`
 	Title      string          `json:"title"`
@@ -321,7 +333,21 @@ func archiveCards(docs []archiveDoc, kind string) []card {
 			"video": "movies",
 		}[kind]
 
+		// archive.org results never passed through isAdult, which only ever
+		// saw Prowlarr rows -- so nothing from the archive was ever marked
+		// adult and erotica surfaced in a plain Comics browse. Their texts
+		// carry no Newznab category to key on, so the title and the
+		// collections it sits in are the signals available.
+		adult := looksAdult(title) || looksAdult(d.Identifier)
+		for _, col := range d.Collection {
+			if looksAdult(col) || adultArchiveCollections[strings.ToLower(col)] {
+				adult = true
+				break
+			}
+		}
+
 		cards = append(cards, card{
+			Adult:    adult,
 			Key:      "ia:" + d.Identifier,
 			Title:    title,
 			Year:     archiveYear(d.Year),

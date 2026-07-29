@@ -244,11 +244,14 @@ sub onApiResponse()
         for each c in resp.data.cards
             poster = ""
             if c.art <> invalid and c.art.poster <> invalid then poster = c.art.poster
+            instant = false
+            if c.instant <> invalid then instant = c.instant
             items.push({
                 title: c.title
                 poster: poster
                 year: c.year
                 seeders: c.seeders
+                instant: instant
                 isDiscover: false
             })
         end for
@@ -280,7 +283,15 @@ sub showCards(items as Object)
         node = content.createChild("ContentNode")
         node.title = it.title
         if it.poster <> invalid and it.poster <> "" then node.HDGRIDPOSTERURL = it.poster
-        if it.seeders >= 0
+        ' An archive.org item is served by a host that is always up, so it has
+        ' no seeders and the question does not apply. Printing "0 up" on it
+        ' reads as a dead torrent -- the opposite of the truth, since those are
+        ' the results most certain to play.
+        ' Guarded: the discover path builds items without this field, and
+        ' comparing invalid to a boolean is a runtime error, not false.
+        if it.instant <> invalid and it.instant = true
+            node.addFields({ seedText: "instant" })
+        else if it.seeders > 0
             node.addFields({ seedText: Str(it.seeders).trim() + " up" })
         else
             node.addFields({ seedText: "" })
