@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920,height=1080,user-scalable=no">
+<title>Yarr.It</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #0b0d11; overflow: hidden;
+  }
+  /* The site fills the screen. A Samsung TV renders at 1920x1080 regardless of
+     panel size, so fixed dimensions here are correct rather than lazy. */
+  #app { border: 0; width: 100%; height: 100%; display: block; }
+  #fallback {
+    position: absolute; inset: 0; display: none;
+    color: #e9edf3; font: 28px/1.5 system-ui, sans-serif;
+    padding: 12vh 10vw;
+  }
+  #fallback h1 { color: #5eead4; font-size: 44px; margin: 0 0 24px; }
+  #fallback p { color: #8b96a8; }
+</style>
+</head>
+<body>
+<iframe id="app" src="https://stream.moveweight.com/?device=tizen" allowfullscreen></iframe>
+
+<div id="fallback">
+  <h1>Can't reach Yarr.It</h1>
+  <p>The TV is online but stream.moveweight.com did not respond.</p>
+  <p>Press Return to retry.</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Samsung's remote sends its own keycodes. Without registering them the TV
+  // swallows the coloured and media keys entirely, so the page never sees
+  // them and playback controls appear dead.
+  var KEYS = ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop",
+              "MediaRewind", "MediaFastForward", "ColorF0Red", "ColorF1Green",
+              "ColorF2Yellow", "ColorF3Blue"];
+  try {
+    if (window.tizen && tizen.tvinputdevice) {
+      KEYS.forEach(function (k) {
+        try { tizen.tvinputdevice.registerKey(k); } catch (e) { /* not on this model */ }
+      });
+    }
+  } catch (e) { /* not running on a TV */ }
+
+  // BACK on the remote should leave the app, not silently do nothing -- a
+  // Samsung certification requirement, and the first thing a reviewer tries.
+  document.addEventListener("keydown", function (e) {
+    // 10009 is Samsung's RETURN/BACK; 27 is Escape on a desktop browser.
+    if (e.keyCode === 10009 || e.keyCode === 27) {
+      var frame = document.getElementById("app");
+      if (document.getElementById("fallback").style.display === "block") {
+        frame.src = frame.src;   // retry
+        showFallback(false);
+        return;
+      }
+      try { tizen.application.getCurrentApplication().exit(); } catch (err) { /* browser */ }
+    }
+  });
+
+  function showFallback(on) {
+    document.getElementById("fallback").style.display = on ? "block" : "none";
+    document.getElementById("app").style.visibility = on ? "hidden" : "visible";
+  }
+
+  // An iframe reports load for an error page too, so reachability is checked
+  // separately rather than trusted from the frame.
+  function probe() {
+    var done = false;
+    var timer = setTimeout(function () { if (!done) { done = true; showFallback(true); } }, 12000);
+    fetch("https://stream.moveweight.com/api/discover", { method: "GET", mode: "no-cors" })
+      .then(function () { if (!done) { done = true; clearTimeout(timer); showFallback(false); } })
+      .catch(function () { if (!done) { done = true; clearTimeout(timer); showFallback(true); } });
+  }
+  probe();
+
+  // Keep the panel awake. A TV that sees no remote input dims mid-film.
+  try {
+    if (window.webapis && webapis.appcommon) {
+      webapis.appcommon.setScreenSaver(
+        webapis.appcommon.AppCommonScreenSaverState.SCREEN_SAVER_OFF
+      );
+    }
+  } catch (e) { /* not on a TV */ }
+})();
+</script>
+</body>
+</html>

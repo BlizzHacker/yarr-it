@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Yarr.It for Samsung TV (Tizen).
+
+  A Samsung TV app is a web app, so this is a thin container around the site
+  rather than a reimplementation: the same code that runs in a browser runs
+  here, which is also why every server-side change reaches this app without a
+  resubmission.
+
+  The id must stay stable for the lifetime of the listing. Samsung keys the
+  store entry on it, so changing it publishes a different app and orphans every
+  install.
+-->
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://yarr.it/Yarrit"
+        version="1.0.0"
+        viewmodes="maximized">
+
+  <tizen:application id="YarritTV01.Yarrit" package="YarritTV01" required_version="6.0"/>
+  <tizen:profile name="tv"/>
+
+  <name>Yarr.It</name>
+  <description>Browse and watch, on your terms.</description>
+  <author href="https://moveweight.com" email="me@moveweight.com">MoveWeight</author>
+
+  <content src="index.html"/>
+  <icon src="icon.png"/>
+
+  <!-- The app loads stream.moveweight.com, so that origin has to be reachable.
+       Listed explicitly rather than with a wildcard: an app permitted to load
+       anything is one compromise away from loading anything. -->
+  <access origin="https://stream.moveweight.com" subdomains="false"/>
+  <access origin="https://authentik.moveweight.com" subdomains="false"/>
+
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <!-- Keeps the screen awake during playback; without it a Samsung TV dims
+       mid-film because it sees no remote activity. -->
+  <tizen:privilege name="http://tizen.org/privilege/display"/>
+
+  <tizen:setting screen-orientation="landscape"
+                 context-menu="disable"
+                 background-support="disable"
+                 encryption="disable"
+                 hwkey-event="enable"/>
+</widget>
