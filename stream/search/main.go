@@ -120,6 +120,9 @@ type server struct {
 	// Test hook, fired when a background slow-tier pass finishes.
 	onSlowTierDone func()
 
+	// Per-user watchlist and resume points.
+	library *libraryStore
+
 	tmdb     *tmdbClient
 	igdb     *igdbClient
 	discover discoverCache
@@ -149,6 +152,18 @@ func main() {
 		// and would only describe this installation's shelf.
 		igdb: newIGDB(os.Getenv("IGDB_CLIENT_ID"), os.Getenv("IGDB_CLIENT_SECRET")),
 	}
+	lib, err := newLibraryStore(os.Getenv("LIBRARY_PATH"))
+	if err != nil {
+		// A library that cannot be read is a data problem, not a reason to
+		// serve a broken one.
+		log.Fatalf("library: %v", err)
+	}
+	s.library = lib
+	if os.Getenv("LIBRARY_PATH") == "" {
+		log.Printf("LIBRARY_PATH not set; watchlist and resume are in-memory only")
+	}
+	go lib.flushLoop()
+
 	s.warm = newWarmer(s)
 	go s.evictLoop()
 	// Pre-search the titles on the landing rails so the common path --
@@ -186,6 +201,11 @@ func main() {
 	// Health stays open so a monitor does not need a session to see the
 	// service is alive.
 	mux.HandleFunc("/api/health", s.handleHealth)
+
+	// Personal data, so these need a session whatever AUTH_SCOPE says.
+	mux.HandleFunc("/api/v1/library", auth.requireUser(s.handleLibrary))
+	mux.HandleFunc("/api/v1/progress", auth.requireUser(s.handleProgress))
+	mux.HandleFunc("/api/v1/continue", auth.requireUser(s.handleContinue))
 
 	srv := &http.Server{
 		Addr:              *addr,

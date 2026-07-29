@@ -23,6 +23,13 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+
+# The watchlist and resume points live here. StateDirectory rather than a plain
+# path: ProtectSystem=strict mounts the filesystem read-only, so a directory
+# created by hand is not writable no matter who owns it. systemd creates this
+# one, chowns it to User=, and makes it writable inside the sandbox.
+StateDirectory=mw-search
+Environment=LIBRARY_PATH=/var/lib/mw-search/library.json
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
