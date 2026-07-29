@@ -112,6 +112,11 @@ type server struct {
 	flightMu sync.Mutex
 	inflight map[string]chan struct{}
 
+	// The enabled-indexer list, so the fan-out does not re-read it per search.
+	ixMu      sync.Mutex
+	ixCache   []indexerRef
+	ixExpires time.Time
+
 	tmdb     *tmdbClient
 	igdb     *igdbClient
 	discover discoverCache
@@ -233,7 +238,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// A set-top box cannot fall back to software decode the way a browser can,
 	// so unplayable sources are removed rather than shown and failed.
 	dev := deviceProfileFor(r.URL.Query().Get("device"))
-	cacheKey := kind + "\x00" + strings.ToLower(q)
+	cacheKey := searchCacheKey(q, kind)
 
 	// Set when the indexers failed but archive.org answered, so the response
 	// can admit it is incomplete rather than presenting a partial result as a
@@ -418,7 +423,38 @@ func (s *server) evictLoop() {
 	}
 }
 
+// searchProwlarr answers from a per-indexer fan-out, so a slow indexer delays
+// only itself. It falls back to the single aggregate call if the fan-out cannot
+// start -- that path still works, it is just as slow as its slowest indexer.
 func (s *server) searchProwlarr(ctx context.Context, q, kind string) ([]card, error) {
+	// Stragglers must outlive this request: the whole point is to answer now
+	// and let the rest land in the cache for the next one. A child of the
+	// request context would be cancelled the moment the response is written.
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Second)
+
+	res, err := s.searchFanout(detached, q, kind, fanoutDeadline, func(full []card) {
+		defer cancel()
+		if len(full) > 0 {
+			s.putCached(searchCacheKey(q, kind), full)
+		}
+	})
+	if err == nil {
+		if !res.partial {
+			cancel()
+		}
+		if res.partial {
+			log.Printf("search %q: answered with %d/%d indexers, rest landing in cache",
+				q, res.answered, res.total)
+		}
+		return res.cards, nil
+	}
+	cancel()
+	log.Printf("search %q: fan-out unavailable (%v), using the aggregate call", q, err)
+
+	return s.searchProwlarrAggregate(ctx, q, kind)
+}
+
+func (s *server) searchProwlarrAggregate(ctx context.Context, q, kind string) ([]card, error) {
 	ctx, cancel := context.WithTimeout(ctx, 100*time.Second)
 	defer cancel()
 
