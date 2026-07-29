@@ -16,7 +16,9 @@ sub init()
     m.sourceList  = m.top.findNode("sourceList")
     m.sourceTitle = m.top.findNode("sourceTitle")
     m.sourceHint  = m.top.findNode("sourceHint")
-    m.api         = m.top.findNode("api")
+    m.api           = m.top.findNode("api")
+    m.filterButtons = m.top.findNode("filterButtons")
+    m.filterEcho    = m.top.findNode("filterEcho")
 
     m.api.observeField("response", "onApiResponse")
     m.grid.observeField("itemSelected", "onTitleSelected")
@@ -25,10 +27,83 @@ sub init()
 
     m.cards = []          ' current result set
     m.activeCard = invalid
+    m.query = ""          ' last search term; "" means browse
+    m.filterIndex = 0
+    m.sort = "seeders"
+
+    ' The filter set. `kind` narrows to what a thing is; `groups` narrows by
+    ' catalogue section -- Movies needs the group because a film and a TV
+    ' episode are both kind=video.
+    m.filters = [
+        { label: "All",    kind: "",      groups: "" },
+        { label: "Movies", kind: "",      groups: "movies" },
+        { label: "TV",     kind: "",      groups: "tv" },
+        { label: "Comics", kind: "comic", groups: "" },
+        { label: "Images", kind: "image", groups: "" },
+    ]
+
+    labels = []
+    for each f in m.filters
+        labels.push(f.label)
+    end for
+    m.filterButtons.buttons = labels
+    m.filterButtons.observeField("buttonSelected", "onFilterSelected")
+    updateFilterEcho()
 
     m.grid.setFocus(true)
     showBusy("Loading…")
     dispatch({ kind: "discover" })
+end sub
+
+' ---------------------------------------------------------------- filters ----
+
+sub onFilterSelected()
+    idx = m.filterButtons.buttonSelected
+    if idx < 0 or idx >= m.filters.count() then return
+
+    m.filterIndex = idx
+    updateFilterEcho()
+
+    ' Focus goes back to the results, because choosing a filter is a request to
+    ' look at them -- leaving focus on the bar means every selection needs an
+    ' extra press to get anywhere.
+    m.grid.setFocus(true)
+    runCurrentQuery()
+end sub
+
+' runCurrentQuery re-runs whatever is on screen under the current filter.
+'
+' The same call covers both browsing a category and narrowing an existing
+' search, which is why the query is kept in m.query rather than read back off
+' a widget: the two must not drift apart.
+sub runCurrentQuery()
+    f = m.filters[m.filterIndex]
+
+    if m.query = "" and f.kind = "" and f.groups = ""
+        ' "All" with nothing typed is the home screen, not a search for
+        ' everything -- the server would rightly refuse that.
+        showBusy("Loading…")
+        dispatch({ kind: "discover" })
+        return
+    end if
+
+    what = f.label
+    if m.query <> "" then what = Chr(34) + m.query + Chr(34) + " in " + f.label
+    showBusy("Finding the best " + what + "…" + Chr(10) + Chr(10) + "Ranking by health, so the first row is the one most likely to play.")
+    dispatch({
+        kind: "search",
+        query: m.query,
+        filterKind: f.kind,
+        filterGroups: f.groups,
+        sort: m.sort,
+    })
+end sub
+
+sub updateFilterEcho()
+    f = m.filters[m.filterIndex]
+    order = "best seeded first"
+    if m.sort = "relevance" then order = "best match first"
+    m.filterEcho.text = "Showing: " + f.label + "   -   " + order
 end sub
 
 ' dispatch sends a request to the network task.
@@ -48,10 +123,28 @@ end sub
 function onKeyEvent(key as String, press as Boolean) as Boolean
     if not press then return false
 
+    ' UP from the grid reaches the filter bar; DOWN comes back. Without an
+    ' explicit hop the bar is unreachable, because a MarkupGrid consumes UP to
+    ' move between its own rows and never yields focus upward.
+    if key = "up" and m.grid.hasFocus() and not m.sourcePane.visible and not m.player.visible
+        if m.grid.itemFocused < m.grid.numColumns
+            m.filterButtons.setFocus(true)
+            return true
+        end if
+        return false
+    end if
+    if key = "down" and m.filterButtons.hasFocus()
+        m.grid.setFocus(true)
+        return true
+    end if
+
     ' Back unwinds one layer at a time rather than exiting outright.
     if key = "back"
         if m.player.visible
             stopPlayback()
+            return true
+        else if m.filterButtons.hasFocus()
+            m.grid.setFocus(true)
             return true
         else if m.sourcePane.visible
             m.sourcePane.visible = false
@@ -89,8 +182,10 @@ sub onKeyboardButton()
         query = dlg.text
         m.top.dialog.close = true
         if query <> invalid and query.trim() <> ""
-            showBusy("Searching every index for " + Chr(34) + query + Chr(34) + "…" + Chr(10) + Chr(10) + "A cold search can take a few seconds.")
-            dispatch({ kind: "search", query: query })
+            ' Kept on the scene so the filter chips can re-run the same search
+            ' without reopening the keyboard.
+            m.query = query.trim()
+            runCurrentQuery()
         end if
     else
         m.top.dialog.close = true
@@ -129,7 +224,9 @@ sub onApiResponse()
     else if resp.kind = "search"
         hideBusy()
         if resp.data = invalid or resp.data.cards = invalid or resp.data.cards.count() = 0
-            setStatus("Nothing found. Press the * button to try another search.")
+            ' Naming the filter matters: an empty Comics result reads as a
+            ' broken app unless it says which filter produced it.
+            setStatus("Nothing found in " + m.filters[m.filterIndex].label + ". Press * to search, or UP to change the filter.")
             return
         end if
         m.cards = resp.data.cards
@@ -146,7 +243,10 @@ sub onApiResponse()
             })
         end for
         showCards(items)
-        setStatus("")
+        ' Say what is being shown and how it is ordered. On a TV there is no
+        ' URL bar and no second window, so the screen is the only thing that
+        ' can explain why these results and not others.
+        setStatus(Str(resp.data.cards.count()).trim() + " results in " + m.filters[m.filterIndex].label + ", best first")
 
     else if resp.kind = "prepare"
         if not resp.ok

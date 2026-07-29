@@ -10,24 +10,34 @@
            color="0x5eead4ff" >
       <Font role="font" uri="font:BoldSystemFontFile" size="42" />
     </Label>
-    <Label id="hint" text="Press the * button to search   -   OK to pick a source"
-           translation="[82,104]" color="0x8b96a8ff">
-      <Font role="font" uri="font:SystemFontFile" size="24" />
-    </Label>
-
     <!-- Status / errors -->
-    <Label id="status" translation="[80,160]" color="0xe9edf3ff" width="1760" wrap="true">
+    <Label id="status" translation="[80,1040]" color="0xe9edf3ff" width="1760" wrap="true">
       <Font role="font" uri="font:SystemFontFile" size="28" />
     </Label>
 
     <!-- Browse grid. MarkupGrid rather than RowList: a flat grid of posters is
          easier to navigate with a D-pad than nested rows. -->
-    <MarkupGrid id="grid" translation="[80,170]"
+    <MarkupGrid id="grid" translation="[80,330]"
                 itemComponentName="PosterTile"
                 numRows="2" numColumns="6"
                 itemSize="[280,420]" itemSpacing="[16,24]"
-                vertFocusAnimationStyle="floatingFocus"
+                vertFocusAnimationStyle="fixedFocusWrap"
                 drawFocusFeedback="true" />
+
+    <!-- Filter bar, drawn after the grid so it is never covered by it.
+         ButtonGroup because LabelList is vertical-only on Roku;
+         this is the node that actually lays out horizontally and gives D-pad
+         focus for free. The active filter is echoed in filterEcho, because a
+         ButtonGroup shows focus but has no notion of a current selection --
+         so once focus returns to the grid there would otherwise be nothing on
+         screen saying what is being filtered. -->
+    <ButtonGroup id="filterButtons" translation="[80,96]"
+                 layoutDirection="horiz" itemSpacings="[10]"
+                 minWidth="150" />
+    <Label id="filterEcho" translation="[1180,62]" width="660" horizAlign="right" color="0x5eead4ff">
+      <Font role="font" uri="font:SystemFontFile" size="22" />
+    </Label>
+
 
     <!-- Source picker: shown after a title is chosen. -->
     <Group id="sourcePane" visible="false">

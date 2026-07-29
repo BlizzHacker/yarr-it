@@ -21,8 +21,38 @@ sub runRequest()
         ' device=roku makes the server drop anything this box cannot decode --
         ' AVI, WMV, XviD and so on. Roku shows a bare "cannot play" error with no
         ' explanation, so a source it will refuse is worse than no source at all.
-        ' minSeeders=1 drops dead torrents for the same reason.
-        url = globalNode.searchBase + "/api/search?device=roku&minSeeders=1&q=" + urlEncode(req.query)
+        url = globalNode.searchBase + "/api/search?device=roku"
+
+        ' An empty query is a browse: "show me comics". The server accepts that
+        ' as long as a kind or group says what to browse.
+        if req.query <> invalid and req.query <> ""
+            url = url + "&q=" + urlEncode(req.query)
+        end if
+
+        ' Category. `kind` narrows to what a thing IS (image, comic); `groups`
+        ' narrows by catalogue section. Movies needs the group, because a film
+        ' and a TV episode are both kind=video.
+        if req.filterKind <> invalid and req.filterKind <> ""
+            url = url + "&kind=" + urlEncode(req.filterKind)
+        end if
+        if req.filterGroups <> invalid and req.filterGroups <> ""
+            url = url + "&groups=" + urlEncode(req.filterGroups)
+        end if
+
+        ' Ranking. Sorting by seeders is what makes the first row the one most
+        ' likely to actually play, which matters far more on a TV than in a
+        ' browser: there is no second window to go and check another candidate.
+        sortBy = "seeders"
+        if req.sort <> invalid and req.sort <> "" then sortBy = req.sort
+        url = url + "&sort=" + urlEncode(sortBy)
+
+        ' Dead torrents waste the whole minute the gateway spends waiting for
+        ' metadata before failing. Stills have no seeders at all, so the floor
+        ' only applies where it means something.
+        if req.filterKind <> "image" and req.filterKind <> "comic"
+            url = url + "&minSeeders=1"
+        end if
+
         m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 150) }
 
     else if kind = "prepare"
