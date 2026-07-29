@@ -105,3 +105,23 @@ test('tracking never throws when the shelf is unavailable', async () => {
     globalThis.fetch = original;
   }
 });
+
+// Personal state changes under the page's feet; a cached read makes a delete
+// look like it silently failed.
+test('shelf reads bypass the HTTP cache', async () => {
+  const seen = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    seen.push(opts?.cache);
+    return new Response(JSON.stringify({ items: [] }), { status: 200 });
+  };
+  try {
+    await getLibrary();
+    await getContinueWatching();
+    assert.ok(seen.length >= 2);
+    assert.ok(seen.every((c) => c === 'no-store'),
+      `cache modes were ${JSON.stringify(seen)}`);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

@@ -29,7 +29,7 @@ export function makeSource({ kind, uri, meta = {} }) {
   return { kind, uri, meta };
 }
 
-export function makePlayable({ render, src, mime, tier = TIER.DIRECT, cleanup, mount }) {
+export function makePlayable({ render, src, mime, tier = TIER.DIRECT, cleanup, mount, subtitles }) {
   if (!RENDERS.has(render)) throw new Error(`unknown render kind: ${render}`);
   // A canvas render is driven by code, not by a src attribute: Ruffle and
   // EmulatorJS are WASM players that need to be handed a container element and
@@ -38,7 +38,14 @@ export function makePlayable({ render, src, mime, tier = TIER.DIRECT, cleanup, m
   if (render === RENDER.CANVAS && typeof mount !== 'function') {
     throw new Error('a canvas playable needs a mount(el) function');
   }
-  return { render, src, mime, tier, cleanup: cleanup ?? (() => {}), mount: mount ?? null };
+  return {
+    render, src, mime, tier,
+    cleanup: cleanup ?? (() => {}),
+    mount: mount ?? null,
+    // Subtitle tracks that shipped inside the source, if any. Loaded lazily:
+    // discovering them is free, fetching them is not.
+    subtitles: subtitles ?? [],
+  };
 }
 
 /**

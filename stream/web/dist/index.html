@@ -125,6 +125,14 @@
   }
   .progress-fill { height:100%; background:var(--accent, #e5b567); }
 
+  .save {
+    margin:10px 0 0; padding:9px 16px; border-radius:var(--r);
+    background:var(--panel-2); color:var(--fg); border:1px solid var(--line);
+    font:inherit; cursor:pointer;
+  }
+  .save:hover { border-color:var(--accent-dim); }
+  .save[data-saved="1"] { border-color:var(--accent); color:var(--accent); }
+
   .rating {
     position:absolute; top:8px; right:8px; font-size:11px; font-weight:650;
     padding:3px 7px; border-radius:6px; background:rgba(4,6,9,.82); color:var(--warn);
@@ -429,6 +437,10 @@
     <div class="sheet-body">
       <p class="overview" id="d-overview"></p>
       <div class="genres" id="d-genres"></div>
+      <!-- Only shown to a signed-in viewer: there is nowhere to save to
+           without an account, and an button that always fails is worse than
+           no button. -->
+      <button type="button" id="d-save" class="save" hidden></button>
       <p class="srch" id="d-srch">Sources</p>
       <div class="sources" id="d-sources"></div>
     </div>
@@ -462,6 +474,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=81d0f93c026e"></script>
+<script type="module" src="/app.js?v=0f065f0d1dfd"></script>
 </body>
 </html>

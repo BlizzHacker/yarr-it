@@ -24,7 +24,14 @@ const FINISHED_FRACTION = 0.92;
 let signedIn = null;
 
 async function call(path, options = {}) {
-  const res = await fetch(path, { credentials: 'same-origin', ...options });
+  const res = await fetch(path, {
+    credentials: 'same-origin',
+    // Never from cache. These reads are personal state that the same page just
+    // changed: a cached list showed a title still in the library right after it
+    // had been removed, which reads as the remove having silently failed.
+    cache: 'no-store',
+    ...options,
+  });
   if (res.status === 401 || res.status === 503) {
     signedIn = false;
     return null;

@@ -10,8 +10,10 @@ import { archiveResolver } from './resolvers/archive.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
 import {
-  getContinueWatching, trackProgress, watchedFraction, isSignedIn,
+  getContinueWatching, trackProgress, watchedFraction,
+  getLibrary, addToLibrary, removeFromLibrary, keyFor,
 } from './shelf.js';
+import { attachSubtitles } from './subtitles.js';
 import { PlaybackError } from './failures.js';
 
 const $ = (s) => document.querySelector(s);
@@ -485,6 +487,50 @@ function openDetail(card) {
   const list = $('#d-sources');
   list.replaceChildren();
   card.sources.forEach((s, i) => list.append(sourceRow(card, s, i === card.best)));
+
+  renderSaveButton(card);
+}
+
+/**
+ * The save control, drawn only for a viewer who has somewhere to save to.
+ *
+ * Membership is read from the library rather than remembered locally, so the
+ * button tells the truth after the same title was saved on another device.
+ */
+async function renderSaveButton(card) {
+  const btn = $('#d-save');
+  btn.hidden = true;
+
+  let saved;
+  try {
+    const items = await getLibrary();
+    saved = items.some((it) => it.key === keyFor(card));
+  } catch {
+    return; // signed out, or the shelf is unreachable: draw nothing
+  }
+  if (state.active !== card) return; // a newer detail opened while we waited
+
+  const paint = () => {
+    btn.dataset.saved = saved ? '1' : '0';
+    btn.textContent = saved ? '✓ In your library' : '+ Save to library';
+  };
+  paint();
+  btn.hidden = false;
+
+  btn.onclick = async () => {
+    btn.disabled = true;
+    const next = !saved;
+    try {
+      await (next ? addToLibrary(card) : removeFromLibrary(card));
+      saved = next;
+      paint();
+    } catch {
+      // Leave the button showing what the server still believes.
+      paint();
+    } finally {
+      btn.disabled = false;
+    }
+  };
 }
 
 function sourceRow(card, s, isBest) {
@@ -668,6 +714,20 @@ async function play(card, src) {
     state.stopTracking = (out.render === 'video' || out.render === 'audio')
       ? trackProgress(el, card)
       : null;
+
+    // Subtitles that shipped with the release. Attached after playback has
+    // started so fetching them never delays the picture, and failure is
+    // silent -- no subtitles is the normal case, not an error.
+    if (out.subtitles?.length) {
+      attachSubtitles(el, out.subtitles, (t) => t.load())
+        .then((tracks) => {
+          if (tracks.length) {
+            setPlayerStatus(`${tracks.length} subtitle track${tracks.length === 1 ? '' : 's'} available — use the player's captions menu`);
+            setTimeout(() => setPlayerStatus(''), 6000);
+          }
+        })
+        .catch(() => {});
+    }
     el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
     // Only <video>/<audio> fire a 'playing' event. An image, an iframe embed and
     // a canvas player (Ruffle/EmulatorJS) never will, so their status has to be

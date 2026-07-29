@@ -4,6 +4,7 @@ import { mountEmulator } from './game.js';
 import { detectCore, SNIFF_BYTES } from '../rom-core.js';
 import { needsChoice, playableFiles } from '../pickfile.js';
 import { PlaybackError, FAILURE } from '../failures.js';
+import { findSubtitles } from '../subtitles.js';
 
 /**
  * The torrent path is the one thing here that was already proven in production,
@@ -339,9 +340,20 @@ export function createTorrentResolver({ engine, classify, timeoutMs = 90000 }) {
                 src = blobUrl;
               }
 
+              // Subtitles that came with the release. Discovery is a filename
+              // scan over the file list, so it costs nothing until a track is
+              // actually chosen and loaded.
+              const subtitles = render === 'video'
+                ? findSubtitles(torrent.files || []).map((t) => ({
+                  ...t,
+                  load: async () => (await t.file.blob()).text(),
+                }))
+                : [];
+
               resolve(makePlayable({
                 render,
                 src,
+                subtitles,
                 mime: mimeForName(file.name),
                 tier: TIER.DIRECT,
                 cleanup: () => {
