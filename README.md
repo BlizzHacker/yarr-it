@@ -1,5 +1,8 @@
 # stream.moveweight.com
 
+> **Yarr.It is dedicated to the memory of Samuel Thomas Trimble Cliffe
+> (1992–2011), who wanted it to exist.** See [DEDICATION.md](DEDICATION.md).
+
 Ad-free, open-source torrent **streaming** — not a downloader. Search every
 configured indexer at once and play the result in the browser.
 
