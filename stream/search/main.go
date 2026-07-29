@@ -121,7 +121,7 @@ type server struct {
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8802", "listen address")
 	prowlarr := flag.String("prowlarr", "http://192.168.0.115:9696", "Prowlarr base URL (over the tunnel)")
-	ttl := flag.Duration("ttl", 15*time.Minute, "cache TTL for search results")
+	ttl := flag.Duration("ttl", defaultTTL, "cache TTL for search results")
 	flag.Parse()
 
 	key := os.Getenv("PROWLARR_API_KEY")

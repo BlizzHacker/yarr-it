@@ -26,6 +26,17 @@ const (
 	warmInterval  = 45 * time.Second
 	warmBatchSize = 24
 	warmStagger   = 20 * time.Second
+
+	// The cache must outlive a full warm cycle, or warming cannot work at all:
+	// at one title every 45s, 24 titles take 18 minutes, so a 15 minute TTL
+	// expired the earliest entries before the warmer had finished the batch and
+	// could return to them. Every rail click stayed a cold 8s search while the
+	// warmer looked busy.
+	//
+	// 45 minutes leaves the whole batch warm with room for a cycle to run long.
+	// Torrent results are stable over that window -- a release that exists now
+	// still exists in half an hour -- so the staleness costs nothing real.
+	defaultTTL = 45 * time.Minute
 )
 
 type warmer struct {
