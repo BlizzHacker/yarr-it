@@ -195,7 +195,11 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// meant the category chips could only ever narrow results that a text
 	// search had already produced -- so there was no way to simply ask for a
 	// category, which is the first thing anyone tries.
-	if q == "" && len(f.Groups) == 0 {
+	// A kind with no words is a browse for the same reason a group is --
+	// "show me comics". Only groups were accepted, so picking Comics or Images
+	// without typing anything returned "missing q", which on a TV remote is
+	// the normal way to use it.
+	if q == "" && len(f.Groups) == 0 && f.Kind == "" {
 		writeJSON(w, 400, map[string]string{"error": "missing q"})
 		return
 	}
