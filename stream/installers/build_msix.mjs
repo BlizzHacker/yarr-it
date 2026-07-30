@@ -1,4 +1,4 @@
-// Build the Windows / Xbox MSIX for Yarr.It (stream.moveweight.com).
+// Build the Windows / Xbox MSIX for Yarr.It (yarrit.com).
 //
 // This is a *hosted web app* package: the MSIX contains no application code,
 // only a manifest whose start page is the live site. That matches how Cryptic
@@ -19,7 +19,7 @@ const staging = join(here, 'build', 'msix');
 const outDir = join(here, 'dist');
 
 const VERSION = process.env.STREAM_VERSION ?? '1.0.0.0';
-const START_PAGE = process.env.STREAM_START_PAGE ?? 'https://stream.moveweight.com/';
+const START_PAGE = process.env.STREAM_START_PAGE ?? 'https://yarrit.com/';
 
 // Must match the existing Partner Center publisher exactly, or the upload is
 // rejected as a different developer.

@@ -42,7 +42,7 @@ one-time $5 developer registration.
 - `contextMenus` — the right-click entries.
 - `storage` — remembers the two toggles.
 - `scripting` / `offscreen` — reserved for the picture-in-picture player.
-- `host_permissions: stream.moveweight.com` — the omnibox queries the search API.
+- `host_permissions: yarrit.com` — the omnibox queries the search API.
 - `optional_host_permissions: *://*/*` — the content script only needs this on
   sites the user actually browses; it is optional so the install prompt is not
   alarming.

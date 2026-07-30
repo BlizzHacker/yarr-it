@@ -4,7 +4,7 @@
 //   node shot-mobile.mjs [url] [outfile]
 import { chromium, devices } from 'playwright';
 
-const url = process.argv[2] ?? 'https://stream.moveweight.com/';
+const url = process.argv[2] ?? 'https://yarrit.com/';
 const out = process.argv[3] ?? 'mobile.png';
 
 const browser = await chromium.launch();

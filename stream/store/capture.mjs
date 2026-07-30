@@ -12,7 +12,7 @@
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 
-const SITE = process.env.SITE || 'https://stream.moveweight.com';
+const SITE = process.env.SITE || 'https://yarrit.com';
 const OUT = 'assets';
 
 // Play wants 16:9 or 9:16 within 320-3840px. Partner Center wants 1366x768

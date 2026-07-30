@@ -40,7 +40,7 @@ SHA-256     CD:FE:97:8E:67:D7:EF:65:1F:34:F6:68:BF:92:24:CF:
 ## Android: the assetlinks requirement
 
 The TWA only opens without a browser URL bar if the site proves it owns the app.
-`https://stream.moveweight.com/.well-known/assetlinks.json` carries the SHA-256
+`https://yarrit.com/.well-known/assetlinks.json` carries the SHA-256
 above and is already live. **If the signing key ever changes, that file must
 change with it**, or every installed app silently degrades to a Chrome tab.
 

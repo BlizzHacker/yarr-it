@@ -39,7 +39,7 @@ minutes and is the same artifact that ships, so it proves the exact build.
 ### What to verify
 
 - [ ] App opens with **no browser address bar** — if a URL bar shows, Digital
-      Asset Links failed; check `https://stream.moveweight.com/.well-known/assetlinks.json`
+      Asset Links failed; check `https://yarrit.com/.well-known/assetlinks.json`
       still lists the signing key's SHA-256
 - [ ] Splash screen shows the app icon, not a white flash
 - [ ] VPN notice appears on first run
@@ -97,14 +97,14 @@ self-signed build.
 
 ## Shared: verify the live site first
 
-Both packages wrap `https://stream.moveweight.com`. If the site is broken, both
+Both packages wrap `https://yarrit.com`. If the site is broken, both
 apps are broken, and a store review will catch it.
 
 ```bash
-curl -s -o /dev/null -w "site      %{http_code}\n" https://stream.moveweight.com/
-curl -s -o /dev/null -w "privacy   %{http_code}\n" https://stream.moveweight.com/privacy.html
-curl -s -o /dev/null -w "manifest  %{http_code}\n" https://stream.moveweight.com/manifest.webmanifest
-curl -s -o /dev/null -w "assetlink %{http_code}\n" https://stream.moveweight.com/.well-known/assetlinks.json
+curl -s -o /dev/null -w "site      %{http_code}\n" https://yarrit.com/
+curl -s -o /dev/null -w "privacy   %{http_code}\n" https://yarrit.com/privacy.html
+curl -s -o /dev/null -w "manifest  %{http_code}\n" https://yarrit.com/manifest.webmanifest
+curl -s -o /dev/null -w "assetlink %{http_code}\n" https://yarrit.com/.well-known/assetlinks.json
 ```
 
 All four must return 200.

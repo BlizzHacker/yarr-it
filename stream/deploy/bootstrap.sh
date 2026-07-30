@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild stream.moveweight.com on this host, from scratch, with no outside help.
+# Rebuild yarrit.com on this host, from scratch, with no outside help.
 #
 # provision.sh drives the VPS from a workstation over the jump host. This does
 # the same job while running ON the VPS, for when key access from outside is not
@@ -212,7 +212,7 @@ echo "    build $HASH"
 
 cat <<EOF
 
-==> stream.moveweight.com should now answer. Two notes:
+==> yarrit.com should now answer. Two notes:
 
   * mw-search reaches Prowlarr at 192.168.0.115:9696, which is not routable
     from here. Search will return nothing until that path exists -- it fails as

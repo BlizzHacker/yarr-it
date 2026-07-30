@@ -1,4 +1,4 @@
-# stream.moveweight.com
+# yarrit.com
 
 Ad-free, open-source torrent **streaming** — not a downloader. Search every
 configured indexer at once and play the result in the browser.

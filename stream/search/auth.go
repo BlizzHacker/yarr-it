@@ -92,7 +92,7 @@ func loadAuthConfig() *authConfig {
 		c.Scope = scopeTV
 	}
 	if c.RedirectURI == "" {
-		c.RedirectURI = "https://stream.moveweight.com/auth/callback"
+		c.RedirectURI = "https://yarrit.com/auth/callback"
 	}
 
 	if s := os.Getenv("SESSION_SECRET"); s != "" {

@@ -1,4 +1,4 @@
-const SITE = 'https://stream.moveweight.com';
+const SITE = 'https://yarrit.com';
 const $ = (s) => document.querySelector(s);
 
 /** Accept a magnet URI or a bare 40-character info hash. */

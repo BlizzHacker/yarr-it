@@ -27,10 +27,10 @@
   <content src="index.html"/>
   <icon src="icon.png"/>
 
-  <!-- The app loads stream.moveweight.com, so that origin has to be reachable.
+  <!-- The app loads yarrit.com, so that origin has to be reachable.
        Listed explicitly rather than with a wildcard: an app permitted to load
        anything is one compromise away from loading anything. -->
-  <access origin="https://stream.moveweight.com" subdomains="false"/>
+  <access origin="https://yarrit.com" subdomains="false"/>
   <access origin="https://authentik.moveweight.com" subdomains="false"/>
 
   <tizen:privilege name="http://tizen.org/privilege/internet"/>

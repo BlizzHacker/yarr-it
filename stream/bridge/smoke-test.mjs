@@ -1,6 +1,6 @@
 // Live smoke test for mw-bridge, run against the public endpoint.
 // Node 22+ has a global WebSocket, so this needs no dependencies.
-const BASE = process.env.BRIDGE || 'wss://stream.moveweight.com/bridge/socket';
+const BASE = process.env.BRIDGE || 'wss://yarrit.com/bridge/socket';
 
 function dial(hello, { expectOpen = true, timeoutMs = 12000 } = {}) {
   return new Promise((resolve) => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and deploy the stream.moveweight.com frontend.
+# Build and deploy the yarrit.com frontend.
 #
 # Cache-busting is the point of this script. /app.js is a stable URL, so a
 # browser will happily keep serving a stale copy after a deploy -- which once

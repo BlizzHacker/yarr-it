@@ -22,11 +22,11 @@
 </style>
 </head>
 <body>
-<iframe id="app" src="https://stream.moveweight.com/?device=tizen" allowfullscreen></iframe>
+<iframe id="app" src="https://yarrit.com/?device=tizen" allowfullscreen></iframe>
 
 <div id="fallback">
   <h1>Can't reach Yarr.It</h1>
-  <p>The TV is online but stream.moveweight.com did not respond.</p>
+  <p>The TV is online but yarrit.com did not respond.</p>
   <p>Press Return to retry.</p>
 </div>
 
@@ -73,7 +73,7 @@
   function probe() {
     var done = false;
     var timer = setTimeout(function () { if (!done) { done = true; showFallback(true); } }, 12000);
-    fetch("https://stream.moveweight.com/api/discover", { method: "GET", mode: "no-cors" })
+    fetch("https://yarrit.com/api/discover", { method: "GET", mode: "no-cors" })
       .then(function () { if (!done) { done = true; clearTimeout(timer); showFallback(false); } })
       .catch(function () { if (!done) { done = true; clearTimeout(timer); showFallback(true); } });
   }

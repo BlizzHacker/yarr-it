@@ -218,7 +218,7 @@ func (s *server) handleSocket(w http.ResponseWriter, r *http.Request) {
 	defer s.release(ip)
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns:  []string{"stream.moveweight.com", "localhost:*"},
+		OriginPatterns:  []string{"yarrit.com", "localhost:*"},
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {

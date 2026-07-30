@@ -17,7 +17,7 @@ sub Main()
     ' node to it is a runtime type mismatch.
     globalNode = screen.getGlobalNode()
     globalNode.addFields({
-        searchBase: "https://stream.moveweight.com"
+        searchBase: "https://yarrit.com"
         gatewayBase: "http://192.168.0.118:8900"
         ssoBase: "https://authentik.moveweight.com"
         ' Public client: a TV cannot hold a secret, so the device-code flow is

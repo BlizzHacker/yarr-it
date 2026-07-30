@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision a bare VPS to serve stream.moveweight.com.
+# Provision a bare VPS to serve yarrit.com.
 #
 # This exists because the edge host was rebuilt on 2026-07-28 and the entire
 # stream stack went with it -- Caddy, both Go services and their unit files had

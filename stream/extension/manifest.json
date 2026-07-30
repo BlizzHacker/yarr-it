@@ -23,7 +23,7 @@
   },
   "omnibox": { "keyword": "st" },
   "permissions": ["contextMenus", "storage", "scripting", "offscreen"],
-  "host_permissions": ["https://stream.moveweight.com/*"],
+  "host_permissions": ["https://yarrit.com/*"],
   "optional_host_permissions": ["*://*/*"],
   "content_scripts": [
     {

@@ -5,7 +5,7 @@
 // the content script (which sees the click before navigation) and this worker
 // handles everything that needs extension-level APIs.
 
-const SITE = 'https://stream.moveweight.com';
+const SITE = 'https://yarrit.com';
 
 const streamURL = (magnet) => `${SITE}/?magnet=${encodeURIComponent(magnet)}`;
 const searchURL = (q) => `${SITE}/?q=${encodeURIComponent(q)}`;

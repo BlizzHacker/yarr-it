@@ -10,7 +10,7 @@
 	auto_https disable_redirects
 }
 
-stream.moveweight.com {
+yarrit.com, www.yarrit.com {
 	# Issue over TLS-ALPN-01, which completes entirely on :443. The HTTP
 	# challenge is disabled because taking :80 would break the mail relay's
 	# renewal -- see the note above.
@@ -45,17 +45,9 @@ stream.moveweight.com {
 		reverse_proxy 127.0.0.1:8802
 	}
 
-	# There is deliberately no gate here. The site itself is open: a browser
-	# gets the catalogue, and sign-in is offered rather than demanded.
-	#
-	# The requirement the gate exists for -- an account behind every viewer on
-	# the living-room apps -- is enforced in mw-search instead, which can tell a
-	# TV client from a browser and is checked on the API rather than on markup.
-	# Doing it there also means the rule holds even if this file is wrong, which
-	# is the right place for a rule that matters.
-	#
-	# To put the whole site back behind sign-in, set AUTH_SCOPE=all in
-	# /etc/default/mw-search -- no change here is needed for that.
+	# No gate here: the site is open. TV clients are required to sign in by
+	# mw-search, which can tell a TV from a browser. Set AUTH_SCOPE=all in
+	# /etc/mw-search-sso.env to put the whole site back behind sign-in.
 
 	# index.html carries a hashed script URL, so it must never be cached or a
 	# returning visitor keeps loading the previous build's assets.
@@ -90,4 +82,18 @@ stream.moveweight.com {
 		output file /var/log/caddy/stream.log
 		format json
 	}
+}
+
+# Yarr.It moved to its own domain, off moveweight.com entirely. This stays for
+# the apps already in the field -- Roku, Tizen, the Android wrapper and the
+# Windows package all have the old host compiled in, and store updates take
+# days to weeks to reach a device. A permanent redirect keeps them working
+# until they are rebuilt.
+stream.moveweight.com {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	redir https://yarrit.com{uri} permanent
 }

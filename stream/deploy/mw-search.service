@@ -1,5 +1,5 @@
 [Unit]
-Description=mw-search — search and metadata API for stream.moveweight.com
+Description=mw-search — search and metadata API for yarrit.com
 Documentation=https://github.com/BlizzHacker/yarr-it
 After=network-online.target
 Wants=network-online.target

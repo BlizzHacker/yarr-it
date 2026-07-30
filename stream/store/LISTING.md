@@ -14,8 +14,8 @@ fields straight out of here; the character limits noted are the store's.
 | Android package | `com.moveweight.stream` |
 | MSIX identity | `MOVEWEIGHT.Stream` |
 | Publisher | MOVE WEIGHT (`CN=6375D74B-5E4F-45B4-B246-B29507C1332A`) |
-| Website | https://stream.moveweight.com |
-| Privacy policy | https://stream.moveweight.com/privacy.html |
+| Website | https://yarrit.com |
+| Privacy policy | https://yarrit.com/privacy.html |
 | Support email | me@moveweight.com |
 | Category | Entertainment (Play) / Multimedia & video (Microsoft) |
 | Price | Free, no in-app purchases, no ads |
@@ -195,7 +195,7 @@ See `ASSETS.md` for exact sizes and how they are generated.
 
 ## Pre-submission checklist
 
-- [ ] Privacy policy URL returns 200 — https://stream.moveweight.com/privacy.html
+- [ ] Privacy policy URL returns 200 — https://yarrit.com/privacy.html
 - [ ] App installs and runs on a real device (Android) — see `TESTING.md`
 - [ ] App installs and runs on a real machine (Windows) — see `TESTING.md`
 - [ ] Search returns results inside the app

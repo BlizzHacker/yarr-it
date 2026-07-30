@@ -106,7 +106,7 @@ func fetchArchiveRow(ctx context.Context, row archiveRow, limit int) (discoverRo
 	if err != nil {
 		return discoverRow{}, err
 	}
-	req.Header.Set("User-Agent", "yarr.it/1.0 (+https://stream.moveweight.com)")
+	req.Header.Set("User-Agent", "yarr.it/1.0 (+https://yarrit.com)")
 
 	client := &http.Client{Timeout: 25 * time.Second}
 	resp, err := client.Do(req)

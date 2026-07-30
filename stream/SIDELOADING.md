@@ -162,7 +162,7 @@ browsing work but playback will not start.
    detection. **Install anyway** if you trust the source.
 
 This build is a Trusted Web Activity: it wraps the live site and verifies
-ownership via `https://stream.moveweight.com/.well-known/assetlinks.json`. It
+ownership via `https://yarrit.com/.well-known/assetlinks.json`. It
 runs without a browser URL bar because the site's published SHA-256 matches the
 APK's signing certificate.
 
@@ -273,7 +273,7 @@ Honestly, some will not.
 
 This is exactly why every client works standalone: each app talks to a
 configurable API endpoint and falls back to bundled defaults, so nothing here
-depends on a store listing — or on `stream.moveweight.com` staying up.
+depends on a store listing — or on `yarrit.com` staying up.
 
 ---
 

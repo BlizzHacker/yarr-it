@@ -13,7 +13,7 @@
 // Site layouts come from sites.js (data, not code) with a generic fallback, so
 // a new tracker is a table entry rather than a code change.
 
-const SITE = 'https://stream.moveweight.com';
+const SITE = 'https://yarrit.com';
 
 // Inlined rather than imported: content scripts are not modules by default and
 // a dynamic import of an extension URL is blocked by many sites' CSP.

@@ -289,7 +289,7 @@ func (s *server) searchArchive(ctx context.Context, q, kind string) ([]card, err
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "yarr.it/1.0 (+https://stream.moveweight.com)")
+	req.Header.Set("User-Agent", "yarr.it/1.0 (+https://yarrit.com)")
 
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
