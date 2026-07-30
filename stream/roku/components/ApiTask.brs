@@ -15,7 +15,7 @@ sub runRequest()
 
     if kind = "discover"
         url = globalNode.searchBase + "/api/discover"
-        m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 25) }
+        m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 60) }
 
     else if kind = "search"
         ' device=roku makes the server drop anything this box cannot decode --

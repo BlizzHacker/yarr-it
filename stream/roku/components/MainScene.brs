@@ -549,6 +549,7 @@ sub onSourceSelected()
         itemId = src.magnet
         if itemId = invalid or itemId = "" then itemId = src.url
         if itemId = invalid or itemId = "" then itemId = m.activeCard.key
+        print "YARRIT: opening "; kind; " item "; itemId
         showBusy("Fetching pages…")
         dispatch({ kind: "pages", id: itemId, pageKind: kind })
         return
@@ -572,6 +573,7 @@ sub onPagesLoaded(data as Object)
     ' A comic's page count is not published, so the list is a ceiling and the
     ' viewer stops at the first page that will not load.
     m.pagesProbe = (data.probe = true)
+    print "YARRIT: viewer open with "; m.pages.count(); " pages"
     m.pageViewer.visible = true
     m.pageViewer.setFocus(true)
     showPage(0)
@@ -580,6 +582,7 @@ end sub
 sub showPage(i as Integer)
     if m.pages = invalid or i < 0 or i >= m.pages.count() then return
     m.pageIndex = i
+    print "YARRIT: page "; i; " -> "; m.pages[i]
     m.pageImage.uri = m.pages[i]
     if m.pagesProbe
         m.pageCount.text = "Page " + Str(i + 1).trim() + "   ←  →  to turn,  Back to close"
