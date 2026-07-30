@@ -63,6 +63,16 @@
     <!-- Player -->
     <Video id="player" width="1920" height="1080" translation="[0,0]" visible="false" />
 
+    <!-- Comics and photo sets. A Roku cannot render a PDF and cannot follow an
+         archive.org details page, so both arrive as a list of ordinary JPEGs
+         and are shown here one at a time. Left/Right turn the page. -->
+    <Group id="pageViewer" visible="false">
+      <Rectangle width="1920" height="1080" color="0x000000ff" />
+      <Poster id="pageImage" translation="[0,0]" width="1920" height="1080"
+              loadDisplayMode="limitSize" loadWidth="1920" loadHeight="1080" />
+      <Label id="pageCount" translation="[80,1010]" color="0x8b96a8ff" width="1760" />
+    </Group>
+
     <!-- Busy overlay -->
     <Group id="busy" visible="false">
       <Rectangle width="1920" height="1080" color="0x0b0d11dd" />

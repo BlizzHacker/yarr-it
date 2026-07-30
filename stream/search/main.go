@@ -198,6 +198,10 @@ func main() {
 	// depend on Caddy getting its forward_auth right.
 	mux.HandleFunc("/api/search", auth.requireAuth(s.handleSearch))
 	mux.HandleFunc("/api/discover", auth.requireAuth(s.handleDiscover))
+	// Turns an archive.org item into displayable images. A television cannot
+	// render a PDF or follow a details page, so this is what makes comics and
+	// photo sets work there at all.
+	mux.HandleFunc("/api/pages", auth.requireAuth(s.handlePages))
 	// Health stays open so a monitor does not need a session to see the
 	// service is alive.
 	mux.HandleFunc("/api/health", s.handleHealth)

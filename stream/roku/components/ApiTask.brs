@@ -71,6 +71,18 @@ sub runRequest()
         ' typing on their phone, so it is reported as data rather than failure.
         m.top.response = { kind: kind, ok: true, data: result }
 
+    else if kind = "pages"
+        ' An archive.org comic or photo set. The server turns the item into a
+        ' list of plain JPEGs, because a Roku can draw those and can draw
+        ' neither a PDF nor a details page.
+        url = globalNode.searchBase + "/api/pages?id=" + urlEncode(req.id)
+        if req.pageKind <> invalid and req.pageKind <> ""
+            url = url + "&kind=" + urlEncode(req.pageKind)
+        end if
+        result = httpGetJson(url, 30)
+        ok = result <> invalid and result.pages <> invalid
+        m.top.response = { kind: kind, ok: ok, data: result }
+
     else if kind = "prepare"
         ' The gateway joins the swarm and waits for metadata, which can take a
         ' while, so this gets a long timeout and its own error surface.

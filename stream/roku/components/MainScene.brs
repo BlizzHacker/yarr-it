@@ -13,6 +13,9 @@ sub init()
     m.busyText    = m.top.findNode("busyText")
     m.player      = m.top.findNode("player")
     m.sourcePane  = m.top.findNode("sourcePane")
+    m.pageViewer  = m.top.findNode("pageViewer")
+    m.pageImage   = m.top.findNode("pageImage")
+    m.pageCount   = m.top.findNode("pageCount")
     m.sourceList  = m.top.findNode("sourceList")
     m.sourceTitle = m.top.findNode("sourceTitle")
     m.sourceHint  = m.top.findNode("sourceHint")
@@ -274,6 +277,22 @@ end sub
 function onKeyEvent(key as String, press as Boolean) as Boolean
     if not press then return false
 
+    ' The page viewer takes the remote while it is open. Checked first so a
+    ' page turn is never mistaken for navigation in the grid behind it.
+    if m.pageViewer <> invalid and m.pageViewer.visible
+        if key = "right" or key = "down"
+            showPage(m.pageIndex + 1)
+            return true
+        else if key = "left" or key = "up"
+            showPage(m.pageIndex - 1)
+            return true
+        else if key = "back"
+            closePages()
+            return true
+        end if
+        return true
+    end if
+
     ' While the gate is up every key is consumed except Back, so no amount of
     ' button-mashing reaches the catalogue behind it.
     if m.signIn.visible
@@ -429,6 +448,9 @@ sub onApiResponse()
         ' can explain why these results and not others.
         setStatus(Str(resp.data.cards.count()).trim() + " results in " + m.filters[m.filterIndex].label + ", best first")
 
+    else if resp.kind = "pages"
+        onPagesLoaded(resp.data)
+
     else if resp.kind = "prepare"
         if not resp.ok
             hideBusy()
@@ -516,8 +538,61 @@ sub onSourceSelected()
 
     src = m.activeCard.sources[idx]
     m.sourcePane.visible = false
+
+    ' A comic or a photo set is not a stream. It has no magnet, and its URL is
+    ' an archive.org details page -- HTML. Sending that to the Video node is
+    ' what produced "this file would not play". Ask the server to turn the item
+    ' into pictures instead.
+    kind = ""
+    if m.activeCard.kind <> invalid then kind = m.activeCard.kind
+    if kind = "comic" or kind = "image"
+        itemId = src.magnet
+        if itemId = invalid or itemId = "" then itemId = src.url
+        if itemId = invalid or itemId = "" then itemId = m.activeCard.key
+        showBusy("Fetching pages…")
+        dispatch({ kind: "pages", id: itemId, pageKind: kind })
+        return
+    end if
+
     showBusy("Joining the swarm…" + Chr(10) + Chr(10) + "The gateway is fetching metadata and the first pieces. This can take up to a minute on a quiet torrent.")
     dispatch({ kind: "prepare", magnet: src.magnet })
+end sub
+
+' ------------------------------------------------------------ page viewer ---
+
+sub onPagesLoaded(data as Object)
+    hideBusy()
+    if data = invalid or data.pages = invalid or data.pages.count() = 0
+        setStatus("Nothing readable in this item.")
+        return
+    end if
+
+    m.pages = data.pages
+    m.pageIndex = 0
+    ' A comic's page count is not published, so the list is a ceiling and the
+    ' viewer stops at the first page that will not load.
+    m.pagesProbe = (data.probe = true)
+    m.pageViewer.visible = true
+    m.pageViewer.setFocus(true)
+    showPage(0)
+end sub
+
+sub showPage(i as Integer)
+    if m.pages = invalid or i < 0 or i >= m.pages.count() then return
+    m.pageIndex = i
+    m.pageImage.uri = m.pages[i]
+    if m.pagesProbe
+        m.pageCount.text = "Page " + Str(i + 1).trim() + "   ←  →  to turn,  Back to close"
+    else
+        m.pageCount.text = Str(i + 1).trim() + " / " + Str(m.pages.count()).trim() + "   ←  →  to turn,  Back to close"
+    end if
+end sub
+
+sub closePages()
+    m.pageViewer.visible = false
+    m.pageImage.uri = ""
+    m.pages = invalid
+    m.grid.setFocus(true)
 end sub
 
 function containerOf(name as String) as String
