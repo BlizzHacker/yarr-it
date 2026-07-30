@@ -89,6 +89,19 @@ function httpGetJson(url as String, timeoutSec as Integer) as Object
     xfer.initClientCertificates()
     xfer.addHeader("Accept", "application/json")
 
+    ' Prove who we are. The device flow leaves an access token in the registry
+    ' and it is the only credential this box has -- there is no cookie jar on a
+    ' television. Without sending it the server answers 401, which BrightScript
+    ' cannot tell apart from a dead network, so a signed-in TV reported
+    ' "could not reach the search service" instead of "you are not signed in".
+    reg = CreateObject("roRegistrySection", "yarrit")
+    if reg.exists("access_token")
+        token = reg.read("access_token")
+        if token <> invalid and token <> ""
+            xfer.addHeader("Authorization", "Bearer " + token)
+        end if
+    end if
+
     port = CreateObject("roMessagePort")
     xfer.setMessagePort(port)
 

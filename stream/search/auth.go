@@ -159,12 +159,19 @@ func (c *authConfig) decode(raw string) (session, bool) {
 }
 
 // sessionFrom reads a valid session off a request, if there is one.
+//
+// Two credentials are accepted, because two kinds of client exist. A browser
+// carries the signed cookie this service issued. A television has no cookie jar
+// -- it finished the device flow holding an OAuth access token and that is all
+// it can present. Checking the cookie first keeps the common path free of any
+// network call.
 func (c *authConfig) sessionFrom(r *http.Request) (session, bool) {
-	ck, err := r.Cookie(sessionCookie)
-	if err != nil {
-		return session{}, false
+	if ck, err := r.Cookie(sessionCookie); err == nil {
+		if s, ok := c.decode(ck.Value); ok {
+			return s, true
+		}
 	}
-	return c.decode(ck.Value)
+	return c.sessionFromBearer(r)
 }
 
 func (c *authConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
