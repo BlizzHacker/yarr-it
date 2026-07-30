@@ -1,13 +1,12 @@
 {
 	email wadeivy11@gmail.com
 
-	# Caddy must never bind :80 on this host. certbot renews the mail relay's
-	# certificate with the standalone plugin, which needs :80 for its own
-	# challenge -- whichever process holds the port wins, and the loser fails
-	# silently at renewal time, roughly two months after anyone would connect
-	# the two events. Losing that certificate breaks TLS on a working mail
-	# relay, so the web stack yields the port rather than sharing it.
-	auto_https disable_redirects
+	# Caddy may hold :80 again. The mail relay's certificate moved to the
+	# DNS-01 challenge (certbot --dns-cloudflare), which completes entirely
+	# over the Cloudflare API and needs no port at all -- so there is nothing
+	# left to contend with. Before that, nothing answered on :80 and anyone
+	# typing a bare hostname on a phone got a connection refused, while
+	# desktop browsers quietly upgraded to HTTPS and looked fine.
 }
 
 yarrit.com, www.yarrit.com {

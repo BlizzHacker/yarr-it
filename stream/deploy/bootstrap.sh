@@ -35,11 +35,14 @@ WWW=/srv/stream/www
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 1; }
 
 # --- do not damage the mail relay -------------------------------------------
-# certbot renews the relay certificate with the standalone plugin, which binds
-# :80. Caddy is configured (see stream/Caddyfile) to yield that port and issue
-# over TLS-ALPN-01 on :443 instead. That is asserted after startup rather than
-# assumed -- a silent renewal failure surfaces two months later as a dead
-# certificate on working mail.
+# The relay certificate now renews over DNS-01 (certbot --dns-cloudflare),
+# which completes through the Cloudflare API and needs no port, so Caddy may
+# hold :80 and serve the HTTP->HTTPS redirect. Before that nothing answered on
+# :80 at all: desktop browsers quietly upgraded to HTTPS and looked fine, while
+# a phone typing a bare hostname got connection refused.
+#
+# If this host is ever rebuilt, /root/.secrets/cloudflare.ini must exist with
+# dns_cloudflare_api_token, or renewal falls back to wanting :80 again.
 CERTBOT_STANDALONE=0
 if [ -d /etc/letsencrypt/renewal ] && grep -rqs "authenticator *= *standalone" /etc/letsencrypt/renewal; then
   CERTBOT_STANDALONE=1
