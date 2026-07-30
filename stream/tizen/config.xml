@@ -22,7 +22,7 @@
 
   <name>Yarr.It</name>
   <description>Browse and watch, on your terms.</description>
-  <author href="https://moveweight.com" email="me@moveweight.com">MoveWeight</author>
+  <author href="https://yarrit.com" email="me@yarrit.com">Yarr.It</author>
 
   <content src="index.html"/>
   <icon src="icon.png"/>
@@ -31,7 +31,7 @@
        Listed explicitly rather than with a wildcard: an app permitted to load
        anything is one compromise away from loading anything. -->
   <access origin="https://yarrit.com" subdomains="false"/>
-  <access origin="https://authentik.moveweight.com" subdomains="false"/>
+  <access origin="https://auth.yarrit.com" subdomains="false"/>
 
   <tizen:privilege name="http://tizen.org/privilege/internet"/>
   <!-- Keeps the screen awake during playback; without it a Samsung TV dims
