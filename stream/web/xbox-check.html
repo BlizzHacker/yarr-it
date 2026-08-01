@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yarr.It — device check</title>
+<style>
+  /* Sized for a television across a room, not a monitor at arm's length. */
+  :root { --bg:#0b0d11; --fg:#e9edf3; --muted:#8b96a8; --ok:#5eead4; --bad:#f87171; --warn:#fbbf24; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); padding:48px 64px 80px;
+         font:22px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:40px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 32px; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:14px 10px; border-bottom:1px solid #252d3a; vertical-align:top; }
+  td.name { width:36%; }
+  td.val { width:14%; font-weight:600; }
+  td.why { color:var(--muted); font-size:19px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+  #verdict { margin-top:36px; padding:22px 26px; border-radius:12px;
+             border:1px solid #252d3a; background:#151a22; font-size:24px; }
+  code { color:var(--muted); font-size:18px; }
+</style>
+</head>
+<body>
+  <h1>Yarr.It device check</h1>
+  <p class="sub">What this browser can and cannot do. Read the last line first.</p>
+  <table id="results"></table>
+  <div id="verdict">Checking…</div>
+
+<script>
+(async () => {
+  const rows = [];
+
+  // Streaming a torrent without downloading it first depends entirely on a
+  // service worker answering range requests. Everything else is secondary.
+  const swSupported = 'serviceWorker' in navigator;
+  let swRegistered = false;
+  if (swSupported) {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      swRegistered = !!reg;
+      if (!reg) {
+        // Registration is what actually fails on restricted engines, not the
+        // presence of the property.
+        await navigator.serviceWorker.register('/sw.min.js', { scope: '/' });
+        swRegistered = true;
+      }
+    } catch (e) { swRegistered = false; }
+  }
+
+  rows.push(['Service worker', swSupported && swRegistered,
+    'Streams a torrent while it downloads. Without it a whole file must finish before anything plays — which looks like the app hanging.']);
+
+  let rtc = false;
+  try { rtc = typeof RTCPeerConnection === 'function' && !!new RTCPeerConnection(); } catch (e) { rtc = false; }
+  rows.push(['WebRTC', rtc, 'How the browser reaches other peers. Without it, only the relay and archive.org sources work.']);
+
+  rows.push(['WebAssembly', typeof WebAssembly === 'object',
+    'Runs the emulators and the Flash player.']);
+
+  rows.push(['Media Source Extensions', typeof MediaSource === 'function',
+    'Lets video start before the file is complete.']);
+
+  let h264 = false;
+  try { h264 = !!document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01E"'); } catch (e) {}
+  rows.push(['H.264 / MP4', h264, 'The one video format almost every source offers.']);
+
+  rows.push(['Gamepad API', 'getGamepads' in navigator,
+    'Controller input for the emulators.']);
+
+  let store = false;
+  try { localStorage.setItem('_c', '1'); localStorage.removeItem('_c'); store = true; } catch (e) {}
+  rows.push(['Local storage', store, 'Remembers your sign-in between sessions.']);
+
+  // Can it actually reach the API from here?
+  let api = false, apiNote = '';
+  try {
+    const r = await fetch('/api/health', { cache: 'no-store' });
+    api = r.ok;
+    apiNote = 'HTTP ' + r.status;
+  } catch (e) { apiNote = e.message; }
+  rows.push(['Reaches yarrit.com', api, 'Search and the catalogue. ' + apiNote]);
+
+  const t = document.getElementById('results');
+  for (const [name, good, why] of rows) {
+    const tr = t.insertRow();
+    tr.insertCell().outerHTML = '<td class="name">' + name + '</td>';
+    tr.insertCell().outerHTML = '<td class="val ' + (good ? 'ok' : 'bad') + '">' +
+      (good ? 'YES' : 'NO') + '</td>';
+    tr.insertCell().outerHTML = '<td class="why">' + why + '</td>';
+  }
+
+  const v = document.getElementById('verdict');
+  const swOk = rows[0][1], rtcOk = rows[1][1], apiOk = rows[7][1];
+
+  if (!apiOk) {
+    v.innerHTML = '<span class="bad">This device cannot reach yarrit.com at all.</span> ' +
+      'Nothing else matters until that works — check the network, not the app.';
+  } else if (swOk && rtcOk) {
+    v.innerHTML = '<span class="ok">Everything Yarr.It needs is here.</span> ' +
+      'Torrent streaming should work on this device.';
+  } else if (!swOk) {
+    v.innerHTML = '<span class="bad">No service worker.</span> Torrents cannot stream on this ' +
+      'device — a file would have to download completely before it played, which looks like the ' +
+      'app freezing. <b>Archive.org results marked OPEN will still play</b>, because those are ' +
+      'ordinary web downloads. <br><br><span class="warn">Installing the app will not change ' +
+      'this</span> — the app is this same page in a frame, running the same browser engine.';
+  } else {
+    v.innerHTML = '<span class="warn">No WebRTC.</span> Peer connections are unavailable, so only ' +
+      'the relay tier and archive.org sources will work here.';
+  }
+
+  // A line worth reading out over the phone.
+  const summary = rows.map(r => r[0] + '=' + (r[1] ? 'Y' : 'N')).join(' ');
+  v.innerHTML += '<br><br><code>' + summary + '</code><br><code>' +
+    navigator.userAgent + '</code>';
+})();
+</script>
+</body>
+</html>

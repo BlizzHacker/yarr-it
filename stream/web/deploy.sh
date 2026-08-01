@@ -57,6 +57,8 @@ push "sw.min.js"           dist/sw.min.js
 push "manifest.webmanifest" dist/manifest.webmanifest
 push "privacy.html"       privacy.html
 push "sam.html"           sam.html
+push "xbox-check.html"    xbox-check.html
+push "selfhost.sh"        selfhost.sh
 # Raw modules, served for console diagnostics. Kept in the deploy so they can
 # never drift from the bundle the way they silently did once.
 push "tracker-udp.js"     src/tracker-udp.js

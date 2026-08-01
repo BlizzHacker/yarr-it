@@ -196,15 +196,19 @@ func main() {
 	// The data is what actually needs protecting. Gating it here means the API
 	// is safe even if the edge is ever misconfigured -- the check does not
 	// depend on Caddy getting its forward_auth right.
-	mux.HandleFunc("/api/search", auth.requireAuth(s.handleSearch))
-	mux.HandleFunc("/api/discover", auth.requireAuth(s.handleDiscover))
+	// Catalogue endpoints are open to any origin, so a client can point at any
+	// instance. Personal endpoints below deliberately are not.
+	mux.HandleFunc("/api/search", publicCORS(auth.requireAuth(s.handleSearch)))
+	mux.HandleFunc("/api/discover", publicCORS(auth.requireAuth(s.handleDiscover)))
 	// Turns an archive.org item into displayable images. A television cannot
 	// render a PDF or follow a details page, so this is what makes comics and
 	// photo sets work there at all.
-	mux.HandleFunc("/api/pages", auth.requireAuth(s.handlePages))
+	mux.HandleFunc("/api/pages", publicCORS(auth.requireAuth(s.handlePages)))
 	// Health stays open so a monitor does not need a session to see the
 	// service is alive.
-	mux.HandleFunc("/api/health", s.handleHealth)
+	// Health is how a client confirms an address is a Yarr.It server at all,
+	// so it must answer before any origin is trusted.
+	mux.HandleFunc("/api/health", publicCORS(s.handleHealth))
 
 	// Personal data, so these need a session whatever AUTH_SCOPE says.
 	mux.HandleFunc("/api/v1/library", auth.requireUser(s.handleLibrary))
