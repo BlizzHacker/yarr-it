@@ -3,9 +3,6 @@
 > **Yarr.It is dedicated to the memory of Samuel Thomas Trimble Cliffe
 > (1992–2011), who wanted it to exist.** See [DEDICATION.md](DEDICATION.md).
 
-A project of the [Move Weight Foundation](https://foundation.moveweight.com), an
-Oklahoma non-profit corporation with 501(c)(3) status pending.
-
 Ad-free, open-source torrent **streaming** — not a downloader. Type a search,
 every indexer you've configured answers at once, and the result plays right in
 the browser. Nothing is hosted, nothing is transcoded, nothing lands on disk.
