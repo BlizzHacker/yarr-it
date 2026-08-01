@@ -10,12 +10,12 @@
 //   connect:  magic 0x41727101980, action=0  -> connection_id
 //   announce: connection_id, action=1, ...   -> compact peer list (BEP 23)
 
+import { bridgeSocketURL } from './server.js';
+
 const PROTOCOL_MAGIC = 0x41727101980n;
 const ACTION_CONNECT = 0;
 const ACTION_ANNOUNCE = 1;
 const ACTION_ERROR = 3;
-
-const bridgeURL = () => `wss://${location.host}/bridge/socket`;
 
 function randomBytes(n) {
   const b = new Uint8Array(n);
@@ -60,7 +60,7 @@ export async function announceUdp(trackerUrl, infoHashHex, { numWant = 80, timeo
   if (!ip) return [];
 
   return new Promise((resolve) => {
-    const ws = new WebSocket(bridgeURL());
+    const ws = new WebSocket(bridgeSocketURL());
     ws.binaryType = 'arraybuffer';
     let settled = false;
     let connectionId = null;

@@ -12,8 +12,7 @@
 // streamx gives us a real .pipe()-able duplex. WebTorrent's peer plumbing does
 // `conn.pipe(wire).pipe(conn)`, so a hand-rolled EventEmitter is not enough.
 import { Duplex } from 'streamx';
-
-const BRIDGE_URL = `wss://${location.host}/bridge/socket`;
+import { bridgeSocketURL } from './server.js';
 
 export class BridgePeerConn extends Duplex {
   // Connection-attempt counters. Relay failures are otherwise invisible: a peer
@@ -46,7 +45,7 @@ export class BridgePeerConn extends Duplex {
 
     BridgePeerConn.stats.created++;
 
-    this._ws = new WebSocket(BRIDGE_URL);
+    this._ws = new WebSocket(bridgeSocketURL());
     this._ws.binaryType = 'arraybuffer';
 
     this._ws.onopen = () => {

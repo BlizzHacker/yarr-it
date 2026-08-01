@@ -17,8 +17,8 @@ sub Main()
     ' node to it is a runtime type mismatch.
     globalNode = screen.getGlobalNode()
     globalNode.addFields({
-        searchBase: "https://yarrit.com"
-        gatewayBase: "http://192.168.0.118:8900"
+        searchBase: serverBase()
+        gatewayBase: derivedGatewayBase()
         ssoBase: "https://auth.yarrit.com"
         ' Public client: a TV cannot hold a secret, so the device-code flow is
         ' used and there is nothing here worth extracting from the package.

@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <component name="MainScene" extends="Scene">
   <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
+  <!-- Attached explicitly. Sitting in source/ puts a function in the main
+       thread's scope, NOT in this component's, so without this line every call
+       into it fails at runtime with "not defined in component's namespace" and
+       nothing says so until that code path is actually taken. -->
+  <script type="text/brightscript" uri="pkg:/source/Config.brs" />
 
   <children>
     <Rectangle id="bg" width="1920" height="1080" color="0x0b0d11ff" />
@@ -105,6 +110,52 @@
         <Font role="font" uri="font:SystemFontFile" size="26" />
       </Label>
       <Timer id="pollTimer" repeat="true" duration="5" />
+    </Group>
+
+    <!-- Server settings. Drawn after the sign-in gate, and so on top of it, on
+         purpose: a TV pointed at a self-hosted Yarr.It still meets the gate
+         first, and if settings sat behind it an owner could never reach the one
+         screen that fixes a wrong address. It shows no catalogue content, so it
+         does not weaken the gate. -->
+    <Group id="settings" visible="false">
+      <Rectangle width="1920" height="1080" color="0x0b0d11ff" />
+      <Label text="Server" translation="[160,120]" color="0x5eead4ff">
+        <Font role="font" uri="font:BoldSystemFontFile" size="56" />
+      </Label>
+      <Label text="This TV is getting its catalogue from:" translation="[160,220]" color="0x8b96a8ff">
+        <Font role="font" uri="font:SystemFontFile" size="28" />
+      </Label>
+      <Label id="settingsCurrent" translation="[160,266]" width="1600" color="0xe9edf3ff">
+        <Font role="font" uri="font:BoldSystemFontFile" size="42" />
+      </Label>
+      <Label id="settingsPending" translation="[160,336]" width="1600" wrap="true" color="0xf0b429ff">
+        <Font role="font" uri="font:SystemFontFile" size="28" />
+      </Label>
+      <!-- Shown, not asked for. The gateway is derived from the address above,
+           so this line exists to prove where playback will go rather than to
+           collect a second URL. -->
+      <Label id="settingsGateway" translation="[160,378]" width="1600" color="0x8b96a8ff">
+        <Font role="font" uri="font:SystemFontFile" size="24" />
+      </Label>
+      <!-- floatingFocus, not the fixedFocusWrap an ArrayGrid defaults to: with
+           a fixed highlight a five item menu that exactly fills its five rows
+           still scrolls under the cursor and wraps the first entry around to
+           the bottom, so the menu appears to reorder itself as you arrow down
+           it. Here the highlight moves and the list holds still. -->
+      <LabelList id="settingsMenu" translation="[160,442]"
+                 itemSize="[1600,62]" numRows="5"
+                 vertFocusAnimationStyle="floatingFocus"
+                 color="0xcfd6e0ff" focusedColor="0x5eead4ff"
+                 drawFocusFeedback="true">
+        <Font role="font" uri="font:SystemFontFile" size="30" />
+        <Font role="focusedFont" uri="font:BoldSystemFontFile" size="30" />
+      </LabelList>
+      <Label id="settingsResult" translation="[160,790]" width="1600" wrap="true" color="0xe9edf3ff">
+        <Font role="font" uri="font:SystemFontFile" size="30" />
+      </Label>
+      <Label id="settingsHint" translation="[160,930]" width="1600" wrap="true" color="0x8b96a8ff">
+        <Font role="font" uri="font:SystemFontFile" size="24" />
+      </Label>
     </Group>
 
     <ApiTask id="api" />

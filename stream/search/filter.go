@@ -454,22 +454,43 @@ func sortedFacets(m map[string]int, byQuality bool) []facetCount {
 // Several categories at once imply nothing, since there is no single Newznab
 // bucket covering them.
 func kindFor(q url.Values) string {
+	// Both spellings go through the same translation. They did not, and the
+	// result was silent: `groups=movies` was mapped to the internal "video",
+	// while `kind=movies` was passed through untouched and then compared against
+	// card kinds that are never spelled that way -- so every card was filtered
+	// out and the response was a perfectly valid, perfectly empty page. The
+	// facet counts were computed before the filter, so the answer even claimed
+	// hundreds of results while listing none. The browser never hit it because
+	// it sends `groups`; the TV apps send `kind`, which is why category browsing
+	// looked broken only there.
 	if k := q.Get("kind"); k != "" {
-		return k
+		return canonicalKind(k)
 	}
 	groups := splitCSV(q.Get("groups"))
 	if len(groups) != 1 {
 		return ""
 	}
-	switch groups[0] {
-	case "games":
+	return canonicalKind(groups[0])
+}
+
+// canonicalKind maps every name a caller might reasonably use onto the kinds
+// cards actually carry: video, audio, image, game, comic.
+//
+// An unrecognised name returns "" -- no filter, rather than a filter nothing can
+// satisfy. Showing everything for a name we do not know is a visible, arguable
+// answer; showing nothing is indistinguishable from a broken server.
+func canonicalKind(k string) string {
+	switch strings.ToLower(strings.TrimSpace(k)) {
+	case "game", "games":
 		return "game"
-	case "movies", "tv", "anime":
+	case "video", "movie", "movies", "tv", "show", "shows", "series", "anime":
 		return "video"
-	case "music":
+	case "audio", "music":
 		return "audio"
-	case "comics":
+	case "comic", "comics", "book", "books":
 		return "comic"
+	case "image", "images", "photo", "photos":
+		return "image"
 	}
 	return ""
 }

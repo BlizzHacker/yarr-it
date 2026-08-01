@@ -9,7 +9,7 @@
 -->
 <component name="ApiTask" extends="Task">
   <interface>
-    <!-- discover | search | prepare -->
+    <!-- discover | search | pages | prepare | deviceStart | devicePoll | health -->
     <field id="request" type="assocarray" alwaysNotify="true" />
     <field id="response" type="assocarray" alwaysNotify="true" />
   </interface>

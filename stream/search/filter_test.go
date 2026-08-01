@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -407,5 +408,43 @@ func TestUnknownKindHasNoArchiveScope(t *testing.T) {
 	}
 	if q := archiveQueryFor("batman", "comic"); !strings.Contains(q, "mediatype:(texts)") {
 		t.Fatalf("comic scope missing from %q", q)
+	}
+}
+
+// The TV apps send `kind=movies`; the browser sends `groups=movies`. They must
+// mean the same thing. When they did not, every card was filtered out and the
+// response was a valid, empty page that still claimed hundreds of results.
+func TestKindAndGroupsAgree(t *testing.T) {
+	for _, name := range []string{"movies", "tv", "anime", "games", "comics"} {
+		byKind := kindFor(url.Values{"kind": {name}})
+		byGroup := kindFor(url.Values{"groups": {name}})
+		if byKind != byGroup {
+			t.Errorf("%q: kind=%q but groups=%q", name, byKind, byGroup)
+		}
+		if byKind == "" {
+			t.Errorf("%q resolved to no kind at all", name)
+		}
+	}
+}
+
+// Whatever a caller sends must land on a kind cards actually carry, or the
+// filter silently matches nothing.
+func TestEveryKindIsOneCardsCarry(t *testing.T) {
+	valid := map[string]bool{"video": true, "audio": true, "image": true, "game": true, "comic": true}
+	for _, name := range []string{
+		"movies", "movie", "tv", "shows", "series", "anime", "video",
+		"games", "game", "comics", "comic", "images", "image", "music", "audio",
+	} {
+		got := kindFor(url.Values{"kind": {name}})
+		if !valid[got] {
+			t.Errorf("kind=%q resolved to %q, which no card ever has", name, got)
+		}
+	}
+}
+
+// An unknown name must not produce a filter nothing can satisfy.
+func TestUnknownKindDoesNotEraseEverything(t *testing.T) {
+	if got := kindFor(url.Values{"kind": {"nonsense"}}); got != "" {
+		t.Errorf("kind=nonsense gave %q; wanted no filter", got)
 	}
 }

@@ -12,6 +12,8 @@
  * comes back to it, so sending one every few seconds is pure waste.
  */
 
+import { apiFetch } from './server.js';
+
 const SAVE_EVERY_MS = 15000;
 
 // Below this a title is barely started; above it, effectively finished. Kept
@@ -24,7 +26,10 @@ const FINISHED_FRACTION = 0.92;
 let signedIn = null;
 
 async function call(path, options = {}) {
-  const res = await fetch(path, {
+  const res = await apiFetch(path, {
+    // Kept explicit even though apiFetch has its own rule: 'same-origin' means
+    // the cookie travels to our own instance and nowhere else, so pointing the
+    // client at somebody else's server cannot post this session to them.
     credentials: 'same-origin',
     // Never from cache. These reads are personal state that the same page just
     // changed: a cached list showed a title still in the library right after it

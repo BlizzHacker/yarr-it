@@ -153,7 +153,7 @@ sed -e "s/__ICON__/$ICONHASH/g" manifest.webmanifest > dist/manifest.webmanifest
 
 install -m 0644 dist/index.html dist/app.js dist/webtorrent.min.js dist/sw.min.js \
                 dist/manifest.webmanifest privacy.html "$WWW/"
-for m in tracker-udp.js engine.js bridge-peer.js dht.js bencode.js; do
+for m in tracker-udp.js engine.js bridge-peer.js server.js dht.js bencode.js; do
   install -m 0644 "src/$m" "$WWW/"
 done
 for i in 192 512; do

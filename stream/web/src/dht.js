@@ -12,6 +12,7 @@
 // avoids maintaining a routing table the tab would throw away anyway.
 
 import { encode, decode } from './bencode.js';
+import { bridgeSocketURL } from './server.js';
 
 const BOOTSTRAP = [
   { host: 'router.bittorrent.com', port: 6881 },
@@ -25,8 +26,6 @@ const QUERY_TIMEOUT = 6000;
 // the closest nodes reliably reaches one holding peers.
 const MAX_ROUNDS = 6;
 const MAX_NODES_PER_ROUND = 16;
-
-const bridgeURL = () => `wss://${location.host}/bridge/socket`;
 
 function randomBytes(n) {
   const b = new Uint8Array(n);
@@ -79,7 +78,7 @@ async function getPeers(node, infoHashHex) {
   });
 
   return new Promise((resolve) => {
-    const ws = new WebSocket(bridgeURL());
+    const ws = new WebSocket(bridgeSocketURL());
     ws.binaryType = 'arraybuffer';
     let settled = false;
 

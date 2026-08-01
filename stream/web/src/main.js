@@ -15,6 +15,7 @@ import {
 } from './shelf.js';
 import { attachSubtitles } from './subtitles.js';
 import { PlaybackError } from './failures.js';
+import { apiFetch, getServer, setServer, probeServer } from './server.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -84,7 +85,7 @@ async function search({ showSpinner = true } = {}) {
   }
 
   try {
-    const res = await fetch(`/api/search?${filterParams()}`);
+    const res = await apiFetch(`/api/search?${filterParams()}`);
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
@@ -333,7 +334,7 @@ function restoreLanding() {
 async function loadDiscover() {
   const host = $('#discover');
   try {
-    const res = await fetch('/api/discover');
+    const res = await apiFetch('/api/discover');
     if (!res.ok) return;
     const { rows } = await res.json();
     if (!rows?.length) return;
@@ -929,6 +930,68 @@ async function streamPasted() {
   );
 }
 
+// ---------------------------------------------------------------- settings --
+
+/**
+ * Point this client at a different Yarr.It.
+ *
+ * The address is the whole of it. Nothing else here is worth a settings panel,
+ * and the panel exists so that a self-hoster who wants their own instance is
+ * not reduced to editing localStorage in a console.
+ */
+function openSettings() {
+  $('#set-server').value = getServer();
+  showServerResult('', null);
+  $('#settings').hidden = false;
+  document.body.style.overflow = 'hidden';
+  // select(), not focus(). Focus alone leaves a cursor sitting in the existing
+  // value, so typing an address merges with the old one instead of replacing
+  // it -- "192.168.0.50" typed over "yarrit.com" becomes "192.168.0.50yarrit.com".
+  // Almost nobody opens this box to edit one character; they open it to enter a
+  // different server, so the whole value should go on the first keystroke.
+  $('#set-server').select();
+}
+
+function closeSettings() {
+  $('#settings').hidden = true;
+  // A detail sheet left open underneath still wants the page behind it frozen.
+  if ($('#detail').hidden) document.body.style.overflow = '';
+}
+
+function showServerResult(text, ok) {
+  const r = $('#set-result');
+  r.textContent = text;
+  r.classList.toggle('ok', ok === true);
+  r.classList.toggle('bad', ok === false);
+  r.hidden = !text;
+}
+
+async function testServer() {
+  const raw = $('#set-server').value.trim();
+  if (!raw) {
+    showServerResult('Blank uses this site, which is already answering.', true);
+    return;
+  }
+  showServerResult('Checking…', null);
+  const res = await probeServer(raw);
+  showServerResult(res.ok ? 'Reached it — that is a Yarr.It server.' : res.error, res.ok);
+}
+
+function saveServer() {
+  const raw = $('#set-server').value.trim();
+  const saved = setServer(raw);
+  // Refusing to save beats saving nothing quietly: a typo would otherwise look
+  // like it had been accepted while the client fell back to this site.
+  if (raw && !saved) {
+    showServerResult('That does not look like an address.', false);
+    return;
+  }
+  // Every module resolves the address as it makes each call, but searches and
+  // shelves already on the page came from the old one. A reload is the honest
+  // way to leave nothing behind from the previous server.
+  location.reload();
+}
+
 // -------------------------------------------------------------------- init --
 
 function init() {
@@ -993,12 +1056,27 @@ function init() {
     search({ showSpinner: false });
   });
 
+  $('#settings-open').addEventListener('click', openSettings);
+  $('#settings-close').addEventListener('click', closeSettings);
+  $('#settings').addEventListener('click', (e) => { if (e.target.id === 'settings') closeSettings(); });
+  $('#set-test').addEventListener('click', testServer);
+  $('#set-save').addEventListener('click', saveServer);
+  $('#set-server').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); testServer(); }
+  });
+  $('#set-reset').addEventListener('click', () => {
+    setServer('');
+    location.reload();
+  });
+
   $('#detail-close').addEventListener('click', closeDetail);
   $('#detail').addEventListener('click', (e) => { if (e.target.id === 'detail') closeDetail(); });
   $('#player-close').addEventListener('click', closePlayer);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (!$('#player').hidden) closePlayer();
+    // Innermost first: settings can be opened over a detail sheet.
+    if (!$('#settings').hidden) closeSettings();
+    else if (!$('#player').hidden) closePlayer();
     else if (!$('#detail').hidden) closeDetail();
   });
 

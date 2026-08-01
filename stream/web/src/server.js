@@ -105,6 +105,26 @@ export function api(path) {
 }
 
 /**
+ * The peer relay's WebSocket URL, aimed at the same server as everything else.
+ *
+ * The scheme has to be derived, never assumed. A hard-coded `wss://` works
+ * perfectly on yarrit.com and fails everywhere else that matters: someone
+ * running this on their own machine reaches it over plain http, and a browser
+ * refuses to open a secure socket to a server with no certificate. That failure
+ * is silent in the worst way -- search and playback of direct files carry on
+ * working, so only torrents break, and only for self-hosters.
+ *
+ * Computed on each call rather than once at import: the server setting can
+ * change while the page is open.
+ */
+export function bridgeSocketURL() {
+  const base = serverBase();
+  if (base) return base.replace(/^http/, 'ws') + '/bridge/socket';
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${scheme}//${location.host}/bridge/socket`;
+}
+
+/**
  * fetch, aimed at the configured server.
  *
  * Credentials are only sent same-origin. A session cookie belongs to the

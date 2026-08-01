@@ -1,0 +1,38 @@
+# Optional: serve the torrent gateway under the main hostname.
+#
+# NOT ENABLED. Paste this block inside the yarrit.com site block in
+# stream/Caddyfile, then reload Caddy, only after deciding the question below.
+#
+# WHAT IT FIXES
+# The gateway is what lets a device play a torrent without being a torrent
+# client itself: it joins the swarm and serves the file over ordinary HTTP with
+# range requests. Roku and Xbox cannot torrent on their own, so it is the only
+# way those devices play anything that is not a direct archive.org download.
+#
+# Today the Roku reaches it at http://192.168.0.118:8900 -- a private address
+# over plain HTTP. That works in one house and nowhere else. Routing it here
+# puts it behind the same hostname and certificate as everything else, so any
+# device anywhere can use it and a self-hoster's clients find it at their own
+# address with no extra configuration.
+#
+# THE DECISION THIS REQUIRES
+# Right now the VPS relays search metadata only; media bytes never touch it.
+# Enabling this changes that: torrent traffic would flow through the VPS, from
+# its IP, in the operator's name. That is a different legal posture, not a
+# technical detail, and it is worth deciding deliberately rather than
+# discovering later.
+#
+# A self-hoster enabling this on their own box carries that risk themselves,
+# which is the whole point of the project being self-hostable.
+
+handle /gw/* {
+	# The gateway serves whole video files, so the usual proxy buffering and
+	# timeouts are wrong here -- a two-hour film is one long response.
+	reverse_proxy 192.168.0.118:8900 {
+		flush_interval -1
+		transport http {
+			response_header_timeout 120s
+			read_timeout 0
+		}
+	}
+}

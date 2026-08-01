@@ -64,6 +64,9 @@ push "selfhost.sh"        selfhost.sh
 push "tracker-udp.js"     src/tracker-udp.js
 push "engine.js"          src/engine.js
 push "bridge-peer.js"     src/bridge-peer.js
+# bridge-peer imports this for the relay URL. Without it the raw copy 404s on
+# its own import, which is precisely the drift this list exists to prevent.
+push "server.js"          src/server.js
 push "dht.js"            src/dht.js
 push "bencode.js"        src/bencode.js
 # Both the hashed name (referenced by the page and the web manifest) and the

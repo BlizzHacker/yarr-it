@@ -29,17 +29,30 @@ sub init()
     m.signInStatus  = m.top.findNode("signInStatus")
     m.signInUrl     = m.top.findNode("signInUrl")
     m.pollTimer     = m.top.findNode("pollTimer")
+    m.settings        = m.top.findNode("settings")
+    m.settingsMenu    = m.top.findNode("settingsMenu")
+    m.settingsCurrent = m.top.findNode("settingsCurrent")
+    m.settingsPending = m.top.findNode("settingsPending")
+    m.settingsGateway = m.top.findNode("settingsGateway")
+    m.settingsResult  = m.top.findNode("settingsResult")
+    m.settingsHint    = m.top.findNode("settingsHint")
 
     m.api.observeField("response", "onApiResponse")
     m.grid.observeField("itemSelected", "onTitleSelected")
     m.sourceList.observeField("itemSelected", "onSourceSelected")
     m.player.observeField("state", "onPlayerState")
+    m.settingsMenu.observeField("itemSelected", "onSettingsAction")
 
     m.cards = []          ' current result set
     m.activeCard = invalid
     m.query = ""          ' last search term; "" means browse
     m.filterIndex = 0
     m.sort = "seeders"
+
+    ' Both start real rather than unset: comparing invalid to a boolean is a
+    ' runtime error in BrightScript, not false.
+    m.settingsPendingBase = invalid
+    m.serverChanged = false
 
     ' The filter set. `kind` narrows to what a thing is; `groups` narrows by
     ' catalogue section -- Movies needs the group because a film and a TV
@@ -52,10 +65,18 @@ sub init()
         { label: "Images", kind: "image", groups: "" },
     ]
 
+    ' Settings rides on the end of the filter bar rather than on a key of its
+    ' own. The star button is already search and is advertised as such in the
+    ' status line, and a TV remote has nothing else spare that a viewer would
+    ' ever think to press -- whereas the bar is the one strip of this screen
+    ' people already arrow through looking for things. It is not a filter, so it
+    ' is appended to the buttons rather than added to m.filters, which is
+    ' indexed by m.filterIndex and must stay filters-only.
     labels = []
     for each f in m.filters
         labels.push(f.label)
     end for
+    labels.push("Settings")
     m.filterButtons.buttons = labels
     m.filterButtons.observeField("buttonSelected", "onFilterSelected")
     updateFilterEcho()
@@ -98,7 +119,14 @@ end function
 
 sub beginSignIn()
     m.signIn.visible = true
-    m.grid.setFocus(false)
+
+    ' The scene takes focus itself rather than merely taking it off the grid.
+    ' SceneGraph only delivers keys to the focused node and its ancestors, so a
+    ' tree with nothing focused at all gets no onKeyEvent -- which is what
+    ' `m.grid.setFocus(false)` left behind, and why the key handling below this
+    ' gate silently never ran.
+    m.top.setFocus(true)
+
     m.signInStep1.text = "On your phone or computer, go to:"
     m.signInCode.text = "…"
     m.signInHint.text = ""
@@ -207,7 +235,13 @@ end sub
 
 sub onFilterSelected()
     idx = m.filterButtons.buttonSelected
-    if idx < 0 or idx >= m.filters.count() then return
+    if idx < 0 then return
+
+    ' The trailing button is Settings, not a sixth filter.
+    if idx >= m.filters.count()
+        openSettings()
+        return
+    end if
 
     m.filterIndex = idx
     updateFilterEcho()
@@ -277,6 +311,20 @@ end sub
 function onKeyEvent(key as String, press as Boolean) as Boolean
     if not press then return false
 
+    ' Settings owns the remote while it is open, and is checked ahead of even
+    ' the sign-in gate because it is drawn on top of it. Up, down and OK never
+    ' arrive here at all -- the focused LabelList consumes them before anything
+    ' bubbles to the scene -- so only Back needs handling, and everything else
+    ' is swallowed so a stray star press cannot open the search keyboard over a
+    ' screen that has nothing to search.
+    if m.settings <> invalid and m.settings.visible
+        if key = "back"
+            closeSettings()
+            return true
+        end if
+        return true
+    end if
+
     ' The page viewer takes the remote while it is open. Checked first so a
     ' page turn is never mistaken for navigation in the grid behind it.
     if m.pageViewer <> invalid and m.pageViewer.visible
@@ -296,6 +344,15 @@ function onKeyEvent(key as String, press as Boolean) as Boolean
     ' While the gate is up every key is consumed except Back, so no amount of
     ' button-mashing reaches the catalogue behind it.
     if m.signIn.visible
+        ' The one exception. A TV pointed at a self-hosted server reaches this
+        ' gate and no further, so the star button has to open settings here even
+        ' though it means search elsewhere -- there is nothing to search from
+        ' behind the gate anyway, and no other way in exists from this screen.
+        if key = "options"
+            openSettings()
+            return true
+        end if
+
         ' Waking the TV is exactly when a returning viewer looks at the code,
         ' so a stale one is refreshed on the first press rather than after the
         ' next poll interval.
@@ -381,6 +438,233 @@ sub onKeyboardButton()
     end if
 end sub
 
+' ---------------------------------------------------------------- settings ---
+'
+' Yarr.It is self-hostable, so the search service is wherever its owner put it.
+' The address lives in the same registry section as the access token, under
+' "server_base", and the value compiled into the channel is only the fallback
+' for a TV nobody has pointed anywhere else.
+'
+' Reached two ways: the Settings button on the filter bar, and the star button
+' while the sign-in gate is up. The second route exists because a TV aimed at a
+' self-hosted server meets the gate before it ever sees the filter bar, and
+' without it a wrong address would be unfixable from the remote.
+
+sub openSettings()
+    ' The sign-in poll and this screen share one ApiTask, and dispatch() stops
+    ' whatever that task is mid-flight to start the next request. A poll landing
+    ' during a server test therefore cancels the test, no response is ever set,
+    ' and the screen sits on "Testing..." forever. Nobody in here is approving a
+    ' TV on their phone at the same moment, so the poll waits its turn.
+    if m.signIn.visible then m.pollTimer.control = "stop"
+
+    m.settingsPendingBase = invalid
+    m.settings.visible = true
+    m.settingsResult.text = ""
+    m.settingsHint.text = "Saving takes effect straight away. Your sign-in is not affected -- that always goes through the Yarr.It account service."
+
+    rows = [
+        "Change address",
+        "Test this address",
+        "Save",
+        "Use the default (" + defaultServerBase() + ")",
+        "Close",
+    ]
+    m.settingsMenu.content = buildLabelContent(rows)
+    m.settingsMenu.jumpToItem = 0
+    m.settingsMenu.setFocus(true)
+    refreshSettingsLabels()
+end sub
+
+sub closeSettings()
+    m.settings.visible = false
+    m.settingsPendingBase = invalid
+
+    ' Focus goes back to whatever owned the screen before, which is the gate if
+    ' this TV is still unauthenticated. Handing it to the grid there would put
+    ' the cursor on a catalogue nobody is allowed to see yet.
+    if m.signIn.visible
+        m.top.setFocus(true)
+        m.pollTimer.control = "start"
+        return
+    end if
+
+    m.grid.setFocus(true)
+
+    ' Refetching on the way out rather than at the moment of saving: the reload
+    ' would otherwise run behind the settings pane, where its spinner and any
+    ' failure message are invisible, and the owner would come back out to a grid
+    ' of posters with no way to tell whether they came from the new server.
+    if m.serverChanged
+        m.serverChanged = false
+        runCurrentQuery()
+    end if
+end sub
+
+' refreshSettingsLabels redraws the address lines.
+'
+' Live and pending are kept apart on purpose: an edited-but-unsaved address that
+' overwrote the live one would leave no way to see what the TV is still using,
+' which is the thing you most want on screen when a test has just failed.
+sub refreshSettingsLabels()
+    m.settingsCurrent.text = serverBase()
+    if m.settingsPendingBase = invalid
+        m.settingsPending.text = ""
+    else
+        m.settingsPending.text = "Not saved yet: " + m.settingsPendingBase
+    end if
+    m.settingsGateway.text = "Playback gateway (from the same host): " + derivedGatewayBase()
+end sub
+
+' candidateBase is the address the Test and Save actions operate on.
+function candidateBase() as String
+    if m.settingsPendingBase <> invalid then return m.settingsPendingBase
+    return serverBase()
+end function
+
+sub onSettingsAction()
+    idx = m.settingsMenu.itemSelected
+
+    if idx = 0
+        showServerKeyboard()
+    else if idx = 1
+        testServer()
+    else if idx = 2
+        saveServer()
+    else if idx = 3
+        useDefaultServer()
+    else
+        closeSettings()
+    end if
+end sub
+
+sub showServerKeyboard()
+    dlg = CreateObject("roSGNode", "KeyboardDialog")
+
+    ' Opened EMPTY, with the current address stated in the title instead.
+    '
+    ' Seeding the field with the existing value looks helpful and is a trap: the
+    ' cursor lands in an already-full box with nothing selected, so the first
+    ' character typed is INSERTED rather than replacing anything, and typing
+    ' "192.168.0." in front of "yarrit.com" yields "192.168.0.yarrit.com". A
+    ' browser recovers from that with one select-all; a D-pad does not, and
+    ' emptying the box means holding a cursor over an on-screen backspace for
+    ' twenty-odd presses. Typing the whole address is the cheaper of the two.
+    dlg.title = "New server address. Currently " + candidateBase()
+    dlg.buttons = ["Use this address", "Cancel"]
+    m.serverKeyboard = dlg
+    dlg.observeField("buttonSelected", "onServerKeyboardButton")
+    m.top.dialog = dlg
+end sub
+
+sub onServerKeyboardButton()
+    dlg = m.serverKeyboard
+    if dlg = invalid then return
+
+    if dlg.buttonSelected = 0
+        entered = dlg.text
+        m.top.dialog.close = true
+        if entered = invalid then entered = ""
+        cleaned = normalizeServer(entered)
+        if cleaned = ""
+            ' Now the likeliest slip rather than a rare one, since the box opens
+            ' empty: say plainly that nothing moved, or a viewer who backed out
+            ' of the keyboard has no way to know whether they broke something.
+            m.settingsResult.text = "Nothing typed, so nothing changed. This TV is still using " + serverBase() + "."
+        else
+            m.settingsPendingBase = cleaned
+            m.settingsResult.text = "Not tested yet. Test this address before saving."
+        end if
+        refreshSettingsLabels()
+    else
+        m.top.dialog.close = true
+    end if
+    m.settingsMenu.setFocus(true)
+end sub
+
+sub testServer()
+    base = candidateBase()
+    m.settingsResult.text = "Testing " + base + " …"
+    dispatch({ kind: "health", base: base })
+end sub
+
+sub onHealthResult(resp as Object)
+    if resp = invalid or resp.data = invalid
+        m.settingsResult.text = "The test could not run. Try again."
+        return
+    end if
+
+    code = resp.data.code
+    if resp.ok
+        m.settingsResult.text = "Reachable. That address answered as a Yarr.It server. Choose Save to use it."
+        return
+    end if
+
+    ' The code is printed rather than translated into prose: a 401 or a 502 from
+    ' a reverse proxy is a different problem from a 404, and on a TV there is no
+    ' second window to go and check which one happened.
+    if code > 0
+        detail = "It answered, but with HTTP " + Str(code).trim() + " instead of a health check."
+        if code = 404 then detail = "Something is there, but it is not a Yarr.It server -- /api/health returned 404."
+        m.settingsResult.text = "Not usable. " + detail
+        return
+    end if
+
+    why = ""
+    if resp.data.reason <> invalid then why = resp.data.reason
+    m.settingsResult.text = "Could not reach it. " + why
+end sub
+
+sub saveServer()
+    base = candidateBase()
+    if base = ""
+        m.settingsResult.text = "Nothing to save."
+        return
+    end if
+
+    reg = tokenStore()
+    reg.write("server_base", base)
+    reg.flush()
+
+    applyServerBase()
+    m.settingsPendingBase = invalid
+    refreshSettingsLabels()
+    m.settingsResult.text = "Saved. This TV is now using " + serverBase() + "."
+end sub
+
+sub useDefaultServer()
+    reg = tokenStore()
+    reg.delete("server_base")
+    reg.flush()
+
+    applyServerBase()
+    m.settingsPendingBase = invalid
+    refreshSettingsLabels()
+    m.settingsResult.text = "Back to the default, " + defaultServerBase() + "."
+end sub
+
+' applyServerBase pushes the stored address onto the global node so the next
+' request uses it.
+'
+' Deliberately re-read from the registry rather than reusing the value that was
+' just written: that is what proves the write actually landed, and it is the
+' same call the next cold start will make, so what is on screen cannot disagree
+' with what the channel will do tomorrow.
+sub applyServerBase()
+    m.global.searchBase = serverBase()
+    ' Moved together, always. The gateway is a view of the same setting, so
+    ' updating one without the other would leave playback pointed at the machine
+    ' the viewer just stopped using.
+    m.global.gatewayBase = derivedGatewayBase()
+
+    ' The catalogue on screen came from the old server. Anything still up is now
+    ' describing a machine this TV is no longer talking to.
+    m.sourcePane.visible = false
+    m.activeCard = invalid
+    m.cards = []
+    m.serverChanged = true
+end sub
+
 ' ------------------------------------------------------------------- api ----
 
 sub onApiResponse()
@@ -393,12 +677,18 @@ sub onApiResponse()
     else if resp.kind = "devicePoll"
         onDevicePoll(resp.data)
         return
+    else if resp.kind = "health"
+        onHealthResult(resp)
+        return
     end if
 
     if resp.kind = "discover"
         hideBusy()
         if resp.data = invalid or resp.data.rows = invalid
-            setStatus("Could not reach the search service. Press the * button to search anyway.")
+            ' Naming the way out matters here more than anywhere else: an
+            ' unreachable service is exactly the symptom of a TV pointed at the
+            ' wrong server, and the screen is the only place that can say so.
+            setStatus("Could not reach the search service. Press * to search, or press UP and choose Settings to point this TV at a different server.")
             return
         end if
         ' Flatten the discover rails into one grid: rows-of-rows is fiddly with

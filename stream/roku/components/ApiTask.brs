@@ -83,6 +83,13 @@ sub runRequest()
         ok = result <> invalid and result.pages <> invalid
         m.top.response = { kind: kind, ok: ok, data: result }
 
+    else if kind = "health"
+        ' The address under test is carried in the request, not read off the
+        ' global node: the whole point is to try a server BEFORE committing to
+        ' it, so the one currently configured is the wrong thing to ask.
+        result = httpProbe(req.base + "/api/health", 15)
+        m.top.response = { kind: kind, ok: (result.code = 200), data: result }
+
     else if kind = "prepare"
         ' The gateway joins the swarm and waits for metadata, which can take a
         ' while, so this gets a long timeout and its own error surface.
@@ -134,6 +141,41 @@ function httpGetJson(url as String, timeoutSec as Integer) as Object
     if text = invalid or text = "" then return invalid
 
     return ParseJson(text)
+end function
+
+' httpProbe reports how a request ended rather than what it returned.
+'
+' httpGetJson collapses a typo'd hostname, a 404, a 500, a TLS refusal and a
+' dead network into one indistinguishable invalid. That is fine when the caller
+' only wants the body, but it is exactly the wrong answer for the settings
+' screen, whose entire job is telling the owner WHICH of those went wrong.
+'
+' A response code of 0 means the transfer never started; anything else negative
+' is Roku's own transport failure code rather than an HTTP status.
+function httpProbe(url as String, timeoutSec as Integer) as Object
+    xfer = CreateObject("roUrlTransfer")
+    xfer.setUrl(url)
+    xfer.setCertificatesFile("common:/certs/ca-bundle.crt")
+    xfer.initClientCertificates()
+    xfer.addHeader("Accept", "application/json")
+
+    port = CreateObject("roMessagePort")
+    xfer.setMessagePort(port)
+
+    if not xfer.asyncGetToString() then return { code: 0, text: "", reason: "That address is not a URL this TV can open." }
+
+    msg = wait(timeoutSec * 1000, port)
+    if type(msg) <> "roUrlEvent"
+        xfer.asyncCancel()
+        return { code: 0, text: "", reason: "No answer within " + Str(timeoutSec).trim() + " seconds." }
+    end if
+
+    text = msg.getString()
+    if text = invalid then text = ""
+    reason = msg.getFailureReason()
+    if reason = invalid then reason = ""
+
+    return { code: msg.getResponseCode(), text: text, reason: reason }
 end function
 
 ' httpPostJson posts a form body and parses the JSON reply.

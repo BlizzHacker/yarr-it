@@ -135,9 +135,16 @@ func main() {
 	ttl := flag.Duration("ttl", defaultTTL, "cache TTL for search results")
 	flag.Parse()
 
+	// Deliberately not fatal. Torrent search needs Prowlarr, but the catalogue,
+	// archive.org, the watchlist and resume points do not -- and refusing to
+	// start meant a self-hoster who had not reached the Prowlarr step yet got a
+	// process that died instantly, with the reason only in a log they had no
+	// reason to look at. Starting degraded is honest and inspectable: /api/health
+	// reports it, and a search says what is missing instead of timing out.
 	key := os.Getenv("PROWLARR_API_KEY")
 	if key == "" {
-		log.Fatal("PROWLARR_API_KEY not set")
+		log.Printf("PROWLARR_API_KEY not set; torrent search is disabled " +
+			"(catalogue, archive.org, watchlist and resume still work)")
 	}
 
 	s := &server{
@@ -228,6 +235,23 @@ func main() {
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	n := len(s.cache)
+	s.mu.RUnlock()
+
+	// Distinguish "not configured" from "configured but unreachable". Both leave
+	// search dead, but only one of them is something the operator can fix by
+	// pasting in a key, and reporting an unconfigured instance as "down" sends
+	// them looking for a network fault that does not exist.
+	if s.apiKey == "" {
+		writeJSON(w, 200, map[string]any{
+			"prowlarr":      "not-configured",
+			"cachedQueries": n,
+			"detail":        "PROWLARR_API_KEY is not set; torrent search is disabled",
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", s.prowlarrURL+"/api/v1/health", nil)
@@ -240,9 +264,6 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			status = "ok"
 		}
 	}
-	s.mu.RLock()
-	n := len(s.cache)
-	s.mu.RUnlock()
 	writeJSON(w, 200, map[string]any{"prowlarr": status, "cachedQueries": n})
 }
 
@@ -372,6 +393,15 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			respond(stale, "STALE", true)
 			return
 		}
+		// "Try again in a moment" is false advice for an instance that has no
+		// indexer at all -- waiting never fixes it. Say which of the two it is.
+		if errors.Is(err, errNoIndexers) {
+			writeJSON(w, 503, map[string]string{
+				"error": "no torrent indexer is configured on this server — " +
+					"add a Prowlarr URL and API key to enable search",
+			})
+			return
+		}
 		writeJSON(w, 504, map[string]string{
 			"error": "indexers are taking too long right now — try again in a moment",
 		})
@@ -457,7 +487,19 @@ func (s *server) evictLoop() {
 // searchProwlarr answers from a per-indexer fan-out, so a slow indexer delays
 // only itself. It falls back to the single aggregate call if the fan-out cannot
 // start -- that path still works, it is just as slow as its slowest indexer.
+// errNoIndexers means nobody configured an indexer, as distinct from an indexer
+// that is configured and failing. The difference decides what the user is told:
+// one is fixed by waiting, the other never is.
+var errNoIndexers = errors.New("no indexer configured")
+
 func (s *server) searchProwlarr(ctx context.Context, q, kind string) ([]card, error) {
+	// Short-circuit rather than sending a request we know will be rejected. It
+	// costs a round-trip per search and comes back as a bare 401, which reads
+	// like a credential problem instead of an absent one.
+	if s.apiKey == "" {
+		return nil, errNoIndexers
+	}
+
 	cards, deferred, err := s.searchTiered(ctx, q, kind, func(full []card) {
 		s.putCached(searchCacheKey(q, kind), full)
 	})
