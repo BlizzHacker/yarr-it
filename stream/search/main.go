@@ -127,6 +127,12 @@ type server struct {
 	igdb     *igdbClient
 	discover discoverCache
 	warm     *warmer
+
+	// Configured backends -- Radarr, Sonarr, ROMarr, Jellyfin, a linear-TV
+	// engine. Nil is a valid state and means none are configured yet, which is
+	// how a fresh self-host starts; every reader must handle it rather than
+	// assume at least one exists.
+	providers *Registry
 }
 
 func main() {
@@ -220,6 +226,13 @@ func main() {
 	// file at build time, and hand-copying it into each client is precisely how
 	// the vocabulary drifted last time.
 	mux.HandleFunc("/api/schema", publicCORS(s.handleSchema))
+	// What is configured and whether it is well. Open like health: a client has
+	// to be able to discover what an instance can do before it can sensibly ask
+	// it for anything.
+	mux.HandleFunc("/api/providers", publicCORS(s.handleProviders))
+	// What every backend is currently doing, merged. Needs a session -- what
+	// somebody is downloading is personal.
+	mux.HandleFunc("/api/activity", auth.requireUser(s.handleActivity))
 
 	// Personal data, so these need a session whatever AUTH_SCOPE says.
 	mux.HandleFunc("/api/v1/library", auth.requireUser(s.handleLibrary))
