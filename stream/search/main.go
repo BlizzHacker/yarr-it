@@ -216,6 +216,10 @@ func main() {
 	// Health is how a client confirms an address is a Yarr.It server at all,
 	// so it must answer before any origin is trusted.
 	mux.HandleFunc("/api/health", publicCORS(s.handleHealth))
+	// Public, and CORS-open on purpose: a Roku or a Tizen set cannot embed this
+	// file at build time, and hand-copying it into each client is precisely how
+	// the vocabulary drifted last time.
+	mux.HandleFunc("/api/schema", publicCORS(s.handleSchema))
 
 	// Personal data, so these need a session whatever AUTH_SCOPE says.
 	mux.HandleFunc("/api/v1/library", auth.requireUser(s.handleLibrary))
@@ -547,10 +551,12 @@ func (s *server) searchProwlarrAggregate(ctx context.Context, q, kind string) ([
 
 // categoriesFor maps the UI's media filter onto Newznab category ids.
 func categoriesFor(kind string) []int {
-	switch kind {
+	// Canonicalised first so every spelling a caller might use -- "movies",
+	// "audio", "music" -- lands on the same branch.
+	switch canonicalDomain(kind) {
 	case "video":
 		return []int{2000, 5000}
-	case "audio":
+	case "music":
 		return []int{3000}
 	case "image":
 		return []int{}
@@ -559,6 +565,9 @@ func categoriesFor(kind string) []int {
 		return []int{1000, 4050}
 	case "comic":
 		return []int{7030}
+	case "literature":
+		// 7000-7999 minus 7030, which is comics and has its own branch.
+		return []int{7000}
 	default:
 		return nil
 	}

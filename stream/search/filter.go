@@ -109,7 +109,11 @@ func (f filters) apply(cards []card) []card {
 		// so `kind=image` returned whatever the query found, video included.
 		// A filter that changes nothing is worse than a missing one: it reads
 		// as an answer.
-		if f.Kind != "" && c.Kind != f.Kind {
+		// Compared through the canonicaliser, never as raw strings. A card
+		// cached before this vocabulary existed still says "audio" where a new
+		// client says "music"; a string compare would drop every one of them
+		// and look exactly like the bug this replaced.
+		if f.Kind != "" && !sameDomain(c.Kind, f.Kind) {
 			continue
 		}
 		if f.Source == "instant" && !c.Instant {
@@ -473,24 +477,12 @@ func kindFor(q url.Values) string {
 	return canonicalKind(groups[0])
 }
 
-// canonicalKind maps every name a caller might reasonably use onto the kinds
-// cards actually carry: video, audio, image, game, comic.
+// canonicalKind resolves any name a caller might use onto a canonical domain.
 //
-// An unrecognised name returns "" -- no filter, rather than a filter nothing can
-// satisfy. Showing everything for a name we do not know is a visible, arguable
-// answer; showing nothing is indistinguishable from a broken server.
+// The mapping lives in schema.json, not here. A switch in this file is what the
+// web client would then have to mirror by hand, and mirroring by hand is the
+// entire cause of the defect this replaced -- so the table is data, read by
+// both languages and served to TV clients at /api/schema.
 func canonicalKind(k string) string {
-	switch strings.ToLower(strings.TrimSpace(k)) {
-	case "game", "games":
-		return "game"
-	case "video", "movie", "movies", "tv", "show", "shows", "series", "anime":
-		return "video"
-	case "audio", "music":
-		return "audio"
-	case "comic", "comics", "book", "books":
-		return "comic"
-	case "image", "images", "photo", "photos":
-		return "image"
-	}
-	return ""
+	return canonicalDomain(k)
 }

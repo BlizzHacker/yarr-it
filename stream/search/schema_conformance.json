@@ -1,0 +1,69 @@
+{
+  "$comment": "One fixture, asserted by both the Go server and the web client. Each entry is an input a real caller has sent or plausibly will, and the canonical domain it must resolve to. If either language drifts, its own test suite fails -- which is the check that did not exist when `kind=movies` quietly matched nothing for weeks.",
+
+  "resolves": [
+    ["movies", "video"],
+    ["movie", "video"],
+    ["tv", "video"],
+    ["shows", "video"],
+    ["anime", "video"],
+    ["video", "video"],
+    ["episode", "video"],
+    ["Movies", "video"],
+    ["  movies  ", "video"],
+    ["live_channel", "video"],
+    ["scheduled_channel", "video"],
+    ["recording", "video"],
+
+    ["music", "music"],
+    ["audio", "music"],
+    ["album", "music"],
+    ["track", "music"],
+    ["artist", "music"],
+
+    ["games", "game"],
+    ["game", "game"],
+    ["rom", "game"],
+    ["platform", "game"],
+
+    ["books", "literature"],
+    ["book", "literature"],
+    ["audiobook", "literature"],
+    ["audiobooks", "literature"],
+    ["epub", "literature"],
+    ["author", "literature"],
+    ["edition", "literature"],
+
+    ["comics", "comic"],
+    ["comic", "comic"],
+    ["manga", "comic"],
+    ["issue", "comic"],
+    ["chapter", "comic"],
+
+    ["images", "image"],
+    ["image", "image"],
+    ["gallery", "image"],
+    ["collection", "image"]
+  ],
+
+  "$comment_unknown": "An unrecognised name must resolve to nothing, and callers read that as 'no filter'. Returning a value nothing matches is how a filter becomes indistinguishable from an outage.",
+  "unknown": ["", "   ", "nonsense", "movei", "vidoe", "null", "undefined"],
+
+  "$comment_pairs": "Spellings that must be treated as the same domain. The audio/music pair is the one that matters operationally: cards cached before this vocabulary carry 'audio' while new clients send 'music'.",
+  "sameDomain": [
+    ["movies", "tv"],
+    ["movies", "video"],
+    ["audio", "music"],
+    ["book", "audiobook"],
+    ["comics", "manga"],
+    ["games", "rom"]
+  ],
+
+  "$comment_distinct": "Must NOT collide. Comics sit inside the book category range at the provider level, so filing them together is an easy and costly mistake.",
+  "distinct": [
+    ["comic", "literature"],
+    ["music", "video"],
+    ["game", "video"],
+    ["image", "comic"]
+  ]
+}

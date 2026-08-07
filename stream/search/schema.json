@@ -1,0 +1,80 @@
+{
+  "$comment": "THE canonical Yarr.It media vocabulary. One file, read by the Go server, the web client and served at /api/schema for TV clients. It exists as data rather than as two hand-kept lists because the alternative was tried: the browser sent groups=movies, the server compared against video, and every card was filtered out while the response still reported hundreds of results. Anything that names a media kind must resolve it through this file.",
+  "version": 1,
+
+  "domains": {
+    "video": {
+      "label": "Video",
+      "verb": "watch",
+      "types": [
+        "movie", "series", "season", "episode", "anime",
+        "live_channel", "scheduled_channel", "program", "recording"
+      ],
+      "aliases": [
+        "video", "movies", "movie", "film", "films", "tv", "show", "shows",
+        "series", "episode", "episodes", "anime", "cartoon", "cartoons"
+      ]
+    },
+    "music": {
+      "label": "Music",
+      "verb": "listen",
+      "types": ["artist", "album", "track", "playlist"],
+      "$comment": "audio is listed first among aliases because it is the value already stored on cached cards and carried by deployed clients. Canonicalising on read means both spellings resolve here forever, so no cache flush or client upgrade is required.",
+      "aliases": ["music", "audio", "artist", "album", "albums", "track", "tracks", "song", "songs", "soundtrack"]
+    },
+    "game": {
+      "label": "Games",
+      "verb": "play",
+      "types": ["game", "release", "platform"],
+      "aliases": ["game", "games", "rom", "roms", "console"]
+    },
+    "literature": {
+      "label": "Books",
+      "verb": "read",
+      "$comment": "Audiobooks live here rather than under music: an audiobook is an edition of a book, shares its author and series, and its progress is chapter-based. Filing it under music would split one work across two domains.",
+      "types": ["author", "book", "edition", "audiobook"],
+      "aliases": ["literature", "book", "books", "ebook", "ebooks", "epub", "audiobook", "audiobooks", "author", "authors"]
+    },
+    "comic": {
+      "label": "Comics",
+      "verb": "read",
+      "types": ["comic_series", "volume", "issue", "manga", "chapter"],
+      "aliases": ["comic", "comics", "manga", "issue", "issues", "graphicnovel", "cbz", "cbr"]
+    },
+    "image": {
+      "label": "Images",
+      "verb": "view",
+      "types": ["collection", "image"],
+      "aliases": ["image", "images", "photo", "photos", "gallery", "galleries", "picture", "pictures"]
+    }
+  },
+
+  "$comment_roles": "What a provider DOES, kept separate from what it holds. Radarr and Jellyfin both touch movies, but one acquires and the other serves; conflating them is what forces if-type trees later.",
+  "roles": {
+    "discovery": "Answers what exists, whether or not the user has it.",
+    "acquisition": "Can be asked to obtain something.",
+    "library": "Knows what the user already has, and where.",
+    "stream": "Serves bytes for playback.",
+    "reader": "Serves paginated or chaptered content for reading.",
+    "play": "Launches something interactive.",
+    "linear-tv": "Presents continuously running channels.",
+    "epg": "Supplies schedule data for channels.",
+    "indexer": "Returns raw downloadable releases rather than canonical works."
+  },
+
+  "$comment_capabilities": "Optional methods. A provider advertises only what it implements; callers must check rather than assume, so Radarr is never asked for a guide.",
+  "capabilities": [
+    "health", "search", "details", "library", "libraryStatus",
+    "request", "activity", "stream", "guide", "channels", "recordings"
+  ],
+
+  "$comment_health": "Distinct states, deliberately not collapsed into 'down'. Each implies a different fix: not_configured needs a key, unreachable needs a network, auth_failed needs a correct key, incompatible needs a version.",
+  "health": [
+    "healthy", "not_configured", "unreachable", "auth_failed", "incompatible", "degraded"
+  ],
+
+  "$comment_channel_sources": "Where a linear channel originates. Clients normalise all of these into Channel/Program/Stream and should not branch on the source.",
+  "channelSources": [
+    "NATIVE_YARR", "NOSTALGIAVISION", "M3U", "TUNER", "JELLYFIN_LIVE", "PLEX_LIVE"
+  ]
+}

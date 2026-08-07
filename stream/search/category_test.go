@@ -43,9 +43,13 @@ func TestASingleCategoryNarrowsTheIndexerQuery(t *testing.T) {
 	if got := kind("games,movies"); got != "" {
 		t.Errorf("two categories -> %q, want no narrowing", got)
 	}
-	// An explicit kind always wins.
-	if got := kindFor(url.Values{"kind": {"audio"}, "groups": {"games"}}); got != "audio" {
-		t.Errorf("explicit kind -> %q", got)
+	// An explicit kind always wins. Written as the canonical form of whatever
+	// was asked for, not a literal: "audio" is an accepted spelling of the
+	// music domain, and hard-coding either side of that is what let the client
+	// and server disagree in the first place.
+	want := canonicalDomain("audio")
+	if got := kindFor(url.Values{"kind": {"audio"}, "groups": {"games"}}); got != want {
+		t.Errorf("explicit kind -> %q, want %q", got, want)
 	}
 }
 

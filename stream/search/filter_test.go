@@ -427,17 +427,22 @@ func TestKindAndGroupsAgree(t *testing.T) {
 	}
 }
 
-// Whatever a caller sends must land on a kind cards actually carry, or the
+// Whatever a caller sends must land on a domain the schema defines, or the
 // filter silently matches nothing.
+//
+// The valid set is read from the schema rather than written out here. A
+// hand-kept list in a test is the same defect as a hand-kept list in the
+// client: it passes until the vocabulary moves, and then it asserts the old
+// world is still true.
 func TestEveryKindIsOneCardsCarry(t *testing.T) {
-	valid := map[string]bool{"video": true, "audio": true, "image": true, "game": true, "comic": true}
 	for _, name := range []string{
 		"movies", "movie", "tv", "shows", "series", "anime", "video",
 		"games", "game", "comics", "comic", "images", "image", "music", "audio",
+		"books", "audiobook",
 	} {
 		got := kindFor(url.Values{"kind": {name}})
-		if !valid[got] {
-			t.Errorf("kind=%q resolved to %q, which no card ever has", name, got)
+		if _, ok := schema.Domains[got]; !ok {
+			t.Errorf("kind=%q resolved to %q, which is not a domain in schema.json", name, got)
 		}
 	}
 }
