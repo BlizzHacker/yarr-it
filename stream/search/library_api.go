@@ -23,6 +23,17 @@ func logLibraryError(err error) {
 
 // requireUser gates on a session unconditionally and hands the handler the
 // user it belongs to.
+//
+// NOT WIRED TO ANY ROUTE, AND NOT THE GATE FOR THE OWNER'S MEDIA. Use
+// authConfig.requireOwner or requireOwnerUser in owner.go instead.
+//
+// It asks only "is there a session", which admits every account in the identity
+// provider. That is the right question for data keyed on the session and the
+// wrong one for a media library, where having an account is not a claim on
+// whose library it is -- and it is exactly what let any signed-in stranger read
+// /api/arr/library before the boundary existed. Kept because the primitive is
+// sound and a household that later wants shared watchlists will want it back;
+// left unwired so reaching for it is a deliberate act.
 func (c *authConfig) requireUser(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !c.Enabled {

@@ -627,9 +627,13 @@ func TestEnabledAddonsAppearInTheProviderRegistry(t *testing.T) {
 // The route that makes this server fetch a user-supplied URL is the one an
 // anonymous caller must never reach. This is the exact trap routes_test.go
 // documents: a convenience registrar that leaves handlers bare.
+//
+// The expected status is now 404 rather than 401. Addons are behind the owner
+// boundary, and every refusal there is the same constant whoever asked -- see
+// owner.go for why a 401 or a 403 is itself an answer.
 func TestAddonRoutesRefuseAnonymousCallers(t *testing.T) {
 	mux := http.NewServeMux()
-	registerAddonRoutesWith(mux, testAuth(), nil)
+	registerAddonRoutesWith(mux, ownerAuth(), nil)
 
 	for _, tc := range []struct{ method, path, body string }{
 		{"GET", "/api/addons", ""},
@@ -644,32 +648,40 @@ func TestAddonRoutesRefuseAnonymousCallers(t *testing.T) {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
 
-		if rec.Code == http.StatusOK {
-			t.Errorf("%s %s answered 200 with no session", tc.method, tc.path)
-		}
-		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusServiceUnavailable {
-			t.Errorf("%s %s returned %d, want 401 or 503", tc.method, tc.path, rec.Code)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s %s returned %d, want 404", tc.method, tc.path, rec.Code)
 		}
 	}
 }
 
-// Catalogue data is read by a television from another origin, exactly like
-// /api/search.
-func TestAddonCatalogueRoutesAreReadableCrossOrigin(t *testing.T) {
+// Addon search and meta USED to be public and CORS-open, on the grounds that
+// they describe things that exist in the world. That held for the results and
+// not for the fact of asking: both fan out across the installed set, so the
+// shape of the answer is a description of which addons this household chose to
+// run, and the addon URLs behind them are often credentials.
+func TestAddonCatalogueRoutesAreOwnerOnly(t *testing.T) {
+	c := ownerAuth()
 	mux := http.NewServeMux()
-	registerAddonRoutesWith(mux, testAuth(), nil)
+	registerAddonRoutesWith(mux, c, nil)
 
 	for _, path := range []string{"/api/addons/search?q=dune", "/api/addons/meta?id=addon:x:movie:tt1"} {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", path, nil)
-		req.Header.Set("Origin", "https://someone-else.example")
-		mux.ServeHTTP(rec, req)
+		for _, who := range []struct {
+			name string
+			req  *http.Request
+		}{
+			{"anonymous", httptest.NewRequest("GET", path, nil)},
+			{"signed-in stranger", strangerRequest(t, c, "GET", path, "")},
+		} {
+			who.req.Header.Set("Origin", "https://someone-else.example")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, who.req)
 
-		if rec.Code == http.StatusUnauthorized {
-			t.Errorf("%s needs a session; a TV cannot browse", path)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-			t.Errorf("%s sent Allow-Origin %q; a TV is a different origin", path, got)
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("%s %s got %d, want 404", who.name, path, rec.Code)
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("%s sent Allow-Origin %q; the installed set is the owner's", path, got)
+			}
 		}
 	}
 }
@@ -708,22 +720,30 @@ func TestTheOneLineRegistrarStillGatesTheAddRoute(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/addons",
 		strings.NewReader(`{"url":"http://169.254.169.254/manifest.json"}`)))
 
-	if rec.Code != http.StatusUnauthorized {
+	if rec.Code != http.StatusNotFound {
 		t.Fatalf("the one-line registrar left the add route open: %d", rec.Code)
 	}
 }
 
-// And with a session it works, which is the other half of the same claim.
-func TestASignedInCallerReachesTheAddonList(t *testing.T) {
-	auth := testAuth()
+// And the OWNER reaches it, which is the other half of the same claim. It used
+// to be enough to be signed in; strangerRequest below is what that admitted.
+func TestTheOwnerReachesTheAddonList(t *testing.T) {
+	auth := ownerAuth()
 	mux := http.NewServeMux()
 	registerAddonRoutesWith(mux, auth, nil)
 
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, signedIn(t, auth, "GET", "/api/addons", ""))
+	mux.ServeHTTP(rec, strangerRequest(t, auth, "GET", "/api/addons", ""))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("a signed-in stranger read the owner's addon list: %d %s",
+			rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, ownerRequest(t, auth, "GET", "/api/addons", ""))
 
 	if rec.Code != 200 {
-		t.Fatalf("a signed-in caller was refused: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("the owner was refused: %d %s", rec.Code, rec.Body.String())
 	}
 	var body struct {
 		Addons []addonView    `json:"addons"`

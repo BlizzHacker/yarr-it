@@ -714,6 +714,13 @@ type playArchive struct {
 	// It needs no configuration and no credential, so unlike the line above it
 	// is present by default. See play_bios_archive.go.
 	publicFirmware biosLibrary
+
+	// auth answers "is this caller the owner", which decides whether the two
+	// firmware sources that read the owner's own storage may be reached at all.
+	// nil means nobody is the owner, so only the public source answers -- which
+	// is exactly how this endpoint behaved before there was anything else to
+	// ask. See owner.go.
+	auth *authConfig
 }
 
 func newPlayArchive(client *http.Client) *playArchive {
@@ -745,8 +752,14 @@ func newPlayArchive(client *http.Client) *playArchive {
 //
 // If the operator wants these behind the same reader gate as /api/pages, wrap
 // them the way main.go wraps that one; nothing here depends on being open.
-func registerPlayRoutes(mux *http.ServeMux) {
+//
+// The firmware relay is the exception and is gated inside handleBIOS rather
+// than at the mux, because the gate is per SOURCE and not per route: the
+// Internet Archive's copy stays public while the owner's disk and his RomM do
+// not. Wrapping the whole route would take the public ColecoVision with it.
+func registerPlayRoutes(mux *http.ServeMux, auth *authConfig) {
 	p := newPlayArchive(nil)
+	p.auth = auth
 
 	// The firmware the Internet Archive's own player uses. Unconditional,
 	// because it needs nothing from anybody: no credential, no setting, no

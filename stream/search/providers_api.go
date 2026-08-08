@@ -31,13 +31,36 @@ type providerView struct {
 	Health       Health   `json:"health"`
 }
 
+// emptyProviderView is what a non-owner is told about this instance, and it is
+// the same answer whether the owner runs nothing or runs eight things.
+//
+// Constant on purpose. Every alternative leaks: a 404 says the route is gated
+// and therefore that there is something to gate; an error says the same more
+// loudly; and returning the real list with names redacted still publishes the
+// count. A client bootstraps against this endpoint, so the shape has to survive
+// -- it gets a valid, empty, honest answer, which is exactly true of the part
+// of this server that is any of its business.
+func emptyProviderView(w http.ResponseWriter) {
+	writeJSON(w, 200, map[string]any{"providers": []providerView{}, "domains": []string{}})
+}
+
 // handleProviders reports every configured provider and its health.
+//
+// Public, and filtered by audience. Naming the configured backends is not the
+// harmless capability advertisement it looks like: "radarr, sonarr, plex,
+// romarr, jellyfin" describes what a household holds nearly as well as a
+// listing of it would, tells anyone who asks which services are worth probing
+// on the same estate, and its health detail can name a version or an address.
 //
 // Health is probed concurrently and each probe is bounded. Serially, ten
 // providers behind a dead VPN would take ten timeouts to paint one page.
 func (s *server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	if !s.auth.isOwner(r) {
+		emptyProviderView(w)
+		return
+	}
 	if s.providers == nil {
-		writeJSON(w, 200, map[string]any{"providers": []providerView{}, "domains": []string{}})
+		emptyProviderView(w)
 		return
 	}
 

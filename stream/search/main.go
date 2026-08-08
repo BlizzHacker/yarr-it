@@ -90,6 +90,17 @@ type card struct {
 	Popular int `json:"popular,omitempty"`
 	// Platform is the console or system, for game results.
 	Platform string `json:"platform,omitempty"`
+
+	// owner marks a card that came from the household's own media servers
+	// rather than from a public source, and so must never be shown to anybody
+	// but the owner.
+	//
+	// Unexported on purpose, twice over: encoding/json cannot serialise it, so
+	// it can never reach a client even by accident; and it cannot be set by
+	// decoding a body, so no caller can launder a public card into an owner one
+	// or the reverse. Its only job is to be read by dropOwnerCards at the two
+	// points a card becomes shared state. See owner.go.
+	owner bool
 }
 
 type cacheEntry struct {
@@ -141,6 +152,12 @@ type server struct {
 	// how a fresh self-host starts; every reader must handle it rather than
 	// assume at least one exists.
 	providers *Registry
+
+	// How this server answers "is the caller the owner". Nil is a valid state
+	// and means nobody is -- see authConfig.isOwner, which answers false on a
+	// nil receiver, so a server built by a test behaves like an instance with
+	// no owner rather than one where everybody is.
+	auth *authConfig
 }
 
 func main() {
@@ -199,6 +216,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	auth := loadAuthConfig()
+	// Every owner check on this server reads this one config. Assigned before
+	// any route is registered so no handler can be wired against a nil one.
+	s.auth = auth
+	logOwnerPolicy(auth)
 	if auth.Enabled {
 		switch auth.Scope {
 		case scopeAll:
@@ -248,13 +269,16 @@ func main() {
 	// file at build time, and hand-copying it into each client is precisely how
 	// the vocabulary drifted last time.
 	mux.HandleFunc("/api/schema", publicCORS(s.handleSchema))
-	// What is configured and whether it is well. Open like health: a client has
-	// to be able to discover what an instance can do before it can sensibly ask
-	// it for anything.
+	// What is configured and whether it is well. Still open, and still the same
+	// shape for everyone, but the list itself is now filtered by audience --
+	// naming a household's Radarr, Plex and ROMarr to a stranger says what it
+	// runs and, by implication, what it holds. A non-owner sees an empty list
+	// whether or not anything is configured, so the emptiness carries no signal.
 	mux.HandleFunc("/api/providers", publicCORS(s.handleProviders))
-	// What every backend is currently doing, merged. Needs a session -- what
-	// somebody is downloading is personal.
-	mux.HandleFunc("/api/activity", auth.requireUser(s.handleActivity))
+	// What every backend is currently doing, merged. A download queue is a list
+	// of titles this household is acquiring, which is as personal as the
+	// library itself.
+	mux.HandleFunc("/api/activity", auth.requireOwnerUser(s.handleActivity))
 
 	// Radarr / Sonarr / Lidarr, one entry per configured instance. A missing
 	// instance is not an error: a self-hoster who runs none of these still gets
@@ -265,25 +289,34 @@ func main() {
 		}
 	}
 
-	// Registered individually rather than through registerArrRoutes, because
-	// those handlers arrive unwrapped and only two of the five are safe that
-	// way. Search and details describe things that exist in the world; library,
-	// status and request expose or change what this household has.
+	// Registered individually rather than through registerArrRoutes, and now
+	// all five behind the owner boundary rather than two of them open.
+	//
+	// Search and details used to be public on the grounds that they "describe
+	// things that exist in the world". That was true of the words and false of
+	// the response: every MediaItem carries a State, which is this household's
+	// answer to "do I have this", plus the ProviderID that says which of its
+	// instances answered. A stranger could walk a film list through
+	// /api/arr/search and read the shelf a title at a time without ever
+	// touching /api/arr/library. Filtering those fields per-provider was the
+	// alternative and it is the kind of subtlety that survives exactly until
+	// the next adapter is added, so the boundary is drawn at the route.
+	//
+	// What a non-owner loses is a catalogue lookup they can still get from
+	// /api/search, which reaches archive.org and the indexers and knows nothing
+	// about this household.
 	arr := &arrAPI{reg: s.providers}
-	mux.HandleFunc("/api/arr/search", publicCORS(arr.handleSearch))
-	mux.HandleFunc("/api/arr/details", publicCORS(arr.handleDetails))
-	mux.HandleFunc("/api/arr/library", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleLibrary(w, r) }))
-	mux.HandleFunc("/api/arr/status", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleStatus(w, r) }))
-	// Requesting spends someone else's disk and bandwidth. It needs a session
-	// even when AUTH_SCOPE would otherwise let a reader through.
-	mux.HandleFunc("/api/arr/request", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleRequest(w, r) }))
+	mux.HandleFunc("/api/arr/search", auth.requireOwner(arr.handleSearch))
+	mux.HandleFunc("/api/arr/details", auth.requireOwner(arr.handleDetails))
+	mux.HandleFunc("/api/arr/library", auth.requireOwner(arr.handleLibrary))
+	mux.HandleFunc("/api/arr/status", auth.requireOwner(arr.handleStatus))
+	// Requesting also spends the owner's disk and bandwidth, which is a second
+	// reason on top of the first.
+	mux.HandleFunc("/api/arr/request", auth.requireOwner(arr.handleRequest))
 
 	// Whether an archive.org item can actually be played here, and how. Public
 	// and CORS-open: it describes a public item and holds nothing personal.
-	registerPlayRoutes(mux)
+	registerPlayRoutes(mux, auth)
 
 	// Stremio-protocol addons. Deliberately the ...With form rather than the
 	// one-line registerAddonRoutes: that one calls loadAuthConfig() again, which
@@ -306,15 +339,16 @@ func main() {
 			log.Printf("provider %s: %v", p.ID(), err)
 		}
 	}
+	// Same split as the *arr routes and for the same reason, with one that is
+	// worse: RomM's search IS this household's shelf rather than a catalogue
+	// lookup that happens to mention it, and its details route hands back a
+	// playUrl that launches the owner's own ROM.
 	game := &gameAPI{reg: s.providers}
-	mux.HandleFunc("/api/game/search", publicCORS(game.handleSearch))
-	mux.HandleFunc("/api/game/details", publicCORS(game.handleDetails))
-	mux.HandleFunc("/api/game/library", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { game.handleLibrary(w, r) }))
-	mux.HandleFunc("/api/game/status", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { game.handleStatus(w, r) }))
-	mux.HandleFunc("/api/game/request", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { game.handleRequest(w, r) }))
+	mux.HandleFunc("/api/game/search", auth.requireOwner(game.handleSearch))
+	mux.HandleFunc("/api/game/details", auth.requireOwner(game.handleDetails))
+	mux.HandleFunc("/api/game/library", auth.requireOwner(game.handleLibrary))
+	mux.HandleFunc("/api/game/status", auth.requireOwner(game.handleStatus))
+	mux.HandleFunc("/api/game/request", auth.requireOwner(game.handleRequest))
 
 	// Live TV. Gated by what each route actually is rather than by prefix: a
 	// guide is catalogue data that a television reads cross-origin, while
@@ -373,32 +407,51 @@ func main() {
 		// Jellyfin and Plex at once, and the chain finds whichever owns an item.
 		linear.SetResolver(newLinearResolverChain(resolvers...))
 	}
-	// Read-only and CORS-open: a Roku or a Tizen set is a different origin and
-	// has to be able to read the guide before it can show anything.
-	mux.HandleFunc("/api/v1/linear/guide", publicCORS(linear.handleGuide))
-	mux.HandleFunc("/api/v1/linear/now", publicCORS(linear.handleNow))
-	mux.HandleFunc("/api/v1/linear/stream", publicCORS(linear.handleStream))
-	mux.HandleFunc("/api/v1/linear/channels", publicCORS(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			linear.handleChannels(w, r)
-			return
-		}
-		auth.requireUser(func(w http.ResponseWriter, r *http.Request, _ string) {
-			linear.handleChannels(w, r)
-		})(w, r)
-	}))
-	mux.HandleFunc("/api/v1/linear/preview", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { linear.handlePreview(w, r) }))
+	// Every linear route is owner-only, including the read-only ones that were
+	// public a moment ago.
+	//
+	// This is the leak the endpoint list would not have caught. A linear channel
+	// is assembled BY SCHEDULING THE OWNER'S JELLYFIN AND PLEX LIBRARIES: the
+	// guide is therefore a timetable of his files, /now names the one playing,
+	// and /stream resolves to a URL that serves the bytes. Nothing about those
+	// three routes reads as personal from its name, and all three were open to
+	// every origin on the internet.
+	//
+	// The read/write split that used to be drawn on /channels is gone with it.
+	// A GET there lists the channels and their definitions -- the library
+	// sections, the filters, the titles matched -- so "reading is safe, writing
+	// is administration" was the wrong axis: both halves are the owner's.
+	//
+	// The cost is that a television must present a credential for Live TV.
+	// It already can: bearer.go exists precisely so a set-top box that finished
+	// the device flow can prove who it is without a cookie jar.
+	mux.HandleFunc("/api/v1/linear/guide", auth.requireOwner(linear.handleGuide))
+	mux.HandleFunc("/api/v1/linear/now", auth.requireOwner(linear.handleNow))
+	mux.HandleFunc("/api/v1/linear/stream", auth.requireOwner(linear.handleStream))
+	mux.HandleFunc("/api/v1/linear/channels", auth.requireOwner(linear.handleChannels))
+	mux.HandleFunc("/api/v1/linear/preview", auth.requireOwner(linear.handlePreview))
 	if err := s.providers.Add(NewLinearProvider(linear)); err != nil {
 		// Not fatal: an unregisterable linear engine means no Live TV, which is
 		// a missing feature rather than a reason to refuse to serve search.
 		log.Printf("linear TV: %v", err)
 	}
 
-	// Personal data, so these need a session whatever AUTH_SCOPE says.
-	mux.HandleFunc("/api/v1/library", auth.requireUser(s.handleLibrary))
-	mux.HandleFunc("/api/v1/progress", auth.requireUser(s.handleProgress))
-	mux.HandleFunc("/api/v1/continue", auth.requireUser(s.handleContinue))
+	// The watchlist and resume points. Owner-only rather than per-signed-in-user.
+	//
+	// requireUser would still be defensible here -- this data is keyed on the
+	// session, so each account only ever reads its own rows. It is owner-only
+	// anyway for a reason that is about collection rather than access: keeping
+	// it open means this service accumulates viewing history for every account
+	// in the identity provider, and nobody asked for that. One owner means one
+	// person's rows on disk, which is the smallest thing that satisfies what
+	// was actually requested.
+	//
+	// Reversing this is one edit per line if a household ever wants shared
+	// watchlists; the storage is already keyed per user and would need no
+	// migration.
+	mux.HandleFunc("/api/v1/library", auth.requireOwnerUser(s.handleLibrary))
+	mux.HandleFunc("/api/v1/progress", auth.requireOwnerUser(s.handleProgress))
+	mux.HandleFunc("/api/v1/continue", auth.requireOwnerUser(s.handleContinue))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -417,6 +470,24 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	n := len(s.cache)
 	s.mu.RUnlock()
 
+	// Whether this instance has been told who owns it. Reported here for the
+	// same reason "not-configured" is reported for Prowlarr: an owner-less
+	// instance serves none of its own media to anybody, which from the front
+	// looks exactly like an empty library or a broken backend -- and an operator
+	// who cannot tell those apart goes looking for the setting that turns the
+	// gate off. Naming the state is what stops that.
+	//
+	// It discloses nothing worth having. In this state there is no owner
+	// content being served to anyone, so "there is no owner here" is not a lead;
+	// and the owner's identity is never in it, only whether one exists.
+	owner := "not-configured"
+	switch {
+	case !s.auth.enabled():
+		owner = "no-sign-in"
+	case s.auth.ownerConfigured():
+		owner = "configured"
+	}
+
 	// Distinguish "not configured" from "configured but unreachable". Both leave
 	// search dead, but only one of them is something the operator can fix by
 	// pasting in a key, and reporting an unconfigured instance as "down" sends
@@ -425,6 +496,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
 			"prowlarr":      "not-configured",
 			"cachedQueries": n,
+			"owner":         owner,
 			"detail":        "PROWLARR_API_KEY is not set; torrent search is disabled",
 		})
 		return
@@ -442,7 +514,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			status = "ok"
 		}
 	}
-	body := map[string]any{"prowlarr": status, "cachedQueries": n}
+	body := map[string]any{"prowlarr": status, "cachedQueries": n, "owner": owner}
 	// Whether searches are currently skipping the indexers on purpose. Without
 	// this, a breaker that has tripped looks exactly like an index with nothing
 	// in it -- results simply stop arriving and nothing says why.
@@ -468,9 +540,20 @@ type searchState struct {
 //
 // Filters are applied here rather than upstream, so changing one costs no
 // indexer traffic and a poll can re-narrow a growing result set for free.
+//
+// ownerView says whether the caller is the owner, and is the last gate any card
+// passes before it is serialised. It is belt to the braces putCached and
+// searchJob.add already provide: those keep owner-visible cards out of shared
+// state, this catches anything merged into a single response afterwards. Both
+// are needed, because they fail in different directions -- the invariant
+// upstream cannot see a per-request merge, and a check here cannot see a card
+// that was cached under someone else's search.
 func respondSearch(w http.ResponseWriter, q string, f filters,
-	dev *deviceProfile, cards []card, st searchState) {
+	dev *deviceProfile, cards []card, st searchState, ownerView bool) {
 
+	if !ownerView {
+		cards = dropOwnerCards(cards)
+	}
 	visible := dev.applyDevice(cards)
 	body := map[string]any{
 		"query":  q,
@@ -507,6 +590,23 @@ func respondSearch(w http.ResponseWriter, q string, f filters,
 		body["sources"] = st.sources
 	}
 	w.Header().Set("X-Cache", st.cache)
+	if ownerView {
+		// This response may carry more than the public one for the same query,
+		// so it must not be stored anywhere a later caller could be served from.
+		// writeJSON stamps `public, max-age=60` on everything and publicCORS
+		// varies only on Origin -- neither of which mentions the credential that
+		// made this answer different, so a CDN or a corporate proxy would
+		// happily hand the owner's search to the next person who typed the same
+		// words.
+		//
+		// Wrapped rather than set here, because writeJSON would overwrite a
+		// header set before it and headers set after it are already on the
+		// wire. privateWriter stamps at WriteHeader time, which is the only
+		// moment that wins. Non-owner responses keep the public caching, which
+		// is what makes the site fast for the people who send most of the
+		// traffic.
+		w = &privateWriter{ResponseWriter: w}
+	}
 	writeJSON(w, 200, body)
 }
 
@@ -541,11 +641,14 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// so unplayable sources are removed rather than shown and failed.
 	dev := deviceProfileFor(r.URL.Query().Get("device"))
 	cacheKey := searchCacheKey(q, kind)
+	// Read once per request rather than per response branch: the cookie or the
+	// bearer token is checked here, and every exit below uses the same answer.
+	ownerView := s.auth.isOwner(r)
 
 	// A complete answer already in memory. Nothing else can beat this, and it
 	// is the state the warmer and every previous search are working towards.
 	if cards, ok := s.getCached(cacheKey); ok {
-		respondSearch(w, q, f, dev, cards, searchState{cache: "HIT"})
+		respondSearch(w, q, f, dev, cards, searchState{cache: "HIT"}, ownerView)
 		return
 	}
 
@@ -557,7 +660,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// retry that can only fail again.
 	if s.apiKey == "" && !wantArchive {
 		if stale, ok := s.getAny(cacheKey); ok {
-			respondSearch(w, q, f, dev, stale, searchState{cache: "STALE", stale: true})
+			respondSearch(w, q, f, dev, stale, searchState{cache: "STALE", stale: true}, ownerView)
 			return
 		}
 		writeJSON(w, 503, map[string]string{
@@ -604,7 +707,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if snap.complete {
 		st.cache = "MISS"
 	}
-	respondSearch(w, q, f, dev, cards, st)
+	respondSearch(w, q, f, dev, cards, st, ownerView)
 }
 
 // handleSearchCollect answers a poll: everything the job has found so far.
@@ -633,13 +736,16 @@ func (s *server) handleSearchCollect(w http.ResponseWriter, r *http.Request, id 
 	q := job.query
 	cards := mergeCards(snap.cards, s.localCards(q, job.kind, localPaintLimit))
 
+	// A job id is a bearer of nothing: it names a query, not a person, and the
+	// person collecting is often not the one who started it. So the audience is
+	// decided from THIS request's credentials, never carried on the job.
 	respondSearch(w, q, f, dev, cards, searchState{
 		cache:   "JOB",
 		job:     job.id,
 		pending: !snap.complete,
 		sources: snap.sources,
 		partial: !snap.complete,
-	})
+	}, s.auth.isOwner(r))
 }
 
 // claim returns (wait, true) for the goroutine that should do the upstream
@@ -690,6 +796,14 @@ func (s *server) getAny(k string) ([]card, bool) {
 }
 
 func (s *server) putCached(k string, cards []card) {
+	// The cache is keyed on the query and nothing else, so whatever goes in
+	// here is answered to whoever asks the same question next. Owner-visible
+	// cards are dropped on the way in rather than filtered on the way out:
+	// filtering on the way out has to be remembered at every read, and
+	// localCards already reads this map from a path that has no idea who is
+	// asking. See dropOwnerCards in owner.go.
+	cards = dropOwnerCards(cards)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cache == nil {

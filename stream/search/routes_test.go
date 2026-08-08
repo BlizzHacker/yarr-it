@@ -12,70 +12,108 @@ import (
 // it needs.
 //
 // This test exists because the convenient thing -- calling the one-line
-// register helper -- silently opens three routes that spend the household's
-// disk and expose what it owns. The failure is invisible: everything works, and
-// works for strangers too.
+// register helper -- silently opens routes that spend the household's disk and
+// expose what it owns. The failure is invisible: everything works, and works
+// for strangers too.
+//
+// WHAT CHANGED, AND WHY THE SPLIT IN HERE IS GONE
+//
+// This file used to assert that two of the five *arr routes were public: search
+// and details "describe things that exist in the world". That was true of the
+// English and false of the JSON. Every MediaItem those two return carries a
+// State -- this household's answer to "do I have this" -- and the ProviderID of
+// the instance that answered. A stranger could walk a film list through
+// /api/arr/search and read the shelf a title at a time without ever touching
+// /api/arr/library, which was the route everyone was watching.
+//
+// So all five are behind the owner boundary now, and the assertions below have
+// been inverted rather than deleted: the old ones are still here in negative
+// form, because "these two are readable cross-origin" is exactly the claim that
+// must never quietly become true again.
 
 // buildTestMux mirrors main.go's registration for the routes under test.
 func buildTestMux(auth *authConfig, reg *Registry) *http.ServeMux {
 	mux := http.NewServeMux()
 	arr := &arrAPI{reg: reg}
-	mux.HandleFunc("/api/arr/search", publicCORS(arr.handleSearch))
-	mux.HandleFunc("/api/arr/details", publicCORS(arr.handleDetails))
-	mux.HandleFunc("/api/arr/library", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleLibrary(w, r) }))
-	mux.HandleFunc("/api/arr/status", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleStatus(w, r) }))
-	mux.HandleFunc("/api/arr/request", auth.requireUser(
-		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleRequest(w, r) }))
+	mux.HandleFunc("/api/arr/search", auth.requireOwner(arr.handleSearch))
+	mux.HandleFunc("/api/arr/details", auth.requireOwner(arr.handleDetails))
+	mux.HandleFunc("/api/arr/library", auth.requireOwner(arr.handleLibrary))
+	mux.HandleFunc("/api/arr/status", auth.requireOwner(arr.handleStatus))
+	mux.HandleFunc("/api/arr/request", auth.requireOwner(arr.handleRequest))
 	return mux
 }
 
-// Spending someone's bandwidth, and listing what they own, must require a
-// session. An anonymous caller gets a 401 or a 503, never the data.
-func TestHouseholdArrRoutesRefuseAnonymousCallers(t *testing.T) {
-	mux := buildTestMux(testAuth(), &Registry{})
+// arrRoutePaths is every route this file covers, in the shape a caller would
+// actually use it.
+var arrRoutePaths = []string{
+	"/api/arr/search?q=dune",
+	"/api/arr/details?id=tmdb:movie:78",
+	"/api/arr/library?domain=video",
+	"/api/arr/status?id=tmdb:movie:78",
+	"/api/arr/request",
+}
 
-	for _, tc := range []struct{ method, path string }{
-		{"GET", "/api/arr/library?domain=video"},
-		{"GET", "/api/arr/status?id=tmdb:movie:78"},
-		{"POST", "/api/arr/request"},
-	} {
+// Listing what a household owns, asking whether it owns one thing, and spending
+// its bandwidth all require being the household.
+func TestArrRoutesRefuseAnonymousCallers(t *testing.T) {
+	mux := buildTestMux(ownerAuth(), &Registry{})
+
+	for _, path := range arrRoutePaths {
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
 
-		if rec.Code == http.StatusOK {
-			t.Errorf("%s %s answered 200 with no session; it is registered bare", tc.method, tc.path)
-		}
-		if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusServiceUnavailable {
-			t.Errorf("%s %s returned %d, want 401 or 503", tc.method, tc.path, rec.Code)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("anonymous GET %s returned %d, want 404", path, rec.Code)
 		}
 	}
 }
 
-// The other two describe things that exist in the world rather than anything
-// this household has, and a television reads them from another origin.
-func TestArrCatalogueRoutesAreReadableCrossOrigin(t *testing.T) {
-	mux := buildTestMux(testAuth(), &Registry{})
+// The claim this file is really about: being signed in is not being the owner.
+// Every one of these answered 200 to any Authentik account before the boundary
+// existed.
+func TestArrRoutesRefuseSignedInStrangers(t *testing.T) {
+	c := ownerAuth()
+	mux := buildTestMux(c, &Registry{})
 
-	for _, path := range []string{"/api/arr/search?q=dune", "/api/arr/details?id=tmdb:movie:78"} {
+	for _, path := range arrRoutePaths {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", path, nil)
-		req.Header.Set("Origin", "https://someone-else.example")
-		mux.ServeHTTP(rec, req)
+		mux.ServeHTTP(rec, strangerRequest(t, c, "GET", path, ""))
 
-		if rec.Code == http.StatusUnauthorized {
-			t.Errorf("%s needs a session; a TV cannot browse", path)
-		}
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
-			t.Errorf("%s sent Allow-Origin %q; a TV is a different origin", path, got)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("signed-in stranger GET %s returned %d, want 404", path, rec.Code)
 		}
 	}
 }
 
-// A preflight must be answered, or the browser never sends the real request.
-func TestArrCataloguePreflightIsAnswered(t *testing.T) {
-	mux := buildTestMux(testAuth(), &Registry{})
+// None of them may carry CORS headers -- not even the two that used to. A
+// wildcard origin cannot carry credentials, the browser refuses the pairing, so
+// leaving these uncovered is what stops a session ever reaching another
+// instance.
+func TestArrRoutesAreNotCORSOpen(t *testing.T) {
+	c := ownerAuth()
+	mux := buildTestMux(c, &Registry{})
+
+	for _, path := range arrRoutePaths {
+		for _, req := range []*http.Request{
+			httptest.NewRequest("GET", path, nil),
+			ownerRequest(t, c, "GET", path, ""),
+		} {
+			req.Header.Set("Origin", "https://someone-else.example")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("%s sent Allow-Origin %q; household data stays same-origin", path, got)
+			}
+		}
+	}
+}
+
+// A preflight is not a way around the gate. It used to be answered 204 by
+// publicCORS before the handler ran; now there is no publicCORS on these, and
+// an OPTIONS gets the same constant refusal as everything else.
+func TestArrPreflightDoesNotBypassTheGate(t *testing.T) {
+	mux := buildTestMux(ownerAuth(), &Registry{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("OPTIONS", "/api/arr/search", nil)
@@ -83,25 +121,31 @@ func TestArrCataloguePreflightIsAnswered(t *testing.T) {
 	req.Header.Set("Access-Control-Request-Method", "GET")
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Errorf("preflight got %d, want 204", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("an OPTIONS preflight got %d, want the same 404 as everything else", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("the preflight was answered with Allow-Origin %q", got)
 	}
 }
 
-// The household routes must not carry CORS headers at all. A wildcard origin
-// cannot carry credentials -- the browser refuses the pairing -- so leaving
-// them uncovered is what stops a session ever reaching another instance.
-func TestHouseholdArrRoutesAreNotCORSOpen(t *testing.T) {
-	mux := buildTestMux(testAuth(), &Registry{})
+// And the owner gets through all five, or the boundary has simply broken the
+// feature.
+//
+// Compared against the gate's exact body rather than the status: with an empty
+// registry /api/arr/details answers its own 404 -- "no configured provider can
+// describe tmdb:movie:78" -- which is the handler having run, not the gate
+// having refused.
+func TestTheOwnerReachesEveryArrRoute(t *testing.T) {
+	c := ownerAuth()
+	mux := buildTestMux(c, &Registry{})
 
-	for _, path := range []string{"/api/arr/library", "/api/arr/status", "/api/arr/request"} {
+	for _, path := range arrRoutePaths {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", path, nil)
-		req.Header.Set("Origin", "https://someone-else.example")
-		mux.ServeHTTP(rec, req)
+		mux.ServeHTTP(rec, ownerRequest(t, c, "GET", path, ""))
 
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
-			t.Errorf("%s sent Allow-Origin %q; household data must stay same-origin", path, got)
+		if rec.Body.String() == gateRefusal {
+			t.Errorf("the owner was refused GET %s with the stranger's constant 404", path)
 		}
 	}
 }
