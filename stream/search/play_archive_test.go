@@ -1154,3 +1154,31 @@ func TestFilenamesSurviveIntoTheURL(t *testing.T) {
 		t.Errorf("%q does not start with the directory", got)
 	}
 }
+
+// The same multi-valued trap, in the parser that decides whether to draw a Play
+// button -- which is worse, because the failure reads as "the Internet Archive
+// did not answer" and the button does nothing.
+//
+// `PacMan1981Atari` is a real item on the live "Games you can play right now"
+// shelf. It declares `"emulator": ["a2600","a2600"]`, its metadata endpoint
+// answers 200, and its tile was the one dead button left on that row.
+func TestAListValuedEmulatorStillProducesAVerdict(t *testing.T) {
+	body := `{"metadata":{"identifier":"PacMan1981Atari","title":"Pac Man (1981) (Atari)",
+	  "mediatype":"software","emulator":["a2600","a2600"],"emulator_ext":"bin",
+	  "collection":["historicalsoftware","stream_only","emulation"]},
+	  "files":[{"name":"pacman.bin","format":"Atari 2600 ROM","size":"4096"}]}`
+
+	var meta playItemMetadata
+	if err := json.Unmarshal([]byte(body), &meta); err != nil {
+		t.Fatalf("a list-valued emulator failed the decode: %v", err)
+	}
+	if got := meta.Metadata.Emulator.String(); got != "a2600" {
+		t.Fatalf("emulator = %q, want a2600", got)
+	}
+	if got := meta.Metadata.Title.String(); got != "Pac Man (1981) (Atari)" {
+		t.Fatalf("title = %q", got)
+	}
+	if got := meta.Metadata.MediaType.String(); got != "software" {
+		t.Fatalf("mediatype = %q", got)
+	}
+}

@@ -12,12 +12,19 @@ import (
 	"time"
 )
 
-// Browsable rows for everything that is not a film.
+// Browsable rows built from things that exist.
 //
 // The landing page was five rows of TMDB, so the site looked like a movie site
 // no matter what else it could play. These rows come from the Internet
-// Archive: games, books, audiobooks and comics that are free, legal, and open
-// in the browser immediately.
+// Archive: games, films, television, books, audiobooks and comics that are
+// free, legal, and open in the browser immediately.
+//
+// The distinction from the catalogue rows is the whole point, and it is worth
+// stating plainly because the page used to blur it. A catalogue row is a list
+// of names, and a name is not a promise anybody can keep -- measured on
+// 2026-08-08, all 172 catalogue tiles on the live page reached nothing. Every
+// row here starts from an identifier, so the tile IS the thing and the click
+// opens it.
 //
 // Why not the RomM and Komga servers on the home estate, which hold far more:
 // this site is public and needs no login, so a row sourced from a private
@@ -57,6 +64,37 @@ var archiveRows = []archiveRow{
 		query: `emulator:(ruffle-swf) AND mediatype:(software)`,
 		sort:  "downloads desc",
 	},
+	// Film and television.
+	//
+	// These are new, and they exist because of what the TMDB rows turned out to
+	// be. TMDB answers "what is popular", which is a fine question and the wrong
+	// one for a shelf: measured on 2026-08-08, all 100 tiles across the five
+	// TMDB rows reached nothing, because a film in cinemas this week has no free
+	// legal source and never will. The rows below answer the question a shelf is
+	// actually making a promise about -- what can somebody watch right now --
+	// and every tile on them carries the identifier of the thing itself.
+	//
+	// The collections are the Archive's own curated free-film libraries, chosen
+	// the same way the books row chose Gutenberg over controlled digital
+	// lending: what is free to watch now, rather than what is merely present.
+	// `format:(MPEG4)` is the same honesty check the film resolver uses --
+	// mediatype:(movies) also holds posters, stills and audio-only lectures, and
+	// an item with no browser-playable derivative is a details page, not a film.
+	{
+		key: "ia-films", title: "Films you can watch now", mediaType: "video",
+		query: `collection:(feature_films) AND mediatype:(movies) AND format:(MPEG4)`,
+		sort:  "downloads desc",
+	},
+	{
+		key: "ia-tv", title: "Classic television", mediaType: "video",
+		query: `collection:(classic_tv) AND mediatype:(movies) AND format:(MPEG4)`,
+		sort:  "downloads desc",
+	},
+	{
+		key: "ia-cartoons", title: "Cartoons", mediaType: "video",
+		query: `collection:(animationandcartoons) AND mediatype:(movies) AND format:(MPEG4)`,
+		sort:  "downloads desc",
+	},
 	{
 		key: "ia-books", title: "Books", mediaType: "text",
 		query: `collection:(gutenberg) AND mediatype:(texts)`,
@@ -81,13 +119,16 @@ var archiveRows = []archiveRow{
 	},
 }
 
+// flexString and flexStrings for the same reason archive.go uses them: every
+// Solr field is multi-valued in the schema, and one item catalogued with two
+// titles used to fail the decode for the entire shelf.
 type iaSearchDoc struct {
 	Identifier string          `json:"identifier"`
-	Title      string          `json:"title"`
+	Title      flexString      `json:"title"`
 	Downloads  int             `json:"downloads"`
 	Year       json.RawMessage `json:"year"`
-	Emulator   string          `json:"emulator"`
-	Collection []string        `json:"collection"`
+	Emulator   flexString      `json:"emulator"`
+	Collection flexStrings     `json:"collection"`
 }
 
 // fetchArchiveRow runs one row's query.
@@ -98,7 +139,10 @@ func fetchArchiveRow(ctx context.Context, row archiveRow, limit int) (discoverRo
 		params.Add("fl[]", f)
 	}
 	params.Add("sort[]", row.sort)
-	params.Set("rows", fmt.Sprint(limit))
+	// Over-fetch. Duplicates and adult items are dropped below, and asking for
+	// exactly a shelf's width means a shelf ends up narrower than the ones
+	// beside it for reasons a visitor cannot see.
+	params.Set("rows", fmt.Sprint(limit+archiveRowSlack))
 	params.Set("output", "json")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
@@ -134,9 +178,22 @@ func fetchArchiveRow(ctx context.Context, row archiveRow, limit int) (discoverRo
 			continue
 		}
 		seen[d.Identifier] = true
-		title := strings.TrimSpace(d.Title)
+		title := strings.TrimSpace(d.Title.String())
 		if title == "" {
 			title = d.Identifier
+		}
+		// A shelf is not a search. A search returns what the Archive has,
+		// because somebody asked for it; a shelf is an offer this page makes
+		// unprompted, on a landing page with no sign-in and no age gate.
+		//
+		// searchArchive has always applied this and these rows never did, which
+		// did not matter while they were games and Gutenberg. It matters now
+		// that they include feature films: the Archive's own `feature_films`
+		// collection put "Diary of a Nudist", "The Naked Witch" and "The Child
+		// Molester (1964)" on the front page, unasked, in the first
+		// twenty-four.
+		if isAdultItem(title, d.Identifier, d.Collection) {
+			continue
 		}
 		out.Items = append(out.Items, discoverItm{
 			Title: title,
@@ -150,9 +207,16 @@ func fetchArchiveRow(ctx context.Context, row archiveRow, limit int) (discoverRo
 			// TMDB rows: these are the thing, not a pointer to look for it.
 			Play: playTargetFor(d, row.mediaType),
 		})
+		if len(out.Items) >= limit {
+			break
+		}
 	}
 	return out, nil
 }
+
+// archiveRowSlack is how much more than a shelf's width to ask for, so the
+// filtering below cannot leave a short shelf.
+const archiveRowSlack = 12
 
 // playTargetFor picks how an item opens.
 //
@@ -161,7 +225,7 @@ func fetchArchiveRow(ctx context.Context, row archiveRow, limit int) (discoverRo
 // Everything else opens in theirs, which costs no bandwidth here.
 func playTargetFor(d iaSearchDoc, mediaType string) string {
 	details := "https://archive.org/details/" + d.Identifier
-	if mediaType == "game" && ejsCoreFor(d.Emulator) != "" {
+	if mediaType == "game" && ejsCoreFor(d.Emulator.String()) != "" {
 		return details + "#ejs"
 	}
 	return details

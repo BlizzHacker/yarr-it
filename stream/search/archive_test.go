@@ -6,10 +6,24 @@ import (
 	"testing"
 )
 
+// This test used to require `title:("mario")` -- a QUOTED phrase -- and that
+// requirement was the bug. A quoted phrase demands those words in that order
+// with nothing between them, and no archive.org ROM title is ever an exact
+// substring of a catalogue title: their copy of A Link to the Past is filed as
+// "Legend Of Zelda, The A Link To The Past ( USA) SNES ROM". Measured against
+// live archive.org, the quoted form returned 0 results for a game they
+// demonstrably hold two playable copies of.
+//
+// So the assertion is inverted: the terms must be REQUIRED, not quoted. What
+// the test was really protecting -- that the scope survives and that a user's
+// text cannot become syntax -- is still checked, below and in match_test.go.
 func TestArchiveQueryScopesToBrowserPlayableItems(t *testing.T) {
 	q := archiveQuery("mario")
-	if !strings.Contains(q, `title:("mario")`) {
+	if !strings.Contains(q, "title:(mario)") {
 		t.Fatalf("query does not search the title: %s", q)
+	}
+	if strings.Contains(q, `"`) {
+		t.Fatalf("query quotes the phrase again: %s", q)
 	}
 	if !strings.Contains(q, "emulator:[* TO *]") {
 		t.Fatalf("query is not scoped to browser-playable items: %s", q)
@@ -18,15 +32,24 @@ func TestArchiveQueryScopesToBrowserPlayableItems(t *testing.T) {
 
 // A search box accepts anything. Interpolating it raw into a Solr query means a
 // stray colon or quote either errors or silently searches for something else.
+//
+// Quoting was how that used to be prevented. It is now prevented earlier and
+// more completely: the terms are reduced to bare alphanumeric words before they
+// reach a query at all, so there is nothing left to escape.
 func TestArchiveQueryNeutralisesSolrSyntax(t *testing.T) {
 	q := archiveQuery(`doom" OR collection:(nsfw`)
-	if strings.Contains(q, `"doom"`) {
+	if strings.Contains(q, `"`) {
 		t.Fatalf("injected quote survived: %s", q)
 	}
-	// The user's text must end up inside exactly one quoted phrase, so the
-	// collection scope cannot be escaped.
 	if strings.Count(q, `title:(`) != 1 {
 		t.Fatalf("query structure was broken by input: %s", q)
+	}
+	// The caller's `collection:` must arrive as a word, never as a field query.
+	// Checked on the title clause rather than the whole string, because the
+	// scope legitimately contains two colons of its own.
+	clause := q[:strings.Index(q, " AND emulator")]
+	if strings.Count(clause, ":") != 1 || !strings.HasPrefix(clause, "title:(") {
+		t.Fatalf("injected field query survived: %s", clause)
 	}
 	if !strings.Contains(q, "emulator:[* TO *]") {
 		t.Fatalf("scope was escaped: %s", q)
@@ -403,5 +426,53 @@ func TestEveryDomainHasEitherAnArchiveScopeOrIndexerCategories(t *testing.T) {
 		if !hasScope && !hasCats {
 			t.Errorf("domain %q has neither an archive.org scope nor indexer categories", id)
 		}
+	}
+}
+
+// A Solr field is multi-valued in the schema even when it almost always holds
+// one value, so an item somebody catalogued twice comes back as a list. Typing
+// those fields as `string` failed the decode for the WHOLE response -- not the
+// one document, all sixty -- so a single oddly-catalogued item silently emptied
+// a search that had results in it.
+//
+// Found while resolving the live landing page: four of twelve batched lookups
+// died this way, and the games shelf lost A Link to the Past and Super Mario
+// World to a JSON error nothing surfaced.
+func TestAMultiValuedFieldDoesNotEmptyThePage(t *testing.T) {
+	body := `{"response":{"numFound":2,"docs":[
+	  {"identifier":"odd","title":["Donkey Kong","Donkey Kong (Arcade)"],
+	   "emulator":["a2600","a2600"],"collection":"consolelivingroom","downloads":5},
+	  {"identifier":"normal","title":"Pac-Man","emulator":"a2600",
+	   "collection":["internetarcade"],"downloads":3}
+	]}}`
+	var out archiveResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("one list-valued field failed the whole page: %v", err)
+	}
+	if len(out.Response.Docs) != 2 {
+		t.Fatalf("got %d docs, want 2", len(out.Response.Docs))
+	}
+	if got := out.Response.Docs[0].Title.String(); got != "Donkey Kong" {
+		t.Errorf("list title = %q, want the first value", got)
+	}
+	if got := out.Response.Docs[0].Emulator.String(); got != "a2600" {
+		t.Errorf("list emulator = %q", got)
+	}
+	// A single-valued collection arrives as a bare string and must still be a
+	// list here, or the adult and platform checks that walk it see nothing.
+	if len(out.Response.Docs[0].Collection) != 1 ||
+		out.Response.Docs[0].Collection[0] != "consolelivingroom" {
+		t.Errorf("bare-string collection = %v", out.Response.Docs[0].Collection)
+	}
+	if len(out.Response.Docs[1].Collection) != 1 {
+		t.Errorf("list collection = %v", out.Response.Docs[1].Collection)
+	}
+	// The cards built from it must still be whole.
+	cards := archiveCards(out.Response.Docs, "game")
+	if len(cards) != 2 {
+		t.Fatalf("got %d cards, want 2", len(cards))
+	}
+	if cards[0].Title != "Donkey Kong" || cards[0].Platform != "Atari 2600" {
+		t.Errorf("card from the list-valued doc is wrong: %+v", cards[0])
 	}
 }

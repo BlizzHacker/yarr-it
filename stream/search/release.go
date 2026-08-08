@@ -66,10 +66,50 @@ var webSafeCodecs = map[string]bool{
 	"x264": true, "H264": true, "AVC": true, "VP9": true, "AV1": true,
 }
 
+// tokenIndex finds a release tag as a WHOLE token, or -1.
+//
+// Substring matching is what this replaces, and it was quietly destroying
+// titles. Every tag here is short and several of them are common letter pairs:
+// "TC" is inside "Witcher", "TS" is inside "Presents", "CAM" is inside
+// "Camelot". Measured against a stub answering like Prowlarr, a search for "The
+// Witcher 3: Wild Hunt" produced a card titled "The Wi" -- the title is cut at
+// the first tag found, and the tag was found inside the second word of the
+// name. That is not a cosmetic defect: the truncated title is what the match
+// score is computed against, so the right release scores zero and the tile
+// reports finding nothing.
+//
+// A tag counts only when the characters on either side of it are not
+// alphanumeric, which is exactly how release names are built -- dots,
+// underscores, hyphens, spaces and brackets. The tag's OWN punctuation is
+// untouched by this, so "WEB-DL" and "DDP5.1" still match.
+func tokenIndex(upperName, upperTok string) int {
+	from := 0
+	for {
+		i := strings.Index(upperName[from:], upperTok)
+		if i < 0 {
+			return -1
+		}
+		i += from
+		end := i + len(upperTok)
+		if !alnumAt(upperName, i-1) && !alnumAt(upperName, end) {
+			return i
+		}
+		from = i + 1
+	}
+}
+
+func alnumAt(s string, i int) bool {
+	if i < 0 || i >= len(s) {
+		return false
+	}
+	c := s[i]
+	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
 func findToken(name string, tokens []string) string {
 	upper := strings.ToUpper(name)
 	for _, t := range tokens {
-		if strings.Contains(upper, strings.ToUpper(t)) {
+		if tokenIndex(upper, strings.ToUpper(t)) >= 0 {
 			return t
 		}
 	}
@@ -117,10 +157,12 @@ func parseRelease(name string) parsed {
 	if cut < len(clean) {
 		title = clean[:cut]
 	}
-	// Trim any quality/source/codec tokens that leaked into the title.
+	// Trim any quality/source/codec tokens that leaked into the title. Whole
+	// tokens only -- see tokenIndex. Cutting on a substring turned "The Witcher
+	// 3: Wild Hunt" into "The Wi".
 	for _, tokens := range [][]string{qualityTokens, sourceTokens, codecTokens, audioTokens} {
 		for _, t := range tokens {
-			if i := strings.Index(strings.ToUpper(title), strings.ToUpper(t)); i > 0 {
+			if i := tokenIndex(strings.ToUpper(title), strings.ToUpper(t)); i > 0 {
 				title = title[:i]
 			}
 		}

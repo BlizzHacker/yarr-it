@@ -457,11 +457,29 @@ function openCard(card) {
 // ---------------------------------------------------------------- discover --
 
 /**
- * Browsable landing rows from TMDB.
+ * Browsable landing rows.
  *
  * These are catalogue entries, not torrents — nothing here is indexed or
- * hosted. Clicking one runs an ordinary search for its title, which is where
- * any actual sources come from.
+ * hosted.
+ *
+ * They used to be pure TMDB, and clicking one ran an ordinary search for its
+ * title, "which is where any actual sources come from". That sentence was the
+ * bug. A tile arrived holding a real identity and threw it away to go looking
+ * for its own display name, so the tile promised something the search had not
+ * yet been asked about — and on 2026-08-08, 171 of 172 catalogue tiles on the
+ * live page reached zero results while looking exactly like the ones that
+ * worked.
+ *
+ * A tile now says what is actually known about it. Where a source was found and
+ * verified server-side (search/discover_resolve.go) the tile carries that
+ * address and the click opens it. Where nothing has been established — because
+ * the only backend that could answer is unreachable, or because asking it 172
+ * times to build one page would take it down — the tile offers to go and look
+ * and is labelled "Find" rather than "Watch".
+ *
+ * What it does NOT do is hide the second kind. Deleting a tile because a
+ * backend was down is how five shelves vanished for an afternoon, which is the
+ * same lie as the original defect pointing the other way.
  */
 /**
  * Put the landing page back after the last category is deselected.
@@ -527,9 +545,17 @@ async function loadHome() {
   const homeSignal = homeAbort.signal;
   const host = $('#discover');
   let rows = [];
+  let indexer = null;
   try {
     const res = await apiFetch('/api/discover', { signal: homeSignal });
-    if (res.ok) rows = (await res.json()).rows || [];
+    if (res.ok) {
+      const body = await res.json();
+      rows = body.rows || [];
+      // Which backends answered when the page was built. A shelf of "Find"
+      // tiles is honest, and unexplained it still reads as the site having
+      // got worse — see backendNotice.
+      indexer = body.indexer || null;
+    }
   } catch {
     // No curated rows is survivable: every domain simply falls back to a
     // browse, which is slower but is still a landing page.
@@ -548,6 +574,7 @@ async function loadHome() {
   try {
     await renderHome(host, {
       discoverRows: rows,
+      indexer,
       browse: (domain) => browseDomain(domain, homeSignal),
       resume,
       handlers: {

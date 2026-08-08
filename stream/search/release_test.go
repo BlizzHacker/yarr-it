@@ -100,3 +100,50 @@ func TestQualityRankOrdering(t *testing.T) {
 		t.Error("unknown quality should rank 0")
 	}
 }
+
+// Release tags are short, and several of them are common letter pairs. Matched
+// as substrings they fire inside ordinary words -- "TC" inside "Witcher", "TS"
+// inside "Presents", "CAM" inside "Camelot" -- and because the title is cut at
+// the first tag found, the cut lands in the middle of the name.
+//
+// Measured against a stub answering like Prowlarr: a search for "The Witcher 3:
+// Wild Hunt" produced a card titled "The Wi". The truncated title is what the
+// tile's match score is computed against, so the correct release scored zero
+// and the tile reported finding nothing at all.
+func TestATagInsideAWordIsNotATag(t *testing.T) {
+	cases := []struct{ name, wantTitle string }{
+		{"The.Witcher.3.Wild.Hunt.2015.2160p.BluRay.x265-STUB", "The Witcher 3 Wild Hunt"},
+		{"Star.Wars.Visions.Presents.The.Ninth.Jedi.1080p.WEB-DL.x264-GRP",
+			"Star Wars Visions Presents The Ninth Jedi"},
+		{"Camelot.2011.S01E01.720p.HDTV.x264", "Camelot"},
+		{"Antscape.2020.1080p.WEBRip", "Antscape"},
+	}
+	for _, c := range cases {
+		if got := parseRelease(c.name).Title; got != c.wantTitle {
+			t.Errorf("parseRelease(%q).Title = %q, want %q", c.name, got, c.wantTitle)
+		}
+	}
+}
+
+// The tags themselves must still be found where they really appear, including
+// the ones carrying their own punctuation.
+func TestRealTagsAreStillRecognised(t *testing.T) {
+	p := parseRelease("The.Matrix.1999.2160p.UHD.BluRay.x265.10bit.HDR.DTS-HD.MA.5.1-SWTYBLZ")
+	if p.Title != "The Matrix" || p.Year != 1999 {
+		t.Fatalf("title/year = %q/%d", p.Title, p.Year)
+	}
+	if p.Quality != "2160p" || p.Codec != "x265" || p.Audio != "DTS-HD" {
+		t.Errorf("quality=%q codec=%q audio=%q", p.Quality, p.Codec, p.Audio)
+	}
+	if p.Source != "BluRay" && p.Source != "UHD" {
+		t.Errorf("source = %q", p.Source)
+	}
+	// A genuine CAM, which is the tag this boundary rule must not weaken: it is
+	// how a rip nobody wants is kept off the top of a search.
+	if got := parseRelease("Some.Film.2026.CAM.x264").Source; got != "CAM" {
+		t.Errorf("a real CAM tag was missed: %q", got)
+	}
+	if got := parseRelease("Show.S01E02.WEB-DL.h264").Source; got != "WEB-DL" {
+		t.Errorf("a hyphenated tag was missed: %q", got)
+	}
+}

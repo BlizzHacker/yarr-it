@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -59,5 +60,88 @@ func TestPlayTargetPicksTheTouchPlayerOnlyWhenACoreExists(t *testing.T) {
 	book := iaSearchDoc{Identifier: "alice"}
 	if got := playTargetFor(book, "text"); got != "https://archive.org/details/alice" {
 		t.Errorf("book = %q", got)
+	}
+}
+
+// A shelf is not a search.
+//
+// A search returns what the Archive has because somebody asked for it. A shelf
+// is an offer this page makes unprompted, on a landing page with no sign-in and
+// no age gate. searchArchive has always drawn that line and these rows never
+// did, which did not matter while they held games and Gutenberg -- and stopped
+// mattering the moment they held feature films, whose most-downloaded twenty-
+// four on live archive.org include "Diary of a Nudist" and "The Naked Witch".
+func TestAShelfDoesNotOfferAdultItemsUnasked(t *testing.T) {
+	docs := []iaSearchDoc{
+		{Identifier: "his_girl_friday", Title: "His Girl Friday", Downloads: 90},
+		{Identifier: "nudist", Title: "Diary of a Nudist", Downloads: 100},
+		{Identifier: "molester", Title: "The Child Molester (1964)", Downloads: 95},
+		{Identifier: "clean", Title: "McLintock!", Downloads: 80},
+		{Identifier: "eb", Title: "Some Scan", Collection: []string{"eroticabooks"}, Downloads: 70},
+	}
+	kept := []string{}
+	for _, d := range docs {
+		if isAdultItem(d.Title.String(), d.Identifier, d.Collection) {
+			continue
+		}
+		kept = append(kept, d.Identifier)
+	}
+	if len(kept) != 2 || kept[0] != "his_girl_friday" || kept[1] != "clean" {
+		t.Fatalf("shelf kept %v", kept)
+	}
+}
+
+// Every Solr field is multi-valued in the schema. Typed as a plain string, one
+// item catalogued with two titles failed the decode for the whole shelf.
+func TestAShelfSurvivesAMultiValuedField(t *testing.T) {
+	var body struct {
+		Response struct {
+			Docs []iaSearchDoc `json:"docs"`
+		} `json:"response"`
+	}
+	raw := `{"response":{"docs":[
+	  {"identifier":"two","title":["A Film","A Film (restored)"],
+	   "emulator":["nes","nes"],"collection":"feature_films"},
+	  {"identifier":"one","title":"B Film","collection":["feature_films"]}
+	]}}`
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("one list-valued field failed the shelf: %v", err)
+	}
+	if len(body.Response.Docs) != 2 {
+		t.Fatalf("got %d docs", len(body.Response.Docs))
+	}
+	if got := body.Response.Docs[0].Title.String(); got != "A Film" {
+		t.Errorf("title = %q", got)
+	}
+	if got := body.Response.Docs[0].Emulator.String(); got != "nes" {
+		t.Errorf("emulator = %q", got)
+	}
+	if len(body.Response.Docs[0].Collection) != 1 {
+		t.Errorf("bare-string collection = %v", body.Response.Docs[0].Collection)
+	}
+}
+
+// The film and television rows are the replacement for five TMDB rows whose
+// every tile reached nothing. They must be scoped to what is free to watch AND
+// to what has something to play, or they are the same mistake with better
+// provenance.
+func TestTheFilmRowsAreScopedToWhatCanActuallyBeWatched(t *testing.T) {
+	found := 0
+	for _, r := range archiveRows {
+		if r.mediaType != "video" {
+			continue
+		}
+		found++
+		if !strings.Contains(r.query, "collection:(") {
+			t.Errorf("row %q draws from the whole of mediatype:(movies)", r.key)
+		}
+		// An item with no browser-playable derivative is a details page, not a
+		// film, and a tile pointing at one is a dead button with a poster.
+		if !strings.Contains(r.query, "format:(MPEG4)") {
+			t.Errorf("row %q does not require something playable: %s", r.key, r.query)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no film row at all; the video domain has nothing behind it")
 	}
 }

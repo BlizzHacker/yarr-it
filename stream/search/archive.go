@@ -191,6 +191,26 @@ func scopeFor(kind string) (string, bool) {
 // Collections archive.org uses for erotica. Their texts carry no Newznab
 // category, so without this an adult scan is indistinguishable from any other
 // book and reaches a Comics browse untagged.
+// isAdultItem is the one answer to "is this adult", shared by the search path
+// and the landing shelves.
+//
+// It was only ever applied on the search path, which was survivable while the
+// shelves were games and Gutenberg. It stopped being survivable when the
+// shelves gained feature films: their `feature_films` collection is a general
+// public-domain library, and its most-downloaded twenty-four included three
+// titles nobody wants on an unauthenticated front page.
+func isAdultItem(title, identifier string, collections []string) bool {
+	if looksAdult(title) || looksAdult(identifier) {
+		return true
+	}
+	for _, col := range collections {
+		if looksAdult(col) || adultArchiveCollections[strings.ToLower(strings.TrimSpace(col))] {
+			return true
+		}
+	}
+	return false
+}
+
 var adultArchiveCollections = map[string]bool{
 	"eroticabooks":                true,
 	"adultmagazines":              true,
@@ -200,13 +220,67 @@ var adultArchiveCollections = map[string]bool{
 	"pulpmagazinearchive_erotica": true,
 }
 
+// flexString is a Solr field that is USUALLY a string and occasionally a list.
+//
+// Every field archive.org exposes is multi-valued in the schema, and an item
+// that was given two titles comes back as `"title": ["...", "..."]`. Declaring
+// it `string` meant encoding/json failed the whole page -- not that one
+// document, the entire response -- so a single oddly-catalogued item silently
+// emptied a search that had sixty results in it.
+//
+// Found while resolving the live landing page: four of the twelve batched
+// lookups failed this way, and the games shelf lost A Link to the Past and
+// Super Mario World to a JSON error that nothing surfaced. `year` was already
+// handled this way; the rest were not.
+type flexString string
+
+func (f *flexString) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*f = flexString(s)
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		if len(list) > 0 {
+			// The first value, which is the one their own item pages display.
+			*f = flexString(list[0])
+		}
+		return nil
+	}
+	// A number, a null, an object: not something to fail a page over.
+	*f = ""
+	return nil
+}
+
+func (f flexString) String() string { return string(f) }
+
+// flexStrings is the same tolerance for a field that is usually a list. A
+// single-collection item comes back as a bare string.
+type flexStrings []string
+
+func (f *flexStrings) UnmarshalJSON(b []byte) error {
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		*f = list
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		*f = []string{s}
+		return nil
+	}
+	*f = nil
+	return nil
+}
+
 type archiveDoc struct {
 	Identifier string          `json:"identifier"`
-	Title      string          `json:"title"`
-	Emulator   string          `json:"emulator"`
+	Title      flexString      `json:"title"`
+	Emulator   flexString      `json:"emulator"`
 	Downloads  int             `json:"downloads"`
 	Year       json.RawMessage `json:"year"`
-	Collection []string        `json:"collection"`
+	Collection flexStrings     `json:"collection"`
 }
 
 type archiveResponse struct {
@@ -218,10 +292,21 @@ type archiveResponse struct {
 
 // archiveQuery builds a Solr query scoped to the emulation collections.
 //
-// The user's terms go in as a phrase against the title. They are quoted rather
-// than interpolated raw because a stray `:` or `AND` in a search box would
-// otherwise become Solr syntax and either error or silently search for
-// something else.
+// The user's terms USED to go in as a quoted phrase, on the reasoning that
+// quoting is what stops a stray `:` or `AND` from becoming Solr syntax. The
+// escaping goal was right and is still met -- see match.go, where the terms are
+// reduced to bare alphanumeric words and nothing else can survive -- but the
+// phrase was catastrophic for matching, because a quoted phrase demands those
+// words in that order with nothing between them.
+//
+// No archive.org ROM title is ever an exact substring of a catalogue title.
+// Measured against live archive.org:
+//
+//	title:("The Legend of Zelda: A Link to the Past")   0 results
+//	title:(legend AND zelda AND link AND past)          2 results, both the game
+//
+// So the terms are now REQUIRED rather than quoted, and the ordering that used
+// to be implied by the phrase is done properly afterwards by rankByMatch.
 func archiveQuery(q string) string { return archiveQueryFor(q, "") }
 
 func archiveQueryFor(q, kind string) string {
@@ -229,16 +314,15 @@ func archiveQueryFor(q, kind string) string {
 	if !ok {
 		return ""
 	}
-	safe := strings.NewReplacer(`"`, " ", `\`, " ").Replace(q)
-	safe = strings.TrimSpace(safe)
 	// An empty term is a browse rather than a search: everything playable,
 	// which the caller then orders by how often it has been downloaded. Without
 	// this, `title:("")` is a syntax error and picking a category with no query
 	// returns nothing.
-	if safe == "" {
+	clause := archiveTitleClause(q)
+	if clause == "" {
 		return scope
 	}
-	return fmt.Sprintf(`title:(%q) AND %s`, safe, scope)
+	return clause + " AND " + scope
 }
 
 // archiveSystems maps archive.org's emulator id to a name a person reads.
@@ -386,7 +470,7 @@ func sourcesFor(d archiveDoc, title, system string) []source {
 		})
 	}
 
-	if core := ejsCoreFor(d.Emulator); core != "" {
+	if core := ejsCoreFor(d.Emulator.String()); core != "" {
 		out = append(out, source{
 			Title:   title,
 			Indexer: "EmulatorJS",
@@ -446,7 +530,12 @@ func (s *server) searchArchive(ctx context.Context, q, kind string) ([]card, err
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("archive.org search: %w", err)
 	}
-	return archiveCards(out.Response.Docs, kind), nil
+	// Ordering is not a presentation detail here. archive.org sorts by download
+	// count, and download count put an MS-DOS fan hack above the game it hacks:
+	// a search for Super Mario World whose first result was "Super Mario World
+	// DX". rankByMatch puts the thing that was asked for first and drops what
+	// merely shares a word with it -- see match.go.
+	return rankByMatch(archiveCards(out.Response.Docs, kind), q), nil
 }
 
 func archiveCards(docs []archiveDoc, kind string) []card {
@@ -461,8 +550,8 @@ func archiveCards(docs []archiveDoc, kind string) []card {
 		}
 		seen[d.Identifier] = true
 
-		system := friendlySystem(d.Emulator, d.Collection)
-		title := strings.TrimSpace(d.Title)
+		system := friendlySystem(d.Emulator.String(), d.Collection)
+		title := strings.TrimSpace(d.Title.String())
 		if title == "" {
 			title = d.Identifier
 		}
@@ -479,13 +568,7 @@ func archiveCards(docs []archiveDoc, kind string) []card {
 		// adult and erotica surfaced in a plain Comics browse. Their texts
 		// carry no Newznab category to key on, so the title and the
 		// collections it sits in are the signals available.
-		adult := looksAdult(title) || looksAdult(d.Identifier)
-		for _, col := range d.Collection {
-			if looksAdult(col) || adultArchiveCollections[strings.ToLower(col)] {
-				adult = true
-				break
-			}
-		}
+		adult := isAdultItem(title, d.Identifier, d.Collection)
 
 		cards = append(cards, card{
 			Adult:    adult,

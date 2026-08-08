@@ -191,6 +191,37 @@ func health(c card) int {
 	return c.Seeders
 }
 
+// exactFirst puts results that ARE what was asked for above results that merely
+// contain the words, whatever ordering was requested underneath.
+//
+// This is Wade's rule -- "an exact match must outrank a romhack, always" -- and
+// it has to live here rather than in the source that produced the cards,
+// because every source's own ordering is re-done by sortCards afterwards. The
+// archive.org search already ranked its results correctly (see rankByMatch);
+// the default `seeders` sort then re-sorted hosted results by download count
+// and put "Super Mario World DX", an MS-DOS fan hack with 157,392 downloads,
+// back above "Super Mario World" with 28,882.
+//
+// It is a BAND, not a score, and it runs LAST: sortCards has already applied
+// whatever ordering was asked for, and this is a stable partition on top, so
+// the requested order survives untouched inside the exact matches and inside
+// the rest. Sorting is how somebody says what they want ordered by; being the
+// thing they asked for is not one of the options, it is the question.
+func (f filters) exactFirst(cards []card) {
+	// One word is a keyword, not a title. Somebody typing "zelda" wants the
+	// Zelda games; they are not asking for a work called exactly Zelda, and
+	// promoting one puts a 151-download Amstrad fan game above A Link to the
+	// Past. Two words is where a query starts naming something.
+	if len(significantTokens(f.Query)) < 2 {
+		return
+	}
+	sort.SliceStable(cards, func(i, j int) bool {
+		ei := matchScore(f.Query, cards[i].Title) >= matchAccept
+		ej := matchScore(f.Query, cards[j].Title) >= matchAccept
+		return ei && !ej
+	})
+}
+
 func (f filters) sortCards(cards []card) {
 	terms := queryTerms(f.Query)
 	switch f.Sort {
@@ -234,6 +265,8 @@ func (f filters) sortCards(cards []card) {
 			return cards[i].Seeders > cards[j].Seeders
 		})
 	}
+	// Last, and stable, so the ordering chosen above survives inside each band.
+	f.exactFirst(cards)
 }
 
 // relevance decides what a person most likely meant.

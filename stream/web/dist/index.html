@@ -491,6 +491,14 @@
   /* One per domain in schema.json. The heading carries the verb because that
      is the thing the old landing page never said: a comic and a film were the
      same tile, and only one of them was something you watch. */
+  /* One line saying a backend is out. Deliberately quiet: the shelves below it
+     still work, and the rows it explains are full of tiles that will resolve
+     the moment it answers -- so this is a note, not an error page. Stated at
+     all because the alternative was shelves of "Find" tiles with nothing
+     accounting for them, which reads as the site having got worse. */
+  .backend-notice { margin:0 0 20px; padding:9px 13px; font-size:13px;
+                    color:var(--muted); border:1px solid var(--line);
+                    border-left:3px solid var(--accent-dim); border-radius:6px; }
   .domain { margin:0 0 26px; }
   .domain-head { display:flex; align-items:baseline; gap:10px; margin:0 0 14px;
                  padding-bottom:8px; border-bottom:1px solid var(--line); }
@@ -1029,6 +1037,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=60aec22f938e"></script>
+<script type="module" src="/app.js?v=f02b51dfedbf"></script>
 </body>
 </html>

@@ -453,3 +453,67 @@ func TestUnknownKindDoesNotEraseEverything(t *testing.T) {
 		t.Errorf("kind=nonsense gave %q; wanted no filter", got)
 	}
 }
+
+// ------------------------------------------------------- the exact-match band
+//
+// Wade's rule, in his words: "an exact match must outrank a romhack, always."
+// This is the sort that was breaking it. archive.org's own search already
+// ranked correctly; sortCards then re-sorted hosted results by download count,
+// and an MS-DOS fan hack with 157,392 downloads went back above the SNES game
+// with 28,882.
+
+func TestAnExactTitleLeadsWhateverTheSortIs(t *testing.T) {
+	// As live archive.org returns them, most-downloaded first.
+	base := []card{
+		{Key: "dx", Title: "Super Mario World DX", Instant: true, Popular: 157392},
+		{Key: "smw", Title: "Super Mario World", Instant: true, Popular: 28882},
+		{Key: "yoshi", Title: "Super Mario World 2: Yoshi's Island", Instant: true, Popular: 19304},
+		{Key: "advance", Title: "Super Mario Advance 2: Super Mario World", Instant: true, Popular: 16231},
+		{Key: "swf", Title: "Super Mario World", Instant: true, Popular: 1867},
+	}
+	for _, sortBy := range []string{"seeders", "relevance", ""} {
+		cards := append([]card(nil), base...)
+		f := filters{Query: "Super Mario World", Sort: sortBy}
+		f.sortCards(cards)
+		if cards[0].Key != "smw" {
+			t.Errorf("sort=%q put %q first; the game must lead the hack",
+				sortBy, cards[0].Title)
+		}
+		// Both exact copies come before anything that merely contains the
+		// words, and popularity still orders them against each other.
+		if cards[1].Key != "swf" {
+			t.Errorf("sort=%q ranked %q above the other exact copy",
+				sortBy, cards[1].Title)
+		}
+	}
+}
+
+// One word is a keyword, not a title. Promoting a literal match for "zelda"
+// puts a 151-download Amstrad fan game above A Link to the Past.
+func TestAOneWordSearchIsNotTreatedAsATitle(t *testing.T) {
+	cards := []card{
+		{Key: "alttp", Title: "Legend Of Zelda, The A Link To The Past ( USA) SNES ROM",
+			Instant: true, Popular: 11733},
+		{Key: "cpc", Title: "Zelda (1991)(Le Chat Cyril)(fr)", Instant: true, Popular: 151},
+	}
+	f := filters{Query: "zelda", Sort: "seeders"}
+	f.sortCards(cards)
+	if cards[0].Key != "alttp" {
+		t.Fatalf("a one-word search promoted %q over the most-downloaded result",
+			cards[0].Title)
+	}
+}
+
+// A browse has no query, so there is nothing to be exact about, and reordering
+// it would scramble a shelf for no reason.
+func TestABrowseIsNotReordered(t *testing.T) {
+	cards := []card{
+		{Key: "a", Title: "Alpha", Instant: true, Popular: 9},
+		{Key: "b", Title: "Beta", Instant: true, Popular: 8},
+	}
+	f := filters{Query: "", Sort: "seeders"}
+	f.sortCards(cards)
+	if cards[0].Key != "a" || cards[1].Key != "b" {
+		t.Fatalf("a browse was reordered: %+v", cards)
+	}
+}

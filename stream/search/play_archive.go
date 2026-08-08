@@ -523,10 +523,21 @@ func directIfDownloadable(direct string, streamOnly bool) string {
 // answer" -- so one unusual item would be reported as an outage.
 type playItemMetadata struct {
 	Metadata struct {
-		Identifier  string          `json:"identifier"`
-		Title       string          `json:"title"`
-		MediaType   string          `json:"mediatype"`
-		Emulator    string          `json:"emulator"`
+		Identifier string `json:"identifier"`
+		// Title, MediaType and Emulator are flexString for exactly the reason
+		// EmulatorExt is RawMessage, and leaving them as plain strings meant the
+		// trap this comment describes was still live in three of the four
+		// fields it warns about.
+		//
+		// Caught with a Play button: `PacMan1981Atari`, on the "Games you can
+		// play right now" shelf, declares `"emulator": ["a2600","a2600"]`. The
+		// decode failed, the failure was reported as "the Internet Archive did
+		// not answer for this item", and the shelf's own tile did nothing --
+		// the precise failure mode this file exists to prevent, arriving
+		// through this file's own parser.
+		Title       flexString      `json:"title"`
+		MediaType   flexString      `json:"mediatype"`
+		Emulator    flexString      `json:"emulator"`
 		EmulatorExt json.RawMessage `json:"emulator_ext"`
 		Collection  json.RawMessage `json:"collection"`
 		AccessRestr json.RawMessage `json:"access-restricted-item"`
@@ -967,21 +978,21 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 		})
 		return answer
 	}
-	answer.Title = strings.TrimSpace(meta.Metadata.Title)
+	answer.Title = strings.TrimSpace(meta.Metadata.Title.String())
 
 	// The guide is attached HERE, before any refusal, and it is attached on
 	// every path from this point on. A person sent to the Archive's own player
 	// needs the instructions at least as much as one who got ours -- more,
 	// because that player has no on-screen pad to experiment with -- and an item
 	// that plays nowhere is still a game somebody may want to read about.
-	plat, known := archivePlaySystems[strings.ToLower(strings.TrimSpace(meta.Metadata.Emulator))]
+	plat, known := archivePlaySystems[strings.ToLower(strings.TrimSpace(meta.Metadata.Emulator.String()))]
 	answer.Guide = p.guideFor(meta, plat.Core, plat.Label)
 
 	// 1. Does the Archive itself say this is an emulated item? Their `emulator`
 	//    field IS the definition of "runs in a browser here", not a proxy for
 	//    it. Nothing is guessed from a filename: that is what boots a
 	//    ColecoVision game as an NES.
-	emulator := strings.TrimSpace(meta.Metadata.Emulator)
+	emulator := strings.TrimSpace(meta.Metadata.Emulator.String())
 	if emulator == "" {
 		answer.Reasons = append(answer.Reasons, playReason{
 			Code: reasonNotEmulated,

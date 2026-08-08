@@ -4,6 +4,7 @@ import {
   domainInText, domainOfRow, groupRowsByDomain, homePlan,
   tileAction, canPlay, setPlayProbe, archiveIdFrom,
   itemFromCard, itemFromDiscover, domainSentence, renderHome,
+  backendNotice,
 } from './home.js';
 import { allDomains, labelFor, verbFor, canonicalDomain } from './schema.js';
 
@@ -28,10 +29,18 @@ const LIVE_ROWS = [
   { key: 'ia-audiobooks', title: 'Audiobooks', media: ['audio'], want: 'literature' },
 ];
 
+// Every published item carries the target it opens. It used to carry `play: ''`
+// and a click ran a search for the item's own display name, which is the defect
+// these rows exist to describe -- on 2026-08-08, 171 of the 172 tiles built
+// that way reached nothing on the live site.
 const rowOf = (spec) => ({
   key: spec.key,
   title: spec.title,
-  items: spec.media.map((mediaType, i) => ({ title: `item ${i}`, mediaType, play: '' })),
+  items: spec.media.map((mediaType, i) => ({
+    title: `item ${i}`,
+    mediaType,
+    play: `https://archive.org/details/item_${spec.key}_${i}`,
+  })),
 });
 
 // ------------------------------------------------------------- attribution --
@@ -76,6 +85,79 @@ test('a row nothing can be said about is left out rather than guessed at', () =>
   const row = { key: 'zzz', title: 'Staff picks', items: [{ mediaType: 'widget' }] };
   assert.equal(domainOfRow(row), '');
   assert.equal(groupRowsByDomain([row]).size, 0);
+});
+
+// ------------------------------------------------------------- dead tiles --
+//
+// The defect Wade reported: "the buttons need to go direct to a working search
+// result - not a wrong search result... not just some appearance of working."
+// On the live site every tile on the five TMDB rows and the three IGDB rows
+// carried no target at all -- `ids=[]` -- and a click ran a text search for the
+// tile's own display name. 171 of 172 reached zero results.
+//
+// The fix for that is NOT to hide them here. An earlier version of this file
+// filtered out every targetless item, and applied during a Prowlarr outage that
+// removed five whole shelves whose tiles work the moment the backend answers.
+// Which tiles exist is the server's call; this side's job is to not oversell
+// what arrives.
+
+test('a tile with no verified target offers to look, and never promises', () => {
+  setPlayProbe(null);
+  for (const domain of ['video', 'game', 'literature', 'comic']) {
+    const item = itemFromDiscover(
+      { title: 'Spider-Man: Brand New Day', mediaType: '', state: 'unchecked' },
+      domain,
+    );
+    const action = tileAction(item);
+    assert.equal(action.kind, 'search', domain);
+    // "Watch" over a click that runs a fuzzy search was the visible half of the
+    // original defect. Every domain says the same honest word now.
+    assert.equal(action.label, 'Find', domain);
+  }
+});
+
+test('a row of unchecked tiles is rendered, not deleted', () => {
+  const row = {
+    key: 'trending',
+    title: 'Trending this week',
+    items: [
+      { title: 'Spider-Man: Brand New Day', mediaType: 'movie', state: 'unchecked' },
+      { title: 'Wicked: For Good', mediaType: 'movie', state: 'unchecked' },
+    ],
+  };
+  const rows = groupRowsByDomain([row]).get('video');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].items.length, 2, 'an outage must not delete a shelf');
+});
+
+test('a backend that is down is explained, not silently absorbed', async () => {
+  await withFakeDom(() => {
+    assert.equal(backendNotice(null), null);
+    assert.equal(backendNotice({ configured: true, reachable: true }), null);
+    // An instance with no indexer is smaller, not broken.
+    assert.equal(backendNotice({ configured: false, reachable: false }), null);
+
+    const notice = backendNotice({
+      configured: true, reachable: false, detail: 'the torrent indexer is not answering',
+    });
+    assert.ok(notice, 'a wall of Find tiles with no explanation reads as the site getting worse');
+    assert.match(notice.textContent, /not answering/);
+  });
+});
+
+test('a resolved tile opens its item; it never goes looking for its own name', () => {
+  setPlayProbe(null);
+  const item = itemFromDiscover(
+    { title: 'Super Mario World', mediaType: 'game', play: 'https://archive.org/details/smw-usa#ejs', source: 'archive.org' },
+    'game',
+  );
+  assert.equal(item.uri, 'https://archive.org/details/smw-usa#ejs');
+  assert.equal(item.source, 'archive.org');
+  const action = tileAction(item);
+  assert.notEqual(action.kind, 'search');
+  assert.equal(action.kind, 'open');
+  assert.equal(action.label, 'Play');
+  assert.equal(archiveIdFrom(item.uri), 'smw-usa');
 });
 
 test('an empty row is not grouped, so it can never draw an empty shelf', () => {
@@ -159,11 +241,17 @@ test('a picture set is viewed, and goes to the reader without asking for comic p
   assert.equal(a.verb, 'view');
 });
 
-test('a film with no target of its own is a name to search for, and says Watch', () => {
+// This test used to require the label "Watch", and that requirement was the
+// visible half of the defect: a film tile said "Watch" over a click that ran a
+// fuzzy text search, and on the live site 171 of 172 such searches returned
+// nothing. The click is unchanged -- it is still a search, and searching is a
+// perfectly good thing for a catalogue tile to do -- but the word over it now
+// describes what will happen rather than what is hoped for.
+test('a film with no target of its own is a name to search for, and says so', () => {
   const item = itemFromDiscover({ title: 'Dune', year: 2021 }, 'video');
   const a = tileAction(item);
   assert.equal(a.kind, 'search');
-  assert.equal(a.label, 'Watch');
+  assert.equal(a.label, 'Find');
 });
 
 test('an audiobook in the Books section is offered as Listen, not as Read', () => {
@@ -357,5 +445,34 @@ test('the resume shelf is kept above the domain sections', async () => {
     });
     assert.equal(host.children[0], resume);
     assert.deepEqual(domainsOf(host).filter(Boolean), ['literature']);
+  });
+});
+
+// The notice sits above the shelves, so the explanation is read before the row
+// it explains rather than found underneath it.
+test('the backend notice is drawn above the sections it explains', async () => {
+  await withFakeDom(async () => {
+    const host = fakeEl('div');
+    await renderHome(host, {
+      discoverRows: [rowOf(LIVE_ROWS.find((r) => r.key === 'ia-comics'))],
+      indexer: { configured: true, reachable: false, detail: 'indexer down' },
+      browse: () => [],
+      handlers: { onActivate() {} },
+    });
+    assert.equal(host.children[0].className, 'backend-notice');
+    assert.ok(domainsOf(host).includes('comic'), 'the shelves still render');
+  });
+});
+
+test('a healthy backend adds nothing to the page', async () => {
+  await withFakeDom(async () => {
+    const host = fakeEl('div');
+    await renderHome(host, {
+      discoverRows: [rowOf(LIVE_ROWS.find((r) => r.key === 'ia-comics'))],
+      indexer: { configured: true, reachable: true },
+      browse: () => [],
+      handlers: { onActivate() {} },
+    });
+    assert.ok(!host.children.some((c) => c.className === 'backend-notice'));
   });
 });

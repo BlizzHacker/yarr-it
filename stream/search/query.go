@@ -48,6 +48,12 @@ var adultMarkers = []string{
 	"erotic", "nsfw", "playboy", "penthouse", "hustler",
 	"savita bhabhi", "savita bhabi", "kamasutra", "kama sutra",
 	"lustomic", "bdsm", "futanari", "doujin", "ecchi",
+	// Added for the archive.org FILM catalogue. `feature_films` is a general
+	// public-domain library and its most-downloaded titles include the 1960s
+	// nudie-cutie and sexploitation runs, which reached the landing page
+	// unasked. Same rule as above: words that do not appear in the name of
+	// something innocent. "naked" is deliberately absent -- The Naked Gun.
+	"nudist", "nudie", "sexploitation", "molester", "sex madness",
 }
 
 func looksAdult(title string) bool {

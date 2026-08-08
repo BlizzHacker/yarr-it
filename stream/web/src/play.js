@@ -43,6 +43,7 @@
 import { makePlayable, RENDER } from './source.js';
 import { mountEmulator } from './resolvers/game.js';
 import { PlaybackError, FAILURE } from './failures.js';
+import { serverBase } from './server.js';
 
 /** The three routes the server can return. Mirrors play_archive.go. */
 export const ROUTE = {
@@ -99,9 +100,23 @@ export function emptyVerdict(id = '', detail = 'the play service could not be re
  * Never throws. A verdict that throws would have every caller wrap it in a
  * try/catch whose catch block re-invents this function's default, and one of
  * those catch blocks would eventually get it wrong in the optimistic direction.
+ *
+ * `base` defaults to the CONFIGURED server, not to the page's own origin.
+ *
+ * It used to default to `''`, which is same-origin, which is right on
+ * yarrit.com and wrong everywhere else that matters: a self-hoster serving this
+ * client from anywhere other than the box running the API had every Play button
+ * ask its own web server for `/api/play/archive`, get a 404, and be told "the
+ * play service answered 404". Found by driving the real UI against a server set
+ * through `?server=` — the discover rows loaded, because they go through
+ * server.js, and only the verdict did not.
+ *
+ * main.js already resolves the BIOS URL this way for exactly this reason. This
+ * is the same rule applied to the request that decides whether a Play button is
+ * drawn at all.
  */
 export async function fetchVerdict(id, {
-  fetchImpl = fetch, base = '', bios = [], isolated = undefined,
+  fetchImpl = fetch, base = serverBase(), bios = [], isolated = undefined,
 } = {}) {
   const key = String(id ?? '').trim();
   if (!key) return emptyVerdict('', 'no item was named.');

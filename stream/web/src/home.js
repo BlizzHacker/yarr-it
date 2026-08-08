@@ -100,7 +100,22 @@ export function domainOfRow(row) {
   return '';
 }
 
-/** Group discover rows by domain, preserving the server's order within each. */
+/**
+ * Group discover rows by domain, preserving the server's order within each.
+ *
+ * WHICH TILES EXIST IS NOT THIS SIDE'S DECISION, and an earlier version of this
+ * function got that wrong. It filtered out every item with no `play` target, on
+ * the reasoning that a tile with nowhere to go is a dead button — true of some
+ * of them, and catastrophic as a rule, because the browser cannot tell the
+ * difference between "nothing has this" and "the torrent indexer was down when
+ * the page was built". Applied during a Prowlarr outage it removed five whole
+ * shelves whose tiles work perfectly well the moment the backend answers.
+ *
+ * Only the server knows what sources exist and which of them were asked, so
+ * only the server decides what is published. This side's job is to render what
+ * arrives without overstating it — see tileAction, where an item that carries
+ * no verified target offers to go looking rather than promising to play.
+ */
 export function groupRowsByDomain(rows) {
   const out = new Map();
   for (const row of rows || []) {
@@ -205,6 +220,15 @@ export function archiveIdFrom(input) {
 export function itemFromDiscover(it, domain) {
   return {
     domain,
+    // Who will serve it, when the server says. Not used to decide anything —
+    // that decision was made when the tile was resolved — but a row that turns
+    // out to be entirely one source should be able to say so.
+    source: it.source || '',
+    // What is actually KNOWN about getting hold of it: '' means the target
+    // below was verified, 'found' means a source confirmed it holds this,
+    // 'unchecked' means nobody has been asked yet. Carried so a client can
+    // explain a row rather than leaving a wall of "Find" unaccounted for.
+    state: it.state || '',
     // What the server says this individual thing is, which is not always what
     // its section is. The Books section holds a row of audiobooks, and an
     // audiobook is something you listen to -- see tileAction.
@@ -263,11 +287,21 @@ export function tileAction(item) {
     return { kind: 'reader', label: title(verb), id, verb };
   }
   if (!item.uri && !item.card) {
-    // A catalogue entry with no target of its own -- a TMDB film, an IGDB
-    // game -- is a name to go looking for, so the click runs the search that
-    // finds sources for it. In a `play` domain that search is the whole of
-    // what happens, and "Play" would be describing something else.
-    return { kind: 'search', label: verb === 'play' ? 'Find' : title(verb) };
+    // No verified target. The click runs a search, and the LABEL has to say so
+    // — in every domain, not just the ones whose verb happens to be vague.
+    //
+    // This was the visible half of the original defect. A TMDB film tile said
+    // "Watch" over a click that ran a fuzzy text search, and on 2026-08-08, 171
+    // of 172 such searches returned nothing: the tile was indistinguishable
+    // from the ones that worked right up until somebody had paid for the click.
+    // "Find" is not a softer word for the same promise, it is a different and
+    // accurate one — this will go and look.
+    //
+    // These tiles are NOT hidden. The server publishes an item in this state
+    // only when a source that could hold it exists and has not been asked, and
+    // "we have not checked" is not a reason to withhold something; it is a
+    // reason not to oversell it.
+    return { kind: 'search', label: 'Find' };
   }
   if (verb === 'play') {
     return canPlay(item)
@@ -380,6 +414,28 @@ export function attachRailKeys(rail) {
   });
 }
 
+/**
+ * One line saying a backend is down, when one is.
+ *
+ * Without this the page has a quieter dishonesty than the one it started with:
+ * shelves full of "Find" tiles and no explanation, which reads as the site
+ * having become worse rather than as a service being temporarily out. The rows
+ * stay — deleting them was the bug — so something has to account for them.
+ *
+ * Only rendered for a backend that is CONFIGURED and not answering. An instance
+ * with no indexer at all is not broken; it is a smaller instance, and its
+ * shelves are already sized to what it can actually serve.
+ */
+export function backendNotice(indexer) {
+  if (!indexer?.configured || indexer.reachable) return null;
+  const el2 = el('p', 'backend-notice');
+  el2.setAttribute('role', 'status');
+  el2.textContent = indexer.detail
+    || 'The torrent indexer is not answering, so some titles cannot be checked '
+     + 'until it is back.';
+  return el2;
+}
+
 /** A section still waiting on its browse, so the page has its shape at once. */
 function skeletonShelf() {
   const rail = el('div', 'rail');
@@ -403,12 +459,17 @@ function skeletonShelf() {
  * It resolves to an array of cards, or to an empty array for a domain that has
  * nothing -- in which case the whole section is removed.
  */
-export async function renderHome(host, { discoverRows, browse, handlers, resume }) {
+export async function renderHome(host, {
+  discoverRows, browse, handlers, resume, indexer,
+}) {
   host.replaceChildren();
 
   // An element, not a list -- the caller builds the Continue Watching shelf,
   // because only it knows how far into something you are.
   if (resume) host.append(resume);
+
+  const notice = backendNotice(indexer);
+  if (notice) host.append(notice);
 
   const plan = homePlan(discoverRows);
   const pending = [];
