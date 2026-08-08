@@ -5,6 +5,11 @@
 // the content script (which sees the click before navigation) and this worker
 // handles everything that needs extension-level APIs.
 
+// The LAN relay registers its own listeners on import. It lives in its own file
+// because it is the security-critical half of this extension and reviewing it
+// should not mean reading past omnibox suggestions to get there.
+import './relay-bg.js';
+
 const SITE = 'https://yarrit.com';
 
 const streamURL = (magnet) => `${SITE}/?magnet=${encodeURIComponent(magnet)}`;

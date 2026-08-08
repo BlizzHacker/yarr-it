@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Yarr.It — view before you download",
   "short_name": "Yarr.It",
-  "version": "1.0.0",
-  "description": "Yarr.It streams any magnet link in your browser instead of downloading it. Adds a ▶ to torrent sites and hijacks magnet: links.",
+  "version": "1.1.0",
+  "description": "Stream any magnet link in your browser, and reach your own home media services from yarrit.com without running a server.",
   "minimum_chrome_version": "116",
   "icons": {
     "48": "icons/icon-48.png",
@@ -21,6 +21,10 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "omnibox": { "keyword": "st" },
   "permissions": ["contextMenus", "storage", "scripting", "offscreen"],
   "host_permissions": ["https://yarrit.com/*"],
@@ -31,6 +35,20 @@
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://yarrit.com/*", "https://www.yarrit.com/*"],
+      "js": ["relay-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://yarrit.com/*", "https://www.yarrit.com/*"],
+      "js": ["relay.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
       "all_frames": false
     }
   ],

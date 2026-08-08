@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Yarr.It — home network access</title>
+<style>
+  :root { --bg:#0b0d11; --panel:#151a22; --line:#252d3a; --fg:#e9edf3; --muted:#8b96a8;
+          --accent:#5eead4; --warn:#fbbf24; --bad:#f87171; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 20px 64px; background:var(--bg); color:var(--fg);
+         font:14px/1.6 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:680px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  h1 span { color:var(--accent); }
+  h2 { font-size:15px; margin:0 0 4px; }
+  .lede { color:var(--muted); margin:0 0 28px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+            padding:18px 18px 14px; margin-bottom:18px; }
+  section > p.hint { color:var(--muted); font-size:12.5px; margin:0 0 14px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid var(--line); }
+  li:first-child { border-top:0; }
+  .host { flex:1; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; word-break:break-all; }
+  .tag { font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:999px;
+         padding:1px 8px; white-space:nowrap; }
+  button { font:inherit; font-size:12.5px; border-radius:8px; border:1px solid var(--line);
+           background:#1d2530; color:var(--fg); padding:5px 12px; cursor:pointer; white-space:nowrap; }
+  button:hover { border-color:var(--muted); }
+  button.primary { background:var(--accent); color:#04211d; border-color:var(--accent); font-weight:650; }
+  button.danger:hover { border-color:var(--bad); color:var(--bad); }
+  .empty { color:var(--muted); font-size:13px; padding:6px 0; }
+  form.add { display:flex; gap:8px; margin-top:14px; }
+  input { flex:1; padding:8px 10px; background:var(--bg); border:1px solid var(--line);
+          border-radius:8px; color:var(--fg); font:inherit; font-size:13px; outline:none; }
+  input:focus { border-color:var(--accent); }
+  .pending { border-color:var(--warn); }
+  .pending h2 { color:var(--warn); }
+  .note { color:var(--muted); font-size:12px; margin:16px 0 0; }
+  .note code { color:var(--fg); }
+  #status { position:sticky; bottom:0; }
+  .msg { margin-top:14px; font-size:12.5px; padding:8px 12px; border-radius:8px; display:none; }
+  .msg.show { display:block; }
+  .msg.ok { background:#0d2b26; color:var(--accent); }
+  .msg.err { background:#2b1315; color:var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>▶ <span>Yarr.It</span> — home network access</h1>
+  <p class="lede">
+    Yarr.It can reach services on your own network that a website is not allowed
+    to touch. Everything it may reach is listed here, and you can take any of it
+    back at any time.
+  </p>
+
+  <section class="pending" id="pending-section" hidden>
+    <h2>Waiting for your permission</h2>
+    <p class="hint">A page asked for these and has not been allowed yet.</p>
+    <ul id="pending"></ul>
+  </section>
+
+  <section>
+    <h2>Your services</h2>
+    <p class="hint">
+      Addresses Yarr.It is allowed to fetch from. Revoking one stops the relay
+      reaching it immediately. Chrome grants these per site, not per port —
+      allowing <code>192.168.0.251</code> covers every port on that machine,
+      because Chrome has no way to express a port here.
+    </p>
+    <ul id="granted"></ul>
+    <form class="add" id="add-host">
+      <input id="host-input" placeholder="http://192.168.0.26:7878" spellcheck="false" />
+      <button class="primary" type="submit">Allow</button>
+    </form>
+    <div class="msg" id="host-msg"></div>
+  </section>
+
+  <section>
+    <h2>Pages allowed to use the relay</h2>
+    <p class="hint">
+      Only these pages may ask Yarr.It to fetch from your network. Anything else
+      is refused, so a random site cannot use this to look around your home
+      network. Add your own Yarr.It instance here if you run one.
+    </p>
+    <ul id="origins"></ul>
+    <form class="add" id="add-origin">
+      <input id="origin-input" placeholder="https://yarrit.example.com" spellcheck="false" />
+      <button class="primary" type="submit">Trust this page</button>
+    </form>
+    <div class="msg" id="origin-msg"></div>
+  </section>
+
+  <p class="note">
+    Yarr.It never sends cookies or saved logins to these addresses, and never
+    forwards a response anywhere but back to the page that asked. Requests are
+    capped and time out, so a service that has stopped responding cannot back
+    everything else up.
+  </p>
+</main>
+<script type="module" src="options.js"></script>
+</body>
+</html>
