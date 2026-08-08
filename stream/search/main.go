@@ -262,6 +262,10 @@ func main() {
 	mux.HandleFunc("/api/arr/request", auth.requireUser(
 		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleRequest(w, r) }))
 
+	// Whether an archive.org item can actually be played here, and how. Public
+	// and CORS-open: it describes a public item and holds nothing personal.
+	registerPlayRoutes(mux)
+
 	// ROMarr and RomM. Same split as the *arr routes and for the same reason:
 	// the convenience helper registers all five bare.
 	for _, p := range gameProvidersFromEnv() {
