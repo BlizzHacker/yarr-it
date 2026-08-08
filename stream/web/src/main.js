@@ -9,6 +9,7 @@ import { gameResolver } from './resolvers/game.js';
 import { archiveResolver } from './resolvers/archive.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
+import { whoAmI, displayName, signInURL, signOutURL, vpnGuidance, egressStatus } from './account.js';
 import {
   getContinueWatching, trackProgress, watchedFraction,
   getLibrary, addToLibrary, removeFromLibrary, keyFor,
@@ -1361,6 +1362,65 @@ function onServiceListClick(e) {
 
 // -------------------------------------------------------------------- init --
 
+
+/**
+ * Paint the account and network-protection panels.
+ *
+ * Both were fully working on the server and unreachable in the page: /auth/login
+ * has always redirected to Authentik and /auth/me has always answered, but
+ * nothing ever called them, so "how do I sign in?" had no answer.
+ */
+async function refreshAccount() {
+  const g = vpnGuidance(getServer());
+  const lede = $('#vpn-lede');
+  if (lede) lede.textContent = g.body + ' ' + g.appliesTo;
+  const cmd = $('#vpn-cmd');
+  if (cmd) cmd.textContent = g.command;
+
+  // Report the address the outside world sees, when the server offers it. A
+  // claim of protection nobody can check is worth nothing.
+  egressStatus().then((e) => {
+    const el = $('#vpn-status');
+    if (!el || !e) return;
+    el.textContent = 'Your server currently reaches the internet as ' + e + '.';
+    el.hidden = false;
+  });
+
+  const me = await whoAmI();
+  const who = $('#acct-who');
+  const inBtn = $('#acct-signin');
+  const outBtn = $('#acct-signout');
+  const hdrIn = $('#signin-btn');
+  const hdrOut = $('#signout-btn');
+
+  if (me) {
+    if (who) who.textContent = displayName(me);
+    if (inBtn) inBtn.hidden = true;
+    if (outBtn) outBtn.hidden = false;
+    if (hdrIn) hdrIn.hidden = true;
+    if (hdrOut) hdrOut.hidden = false;
+  } else {
+    if (who) who.textContent = 'Not signed in';
+    if (inBtn) inBtn.hidden = false;
+    if (outBtn) outBtn.hidden = true;
+    if (hdrIn) hdrIn.hidden = false;
+    if (hdrOut) hdrOut.hidden = true;
+  }
+}
+
+function wireAccount() {
+  const go = (url) => () => { location.href = url(); };
+  for (const id of ['#acct-signin', '#signin-btn']) {
+    const el = $(id);
+    if (el) el.addEventListener('click', go(signInURL));
+  }
+  for (const id of ['#acct-signout', '#signout-btn']) {
+    const el = $(id);
+    if (el) el.addEventListener('click', go(signOutURL));
+  }
+  refreshAccount();
+}
+
 function init() {
   if (localStorage.getItem('privacy-ack') === '1') $('#privacy').hidden = true;
   $('#privacy-ok').addEventListener('click', () => {
@@ -1424,6 +1484,7 @@ function init() {
   });
 
   $('#settings-open').addEventListener('click', openSettings);
+  wireAccount();
   $('#settings-close').addEventListener('click', closeSettings);
   $('#settings').addEventListener('click', (e) => { if (e.target.id === 'settings') closeSettings(); });
   $('#set-test').addEventListener('click', testServer);
