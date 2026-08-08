@@ -146,10 +146,16 @@ func TestTheDiskEndpointCannotBeWalkedOutOf(t *testing.T) {
 	// to make this server go and do work -- so a cold one there is a 404.
 	dir.Firmware(context.Background(), "coleco")
 	p.diskFirmware = dir
+	// The disk source reads the operator's own firmware tree, so it is
+	// owner-only; the traversal claims below are about what the OWNER cannot
+	// reach, which is the stronger form of the test.
+	c := ownerAuth()
+	p.auth = c
 	mux := http.NewServeMux()
 	p.register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	ownerJar(t, c, srv)
 
 	res, err := srv.Client().Get(srv.URL + "/api/play/bios/disk/coleco/coleco.rom")
 	if err != nil {

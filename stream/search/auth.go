@@ -63,6 +63,10 @@ type authConfig struct {
 	Secret       []byte // signs session cookies
 	Enabled      bool
 	Scope        string // scopeTV, scopeAll or scopeOff
+
+	// Who owns the media on this instance. Never nil after loadAuthConfig, and
+	// an unconfigured policy means nobody -- see owner.go.
+	Owner *ownerPolicy
 }
 
 func loadAuthConfig() *authConfig {
@@ -110,6 +114,11 @@ func loadAuthConfig() *authConfig {
 	// rejects everyone is worse than an open site: it looks like an outage and
 	// invites someone to disable it entirely.
 	c.Enabled = c.ClientID != "" && c.ClientSecret != ""
+
+	// Loaded whether or not sign-in is enabled, so /api/health can report an
+	// owner that is configured against a sign-in that is not -- a combination
+	// that serves nothing and would otherwise look like a missing owner.
+	c.Owner = loadOwnerPolicy()
 	return c
 }
 
@@ -117,6 +126,23 @@ type session struct {
 	User  string `json:"u"`
 	Email string `json:"e"`
 	Exp   int64  `json:"x"`
+
+	// Sub is the OIDC subject: opaque, stable, and the only claim the owner
+	// check trusts on its own. Carried in the cookie rather than looked up per
+	// request because the alternative is a round trip to the identity provider
+	// on every gated call.
+	//
+	// Cookies minted before this field existed decode with it empty, which
+	// fails the owner check rather than passing it. That costs one sign-in and
+	// is the right way round.
+	Sub string `json:"s,omitempty"`
+
+	// EmailOK records that the provider did not tell us the address was
+	// unverified. Only an explicit email_verified:false clears it, because
+	// plenty of deployments never send the claim at all and treating silence as
+	// "unverified" would break owner-by-email everywhere for a threat the
+	// deployment may not have.
+	EmailOK bool `json:"ev,omitempty"`
 }
 
 func (c *authConfig) sign(payload []byte) string {
@@ -247,15 +273,20 @@ func (c *authConfig) handleCallback(w http.ResponseWriter, r *http.Request) {
 	claims := parseJWTClaims(tok.IDToken)
 	user, _ := claims["preferred_username"].(string)
 	email, _ := claims["email"].(string)
+	sub, _ := claims["sub"].(string)
 	if user == "" {
-		user, _ = claims["sub"].(string)
+		user = sub
 	}
 	if user == "" {
 		http.Error(w, "sign-in did not identify a user", http.StatusForbidden)
 		return
 	}
 
-	value, err := c.encode(session{User: user, Email: email, Exp: time.Now().Add(sessionTTL).Unix()})
+	value, err := c.encode(session{
+		User: user, Email: email, Sub: sub,
+		EmailOK: emailIsVerified(claims),
+		Exp:     time.Now().Add(sessionTTL).Unix(),
+	})
 	if err != nil {
 		http.Error(w, "could not start a session", http.StatusInternalServerError)
 		return
@@ -310,9 +341,36 @@ func (c *authConfig) handleMe(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"authenticated": false})
 		return
 	}
+	// owner is the caller's own status and nothing else -- it says whether THIS
+	// request would pass the boundary, which anyone can already discover by
+	// making one. Reporting it here is what lets the app hide owner-only screens
+	// instead of painting them and filling them with 404s.
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"authenticated": true, "user": s.User, "email": s.Email,
+		"owner": c.isOwner(r),
 	})
+}
+
+// emailIsVerified reads the OIDC email_verified claim.
+//
+// Absent means "not stated", which is treated as verified: Authentik and most
+// providers only send the claim when the scope mapping includes it, and an
+// owner setting that silently never matches is the failure this project keeps
+// warning about. An explicit false is honoured.
+func emailIsVerified(claims map[string]any) bool {
+	v, ok := claims["email_verified"]
+	if !ok {
+		return true
+	}
+	b, ok := v.(bool)
+	if !ok {
+		// Some providers send the string "true". Anything unparseable is
+		// treated as unverified, because a claim we cannot read is not a claim
+		// we should act on.
+		s, isStr := v.(string)
+		return isStr && strings.EqualFold(s, "true")
+	}
+	return b
 }
 
 // requireAuth wraps a handler so the data behind it needs a session.

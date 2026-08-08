@@ -939,10 +939,10 @@ func registerAddonRoutesWith(mux *http.ServeMux, auth *authConfig, reg *Registry
 	api.reg = reg
 	api.syncRegistry()
 
-	// Household configuration. Every one of these needs a session: three of
-	// them change what this instance runs, and the fourth returns URLs that
-	// can carry a debrid key.
-	mux.HandleFunc("/api/addons", auth.requireUser(func(w http.ResponseWriter, r *http.Request, u string) {
+	// Household configuration. Every one of these is the owner's: three of them
+	// change what this instance runs, and the fourth returns URLs that can
+	// carry a debrid key.
+	mux.HandleFunc("/api/addons", auth.requireOwnerUser(func(w http.ResponseWriter, r *http.Request, u string) {
 		switch r.Method {
 		case http.MethodGet:
 			api.handleList(w, r, u)
@@ -954,18 +954,25 @@ func registerAddonRoutesWith(mux *http.ServeMux, auth *authConfig, reg *Registry
 			writeJSON(w, 405, map[string]string{"error": "use GET, POST or DELETE"})
 		}
 	}))
-	mux.HandleFunc("/api/addons/remove", auth.requireUser(api.handleRemove))
-	mux.HandleFunc("/api/addons/enabled", auth.requireUser(api.handleEnabled))
-	mux.HandleFunc("/api/addons/order", auth.requireUser(api.handleOrder))
+	mux.HandleFunc("/api/addons/remove", auth.requireOwnerUser(api.handleRemove))
+	mux.HandleFunc("/api/addons/enabled", auth.requireOwnerUser(api.handleEnabled))
+	mux.HandleFunc("/api/addons/order", auth.requireOwnerUser(api.handleOrder))
 
-	// Catalogue data. Open to any origin for the same reason /api/search is: a
-	// television is a different origin, and these describe things that exist in
-	// the world rather than anything this household owns.
-	mux.HandleFunc("/api/addons/search", publicCORS(api.handleSearch))
-	mux.HandleFunc("/api/addons/meta", publicCORS(api.handleMeta))
+	// Search and meta are owner-only too, which reverses the note above them.
+	//
+	// The old reasoning -- "they describe things that exist in the world" --
+	// held for the RESULTS and not for the fact of asking. These routes fan out
+	// across THE INSTALLED SET, so the answer is shaped by which addons this
+	// household chose to install: an empty response for a query a public
+	// catalogue would answer says the owner runs no addon covering it, and a
+	// rich one says which kind he does. That the addon URLs behind it are often
+	// credentials, already argued above, makes proxying them for strangers
+	// worse than a disclosure -- it spends his debrid quota.
+	mux.HandleFunc("/api/addons/search", auth.requireOwner(api.handleSearch))
+	mux.HandleFunc("/api/addons/meta", auth.requireOwner(api.handleMeta))
 
-	// Playback links. Session-gated, and deliberately NOT CORS-open: a
-	// configured debrid addon answers these with links bound to a paid account.
-	mux.HandleFunc("/api/addons/stream", auth.requireUser(api.handleStream))
-	mux.HandleFunc("/api/addons/subtitles", auth.requireUser(api.handleSubtitles))
+	// Playback links. A configured debrid addon answers these with links bound
+	// to a paid account.
+	mux.HandleFunc("/api/addons/stream", auth.requireOwnerUser(api.handleStream))
+	mux.HandleFunc("/api/addons/subtitles", auth.requireOwnerUser(api.handleSubtitles))
 }

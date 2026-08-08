@@ -669,7 +669,7 @@ func TestTheEndpointHonoursTheDeclaredCapabilities(t *testing.T) {
 // settings screen would need its own copy of that judgement.
 func TestTheSystemsEndpointSaysWhatCanBeUnlocked(t *testing.T) {
 	mux := http.NewServeMux()
-	registerPlayRoutes(mux)
+	registerPlayRoutes(mux, ownerAuth())
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/play/systems", nil))
 

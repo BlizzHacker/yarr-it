@@ -106,6 +106,11 @@ func (c *authConfig) sessionFromBearer(r *http.Request) (session, bool) {
 		Sub               string `json:"sub"`
 		PreferredUsername string `json:"preferred_username"`
 		Email             string `json:"email"`
+		// A pointer so "absent" and "false" stay different things. The owner
+		// check treats an absent claim as verified and an explicit false as
+		// not, and collapsing them here would decide that question in the wrong
+		// place.
+		EmailVerified *bool `json:"email_verified"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
 		return session{}, false
@@ -122,8 +127,12 @@ func (c *authConfig) sessionFromBearer(r *http.Request) (session, bool) {
 		return session{}, false
 	}
 
-	s := session{User: user, Email: claims.Email,
-		Exp: time.Now().Add(bearerCacheTTL).Unix()}
+	// The subject rides along so a television can be the owner. Without it a TV
+	// signs in successfully and is then a stranger to its own library, which is
+	// the exact failure this file was written to fix one layer down.
+	s := session{User: user, Email: claims.Email, Sub: claims.Sub,
+		EmailOK: claims.EmailVerified == nil || *claims.EmailVerified,
+		Exp:     time.Now().Add(bearerCacheTTL).Unix()}
 
 	bearerMu.Lock()
 	bearerCache[tok] = bearerEntry{sess: s, expires: time.Now().Add(bearerCacheTTL)}

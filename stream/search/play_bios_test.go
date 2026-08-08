@@ -520,10 +520,17 @@ func biosServer(t *testing.T, lib biosLibrary) *httptest.Server {
 	t.Helper()
 	p := newPlayArchive(nil)
 	p.firmware = lib
+	// The library source is the owner's own RomM, so it is owner-only now and
+	// the client below signs in. The anonymous case is asserted separately, in
+	// owner_test.go and in TestTheFirmwareEndpointIsNotAProxyIntoTheLibrary
+	// just below.
+	c := ownerAuth()
+	p.auth = c
 	mux := http.NewServeMux()
 	p.register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	ownerJar(t, c, srv)
 	return srv
 }
 

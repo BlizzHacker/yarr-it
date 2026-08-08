@@ -49,15 +49,19 @@ func providerServer(t *testing.T, ps ...Provider) *server {
 			t.Fatalf("registering %s: %v", p.ID(), err)
 		}
 	}
-	return &server{providers: r, cache: map[string]cacheEntry{}}
+	// Owned, and probed as the owner. /api/providers is filtered by audience
+	// now, so a test that asked anonymously would assert the empty answer and
+	// prove nothing about the fan-out these tests are actually about. That a
+	// non-owner gets nothing here is asserted in owner_test.go instead.
+	return &server{providers: r, cache: map[string]cacheEntry{}, auth: ownerAuth()}
 }
 
 // A fresh self-host has nothing configured. That is a normal state, not a
 // crash, and the screen that would let someone configure something must paint.
 func TestProvidersWithNothingConfigured(t *testing.T) {
-	s := &server{cache: map[string]cacheEntry{}}
+	s := &server{cache: map[string]cacheEntry{}, auth: ownerAuth()}
 	rec := httptest.NewRecorder()
-	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+	s.handleProviders(rec, ownerRequest(t, s.auth, "GET", "/api/providers", ""))
 
 	if rec.Code != 200 {
 		t.Fatalf("status %d", rec.Code)
@@ -82,7 +86,7 @@ func TestOneBrokenProviderDoesNotHideTheHealthyOnes(t *testing.T) {
 
 	s := providerServer(t, healthy, broken)
 	rec := httptest.NewRecorder()
-	s.handleProviders(rec, httptest.NewRequest("GET", "/api/providers", nil))
+	s.handleProviders(rec, ownerRequest(t, s.auth, "GET", "/api/providers", ""))
 
 	if rec.Code != 200 {
 		t.Fatalf("a panicking adapter took the whole endpoint down: status %d", rec.Code)
@@ -124,7 +128,7 @@ func TestSlowProvidersAreProbedConcurrently(t *testing.T) {
 	}
 	s := providerServer(t, ps...)
 
-	req := httptest.NewRequest("GET", "/api/providers", nil)
+	req := ownerRequest(t, s.auth, "GET", "/api/providers", "")
 	ctx, cancel := context.WithTimeout(req.Context(), 300*time.Millisecond)
 	defer cancel()
 

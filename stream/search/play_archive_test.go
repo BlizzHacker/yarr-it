@@ -880,7 +880,7 @@ func TestNoDeclaredExtensionMeansNoGuess(t *testing.T) {
 // A television is a different origin and must be able to ask.
 func TestPlayRoutesAreReadableCrossOrigin(t *testing.T) {
 	mux := http.NewServeMux()
-	registerPlayRoutes(mux)
+	registerPlayRoutes(mux, ownerAuth())
 
 	for _, path := range []string{"/api/play/systems", "/api/play/archive?id="} {
 		rec := httptest.NewRecorder()
@@ -896,7 +896,7 @@ func TestPlayRoutesAreReadableCrossOrigin(t *testing.T) {
 
 func TestPlayPreflightIsAnswered(t *testing.T) {
 	mux := http.NewServeMux()
-	registerPlayRoutes(mux)
+	registerPlayRoutes(mux, ownerAuth())
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("OPTIONS", "/api/play/archive", nil)
@@ -913,7 +913,7 @@ func TestPlayPreflightIsAnswered(t *testing.T) {
 // looks like "this game cannot be played".
 func TestAMissingIDIsARefusalNotAVerdict(t *testing.T) {
 	mux := http.NewServeMux()
-	registerPlayRoutes(mux)
+	registerPlayRoutes(mux, ownerAuth())
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/play/archive", nil))
@@ -941,7 +941,7 @@ func TestTheIDAcceptsAnArchiveURL(t *testing.T) {
 // claim a core it would not use.
 func TestTheSystemsEndpointAgreesWithTheResolver(t *testing.T) {
 	mux := http.NewServeMux()
-	registerPlayRoutes(mux)
+	registerPlayRoutes(mux, ownerAuth())
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/play/systems", nil))

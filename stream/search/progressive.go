@@ -159,6 +159,13 @@ func newJobID() string {
 // click. Ranking is applied by the filter layer at read time, over the whole
 // set, so nothing is lost by not re-ordering the store.
 func (j *searchJob) add(cards []card) {
+	// A job is shared by everyone searching the same words -- that is its whole
+	// point, and it is also why nothing owner-visible may land in one. The
+	// first person to search "the matrix" starts the job; the second collects
+	// it by id, and the second is not necessarily the first. Dropped here as
+	// well as at putCached because a job is collectable long before its results
+	// reach the cache.
+	cards = dropOwnerCards(cards)
 	if len(cards) == 0 {
 		return
 	}

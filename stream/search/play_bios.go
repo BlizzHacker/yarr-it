@@ -725,6 +725,24 @@ func (p *playArchive) handleBIOS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Two of the three sources are the owner's own storage, and only one is
+	// public.
+	//
+	// biosSourceArchive relays the Internet Archive's copy: it needs no
+	// credential, is already public at the other end, and is what makes a
+	// ColecoVision play for a visitor who owns nothing. That stays open.
+	//
+	// biosSourceDisk and biosSourceLibrary read the owner's firmware tree and
+	// his RomM. Those are his files coming off his storage, and the index they
+	// are served from is also an enumeration of what he holds -- so an
+	// anonymous caller must not reach them, and must not be able to tell that
+	// they exist. Falling through to the same http.NotFound the next line uses
+	// makes "you may not" and "there is none" the same answer.
+	if source != biosSourceArchive && !p.auth.isOwner(r) {
+		http.NotFound(w, r)
+		return
+	}
+
 	var lib biosLibrary
 	for _, src := range p.firmwareSources() {
 		if src.name == source && src.lib != nil {
