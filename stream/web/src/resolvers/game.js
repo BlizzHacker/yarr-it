@@ -59,7 +59,7 @@ export function isRom(input) {
 /**
  * Inject the EmulatorJS loader. Exported so tests can drive it without a DOM.
  */
-export function bootEmulator(el, { gameUrl, core, name, biosUrl = null, doc = document }) {
+export function bootEmulator(el, { gameUrl, core, name, biosUrl = null, coreOptions = null, doc = document }) {
   // EJS_player is a CSS SELECTOR STRING, not an element. Handing it the node
   // itself makes the loader run, fetch emulator.min.js and define its globals,
   // and then silently never construct the emulator -- an empty container with
@@ -82,6 +82,22 @@ export function bootEmulator(el, { gameUrl, core, name, biosUrl = null, doc = do
   // Kickstart ROM fed to an NES core is a black screen with no error.
   globalThis.EJS_biosUrl = biosUrl || '';
 
+  // Core options, which for two machines ARE the firmware.
+  //
+  // libretro-uae compiles the AROS Kickstart replacement into itself and
+  // `puae_kickstart = "aros"` selects it; pcsx_rearmed carries its own BIOS
+  // emulation and `pcsx_rearmed_bios = "HLE"` selects that. Neither is a file,
+  // and without the option the core looks for firmware that is not there and
+  // reports it by refusing to boot -- so this is not a preference, it is the
+  // difference between a game and a black screen.
+  //
+  // Cleared rather than left alone for the same reason EJS_biosUrl is: these
+  // are GLOBALS, and options set for an Amiga would otherwise be handed to the
+  // next game, where an unknown key is written into another core's config.
+  globalThis.EJS_defaultOptions = coreOptions && Object.keys(coreOptions).length
+    ? { ...coreOptions }
+    : undefined;
+
   // SharedArrayBuffer only exists on a cross-origin-isolated page, and asking
   // EmulatorJS for a threaded core without it loads a core that throws on
   // construction. Reading the platform's own answer means this is right whether
@@ -101,7 +117,7 @@ export function bootEmulator(el, { gameUrl, core, name, biosUrl = null, doc = do
  * Boot EmulatorJS into `el` against any URL -- an http(s) ROM or a blob: URL
  * from a completed torrent file. Returns a handle whose destroy() stops it.
  */
-export function mountEmulator(el, url, { core, name, biosUrl = null, doc = document }) {
+export function mountEmulator(el, url, { core, name, biosUrl = null, coreOptions = null, doc = document }) {
   // A WASM emulator needs a REAL user gesture before the browser will let it
   // run: it opens an AudioContext, and autoplay policy holds the whole run loop
   // until the page has been interacted with. Relying on EJS_startOnLoaded alone
@@ -126,7 +142,7 @@ export function mountEmulator(el, url, { core, name, biosUrl = null, doc = docum
     host.style.width = '100%';
     host.style.height = '100%';
     el.replaceChildren(host);
-    state.tag = bootEmulator(host, { gameUrl: url, core, name, biosUrl, doc });
+    state.tag = bootEmulator(host, { gameUrl: url, core, name, biosUrl, coreOptions, doc });
 
     // EmulatorJS lays its canvas out once and does not always catch a viewport
     // change: measured, a game booted at 1280x720 and then resized to 375x667

@@ -201,10 +201,9 @@ export function normalise(raw, id = '') {
       ? raw.guide
       : null,
     // The firmware this machine needs, named. On a refusal it is an invitation;
-    // on a success it says which stored file to hand the emulator.
-    biosNeeded: raw.biosNeeded && typeof raw.biosNeeded === 'object' && raw.biosNeeded.system
-      ? { ...raw.biosNeeded }
-      : null,
+    // on a success it says which file is in use, whose it is, and -- when it is
+    // the household library's -- where to fetch it.
+    biosNeeded: normaliseBios(raw.biosNeeded),
   };
 
   // The invariants the server promises, re-checked. Not distrust of the server
@@ -229,6 +228,82 @@ export function normalise(raw, id = '') {
   if (verdict.route === ROUTE.NONE) verdict.playable = false;
 
   return verdict;
+}
+
+/** Where firmware the household's library holds is relayed from. */
+export const BIOS_PATH = '/api/play/bios/';
+
+/**
+ * Whose firmware a game is running with. Mirrors play_bios.go, in precedence
+ * order: the first that can answer is the one that does.
+ */
+export const BIOS_SOURCE = {
+  /** A file this visitor supplied, held in this browser and never uploaded. */
+  YOURS: 'yours',
+  /** A file the household's library server holds, relayed through our server. */
+  LIBRARY: 'library',
+  /** The file the Internet Archive's own player uses, relayed through ours. */
+  ARCHIVE: 'archive',
+  /** A free replacement already inside the core; a setting, not a file. */
+  BUILTIN: 'builtin',
+};
+
+/**
+ * The firmware block of a verdict, forced into a shape that cannot mislead.
+ *
+ * There are two owners of a BIOS now -- the file this browser holds, and the one
+ * the household's library server holds -- and the second arrives with a URL the
+ * emulator will be pointed at. That makes this the one field in a verdict that
+ * turns into a NETWORK DESTINATION, so it is the one field that is checked
+ * rather than copied.
+ *
+ * `url` is accepted only as a relative path under `/api/play/bios/`, which is
+ * our own relay. Nothing else: not an absolute URL, not a protocol-relative one,
+ * not a path that climbs out. The server has no reason to send anything else,
+ * and if something between here and it ever did, the cost must be a firmware
+ * file that does not load rather than a browser aimed somewhere on somebody
+ * else's say-so.
+ */
+export function normaliseBios(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !raw.system) return null;
+
+  const bios = {
+    system: String(raw.system),
+    label: String(raw.label ?? ''),
+    files: Array.isArray(raw.files) ? raw.files.map((f) => String(f)) : [],
+    detail: String(raw.detail ?? ''),
+    // "yours" or "library", and only ever one of those two. Anything else is
+    // treated as "no firmware is in use", which is the direction that costs a
+    // sentence rather than inventing a source.
+    source: Object.values(BIOS_SOURCE).includes(raw.source) ? raw.source : '',
+    file: String(raw.file ?? ''),
+    sizeBytes: Number.isFinite(raw.sizeBytes) ? raw.sizeBytes : 0,
+    url: '',
+    // Core options, for the one source that is a setting rather than a file.
+    // Copied key by key as strings: these are written straight into
+    // EmulatorJS's own configuration, so a nested object arriving here would be
+    // serialised into the core's config file as "[object Object]".
+    options: raw.options && typeof raw.options === 'object' && !Array.isArray(raw.options)
+      ? Object.fromEntries(Object.entries(raw.options)
+        .filter(([k, v]) => k && (typeof v === 'string' || typeof v === 'number'))
+        .map(([k, v]) => [String(k), String(v)]))
+      : {},
+  };
+
+  const url = String(raw.url ?? '');
+  if (url.startsWith(BIOS_PATH) && !url.includes('..') && !url.startsWith('//')) {
+    bios.url = url;
+  }
+  // A source that says it has a FILE and gives nowhere to fetch it from is not
+  // a source: there would be nothing to hand the emulator, and saying "running
+  // from your library" over a game with no firmware is the exact lie this whole
+  // area exists to prevent. The built-in source is exempt because it genuinely
+  // has no file -- its whole payload is `options`, so an empty one is the same
+  // kind of nothing.
+  const needsFile = bios.source === BIOS_SOURCE.LIBRARY || bios.source === BIOS_SOURCE.ARCHIVE;
+  if (needsFile && !bios.url) bios.source = '';
+  if (bios.source === BIOS_SOURCE.BUILTIN && !Object.keys(bios.options).length) bios.source = '';
+  return bios;
 }
 
 /** Whether a Play control should exist at all. */
@@ -449,6 +524,28 @@ export function toPlayable(verdict, { doc = undefined, route = undefined, biosUr
   const label = name || verdict.title || 'game';
   let handle = null;
 
+  // Firmware, if this machine needs any. Two owners, one precedence rule, and
+  // it is enforced here as well as on the server so that the two cannot
+  // disagree about which file is running:
+  //
+  //   1. `biosUrl` -- a blob: URL the caller made from a file THIS BROWSER
+  //      holds. Those bytes never left the machine and never will.
+  //   2. the library's copy, relayed from our own server. Only ever the
+  //      relative path normaliseBios() already checked; the library itself is
+  //      never named here, and could not be reached from here if it were.
+  //
+  // Absent both, nothing is set at all -- and that must stay true rather than
+  // becoming an empty string, because EJS_biosUrl is a global that outlives the
+  // game that set it.
+  const firmware = biosUrl || verdict.biosNeeded?.url || null;
+
+  // Core options are the whole of the "builtin" firmware source: the free
+  // replacement is already inside the core and only has to be switched on. They
+  // are passed even when there is also a firmware URL, because they are the
+  // server's statement about how this core should be configured for this
+  // machine and there is no case where half of it is right.
+  const coreOptions = verdict.biosNeeded?.options ?? null;
+
   return makePlayable({
     render: RENDER.CANVAS,
     src: url,
@@ -457,9 +554,8 @@ export function toPlayable(verdict, { doc = undefined, route = undefined, biosUr
       handle = mountEmulator(el, url, {
         core: verdict.core,
         name: label,
-        // Only ever the caller's blob: URL for firmware this browser already
-        // held. There is no path here that fetches a BIOS from anywhere.
-        ...(biosUrl ? { biosUrl } : {}),
+        ...(firmware ? { biosUrl: firmware } : {}),
+        ...(coreOptions && Object.keys(coreOptions).length ? { coreOptions } : {}),
         ...(doc ? { doc } : {}),
       });
     },

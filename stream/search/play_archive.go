@@ -423,8 +423,10 @@ type playROM struct {
 	// ROM itself.
 	URL string `json:"url"`
 	// Direct is the same file at archive.org, so a caller that is not a browser
-	// (a native client, a test) can skip the relay and cost us nothing.
-	Direct    string `json:"direct"`
+	// (a native client, a test) can skip the relay and cost us nothing. EMPTY
+	// for an item the Archive marks stream-only: playing it is permitted and
+	// handing somebody the file is what is not.
+	Direct    string `json:"direct,omitempty"`
 	SizeBytes int64  `json:"sizeBytes"`
 }
 
@@ -481,10 +483,27 @@ type playAnswer struct {
 	// whether it plays.
 	Touch bool `json:"touch"`
 
+	// StreamOnly carries the Internet Archive's own "play but do not download"
+	// marker. It is NOT a refusal and never affects the route: it is a fact
+	// about what a client may offer to do with the file, and the one thing it
+	// forbids -- publishing a direct link -- is already done by leaving
+	// ROM.Direct empty.
+	StreamOnly bool `json:"streamOnly,omitempty"`
+
 	// Reasons is never empty unless Route is emulatorjs. Every downgrade and
 	// every refusal is named here, in the order they were found, so a UI can be
 	// honest without inventing an explanation of its own.
 	Reasons []playReason `json:"reasons,omitempty"`
+}
+
+// directIfDownloadable withholds the direct link for an item the Archive marks
+// stream-only. One line, in one place, so "play yes, download no" cannot be
+// half-implemented.
+func directIfDownloadable(direct string, streamOnly bool) string {
+	if streamOnly {
+		return ""
+	}
+	return direct
 }
 
 // --- archive.org metadata ---------------------------------------------------
@@ -681,6 +700,20 @@ type playArchive struct {
 	metadataBase string
 	downloadBase string
 	embedBase    string
+
+	// firmware is the household's own library, if it has one. nil is a
+	// first-class value: every path that touches it degrades to the next source
+	// and finally to the bring-your-own offer, which is what this endpoint did
+	// before there was anything to ask. See play_bios.go.
+	firmware biosLibrary
+	// diskFirmware is the operator's own firmware directory on this machine,
+	// when they have one and this service can see it. nil on the hosted
+	// instance, which cannot see anybody's disk and does not pretend to.
+	diskFirmware biosLibrary
+	// publicFirmware is the Internet Archive's own player's firmware, relayed.
+	// It needs no configuration and no credential, so unlike the line above it
+	// is present by default. See play_bios_archive.go.
+	publicFirmware biosLibrary
 }
 
 func newPlayArchive(client *http.Client) *playArchive {
@@ -692,6 +725,11 @@ func newPlayArchive(client *http.Client) *playArchive {
 		metadataBase: "https://archive.org/metadata/",
 		downloadBase: "https://archive.org/download/",
 		embedBase:    "https://archive.org/embed/",
+		// Both firmware sources are left nil here and wired in
+		// registerPlayRoutes. A constructor that reached the network by default
+		// would make every test that builds one reach the network too, and a
+		// test suite that quietly depends on archive.org being up is a suite
+		// that fails for reasons that have nothing to do with the change.
 	}
 }
 
@@ -708,12 +746,51 @@ func newPlayArchive(client *http.Client) *playArchive {
 // If the operator wants these behind the same reader gate as /api/pages, wrap
 // them the way main.go wraps that one; nothing here depends on being open.
 func registerPlayRoutes(mux *http.ServeMux) {
-	newPlayArchive(nil).register(mux)
+	p := newPlayArchive(nil)
+
+	// The firmware the Internet Archive's own player uses. Unconditional,
+	// because it needs nothing from anybody: no credential, no setting, no
+	// file, and no operator who knew to configure it. A household with no
+	// library server still gets a ColecoVision that plays, which is the whole
+	// point of it being here.
+	p.publicFirmware = newArchiveFirmware(nil)
+
+	// The operator's own firmware tree, if this service can see one. A
+	// self-hoster's whole collection with one environment variable and no
+	// import step; absent on the hosted instance, which has no such disk.
+	if dir := newDirFirmwareFromEnv(); dir != nil {
+		p.diskFirmware = dir
+		// Read once at startup, off the request path, so the first person to
+		// open a ColecoVision item is not the one who discovers the tree.
+		go dir.Firmware(context.Background(), "coleco")
+	}
+
+	// The household's own firmware, from the RomM the operator has already
+	// configured. nil when there is none, and everything below is written so
+	// that nil is simply the way it worked yesterday.
+	if lib := newRommFirmwareFromEnv(); lib != nil {
+		p.firmware = lib
+		// Built once, off the request path, so the first person to open a
+		// ColecoVision item is not the one who discovers the library. A failure
+		// here costs nothing: the next real verdict asks again.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			lib.Warm(ctx)
+		}()
+	}
+	p.register(mux)
 }
 
 func (p *playArchive) register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/play/archive", publicCORS(p.handleArchive))
 	mux.HandleFunc("/api/play/systems", publicCORS(p.handleSystems))
+	// One firmware file per machine per source, relayed. The method is pinned
+	// because this is a read and nothing else; every path value is checked
+	// against an index that was built elsewhere rather than used to address
+	// anything, so this is not a proxy.
+	mux.HandleFunc("GET /api/play/bios/{source}/{system}/{file}", publicCORS(p.handleBIOS))
+	mux.HandleFunc("HEAD /api/play/bios/{source}/{system}/{file}", publicCORS(p.handleBIOS))
 }
 
 // playOptions are the things only the CALLER can know, because they are facts
@@ -948,29 +1025,47 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 	//    that is not cross-origin isolated is a page that could be. Where the
 	//    caller has declared the missing piece, the block does not apply, and
 	//    where it has not, the answer names what would lift it.
-	if b, blocked := blockedSystems[plat.Core]; blocked && !p.unblocked(b, plat.Core, opts) {
+	//    Firmware now has TWO possible owners and exactly one code path. A file
+	//    the visitor added by hand and a file the household's library already
+	//    holds unblock the machine identically; all that differs is where the
+	//    client fetches the bytes, which is the last thing decided and the only
+	//    thing carried out. Asked once, here, so the refusal branch and the
+	//    success branch can never disagree about whether firmware was available.
+	bios := p.firmwareFor(ctx, plat.Core, opts)
+	if b, blocked := blockedSystems[plat.Core]; blocked && !p.unblocked(b, plat.Core, opts, bios != nil) {
 		if need, ok := biosRequirements[plat.Core]; ok && b.Reason == reasonNeedsBIOS {
 			// Named only when firmware really is the last obstacle. See the
 			// field comment: pointing somebody at a 460 MB disc image's BIOS is
 			// a longer route to the same refusal, and the refusal would arrive
 			// after they had gone and found the file.
+			// Stream-only is no longer part of this: such an item plays here
+			// perfectly well, so firmware really is the last obstacle for it.
 			_, size, hasPayload := meta.payload()
-			if hasPayload && !meta.streamOnly() && size <= maxRelayROMBytes {
+			if hasPayload && size <= maxRelayROMBytes {
 				answer.BiosNeeded = &need
 			}
 		}
 		return p.viaArchive(answer, playReason{Code: b.Reason, Detail: b.Detail})
 	}
 
-	// 4. May we fetch the file at all? See streamOnly: this is the Archive's
-	//    restriction, honoured, not a failure being reported.
-	if meta.streamOnly() {
-		return p.viaArchive(answer, playReason{
-			Code: reasonStreamOnly,
-			Detail: "the Internet Archive permits playing this in a browser but " +
-				"not downloading it, so it plays in their player rather than ours.",
-		})
-	}
+	// 4. What the Archive's stream-only marker actually asks for.
+	//
+	//    It used to send the item to their player, and that was wrong. The
+	//    distinction the Archive draws is PLAY YES, DOWNLOAD NO -- and their own
+	//    Emularity player fetches the ROM into the browser's memory to run it,
+	//    which is precisely what ours does. Refusing to run it here did not
+	//    honour anything; it just meant the same act happened on their page
+	//    instead of ours, on a player with no touch controls.
+	//
+	//    So the marker is carried rather than obeyed as a refusal, and it is
+	//    obeyed where it means something: no direct link is published for a
+	//    stream-only item, so there is nothing to save and nothing to hand on.
+	//    That is the line that matters, and it costs nothing -- nobody wants a
+	//    download button on a game they are already playing.
+	//
+	//    (The bytes were never the obstacle: a stream-only Game Gear ROM was
+	//    measured downloading with HTTP 200. This was always a policy signal.)
+	streamOnly := meta.streamOnly()
 
 	// 5. Is there actually a file to play?
 	name, size, ok := meta.payload()
@@ -1000,39 +1095,56 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 	}
 
 	direct := p.downloadBase + url.PathEscape(id) + "/" + archiveFilePath(name)
+	answer.StreamOnly = streamOnly
 	answer.Playable = true
 	answer.Route = routeEmulatorJS
 	answer.Core = plat.Core
 	answer.CoreFile = emulatorJSSystems[plat.Core]
 	answer.Touch = true
 	// Carried on the way OUT as well as on the way in: this route was reached
-	// because the caller declared firmware, and the client has to know which of
-	// its stored files to hand the emulator. Without this it would have to
+	// because firmware was available, and the client has to know WHICH file to
+	// hand the emulator and where to get it. Without this it would have to
 	// re-derive the mapping from `core`, which is a second copy of a table.
-	if need, ok := biosRequirements[plat.Core]; ok && opts.hasBIOS(plat.Core) {
+	if need, ok := biosRequirements[plat.Core]; ok && bios != nil {
+		need.Source, need.File, need.URL, need.SizeBytes, need.Options =
+			bios.Source, bios.Name, bios.URL, bios.Size, bios.Options
+		if bios.Detail != "" {
+			// The generic sentence is an invitation to supply a file. Where
+			// nobody has to, it would be describing something that is not
+			// happening.
+			need.Detail = bios.Detail
+		}
 		answer.BiosNeeded = &need
 	}
 	answer.ROM = &playROM{
-		Name:      path.Base(name),
-		URL:       "/bridge/iptv?u=" + url.QueryEscape(direct),
-		Direct:    direct,
+		Name: path.Base(name),
+		URL:  "/bridge/iptv?u=" + url.QueryEscape(direct),
+		// Direct is the file at archive.org, for a caller that is not a browser
+		// and can skip our relay -- and it is WITHHELD for a stream-only item,
+		// because a direct link is exactly the download the Archive asks us not
+		// to offer. The relay URL still works: that is the play, not the
+		// download, and it is fetched by the emulator rather than by a person.
+		Direct:    directIfDownloadable(direct, streamOnly),
 		SizeBytes: size,
 	}
 	return answer
 }
 
-// unblocked reports whether the caller has supplied the one thing that was
-// missing.
+// unblocked reports whether the one missing thing has been supplied.
+//
+// `haveBIOS` is the answer for BOTH owners of firmware -- the visitor's own file
+// and the household library's -- decided once by firmwareFor and passed in, so
+// there is one condition here rather than two that could drift apart.
 //
 // Only two of the three block reasons can be lifted this way, and the third is
 // the interesting one: `no_core` -- arcade -- stays blocked whatever anybody
-// declares, because a MAME romset must match the build reading it and no file a
-// visitor supplies changes that. Enumerating the liftable reasons rather than
+// declares or holds, because a MAME romset must match the build reading it and
+// no firmware changes that. Enumerating the liftable reasons rather than
 // defaulting to "lift it" is what keeps that true if a fourth reason is added.
-func (p *playArchive) unblocked(b blockedSystem, core string, opts playOptions) bool {
+func (p *playArchive) unblocked(b blockedSystem, core string, opts playOptions, haveBIOS bool) bool {
 	switch b.Reason {
 	case reasonNeedsBIOS:
-		return opts.hasBIOS(core)
+		return haveBIOS
 	case reasonNeedsIsolation:
 		return opts.Isolated
 	default:

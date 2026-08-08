@@ -447,21 +447,28 @@ func TestAStreamOnlyItemIsRoutedToTheArchivesOwnPlayer(t *testing.T) {
 
 	got := p.Resolve(context.Background(), "davidrobinsonssupremecourtprototype")
 
-	if got.Route != routeArchive {
-		t.Fatalf("route=%q, want the archive's player", got.Route)
+	// PLAY YES. This used to route to the Archive's own player, and that was
+	// wrong: their player fetches the ROM into the browser to run it, which is
+	// exactly what ours does. Refusing here honoured nothing -- it moved the
+	// same act onto a page with no touch controls.
+	if got.Route != routeEmulatorJS || !got.Playable {
+		t.Fatalf("route=%q playable=%v; a stream-only item plays here", got.Route, got.Playable)
 	}
-	if !got.Playable {
-		t.Error("their player really does run it; calling it unplayable is its own lie")
+	if !got.StreamOnly {
+		t.Error("the Archive's marker was dropped; a client cannot honour what it is not told")
 	}
-	if !hasReason(got, reasonStreamOnly) {
-		t.Errorf("reasons=%v, want stream_only", reasonCodes(got))
+	if got.ROM == nil || got.ROM.URL == "" {
+		t.Fatal("nothing to play")
 	}
-	if got.ROM != nil {
-		t.Error("a stream-only item must not be handed a download URL; the refusal " +
-			"would double as instructions for working around it")
+	// DOWNLOAD NO. That is the line the marker actually draws, and it is drawn
+	// by publishing no direct link -- there is nothing to save and nothing to
+	// hand on. The relay URL is the play, fetched by the emulator.
+	if got.ROM.Direct != "" {
+		t.Errorf("direct=%q; a stream-only item must not be handed a download URL",
+			got.ROM.Direct)
 	}
-	if got.Touch {
-		t.Error("their player expects a keyboard, so touch must be false")
+	if !got.Touch {
+		t.Error("our player has a virtual gamepad; touch should be true")
 	}
 }
 
@@ -478,9 +485,12 @@ func TestAccessRestrictionAloneIsHonoured(t *testing.T) {
 	})
 
 	got := p.Resolve(context.Background(), "restricted_only")
-	if got.Route != routeArchive || !hasReason(got, reasonStreamOnly) {
-		t.Errorf("route=%q reasons=%v, want the archive route for stream_only",
-			got.Route, reasonCodes(got))
+	if !got.StreamOnly {
+		t.Errorf("the marker was missed when it arrived on its own: reasons=%v",
+			reasonCodes(got))
+	}
+	if got.ROM == nil || got.ROM.Direct != "" {
+		t.Errorf("rom=%+v; play yes, download no", got.ROM)
 	}
 }
 
@@ -513,10 +523,21 @@ func TestColecoVisionIsRefusedForItsMissingBIOS(t *testing.T) {
 	}
 }
 
-// The BIOS check runs BEFORE the download check, so the reason a person is
-// given is the first thing that is wrong rather than the last test to fail. A
-// downloadable ColecoVision item still cannot play.
-func TestTheBIOSGateBeatsTheDownloadGate(t *testing.T) {
+// The Amiga is no longer gated on firmware AT ALL, and this test records why
+// rather than being deleted.
+//
+// puae's core info does mark a Kickstart as required, and this endpoint did
+// refuse every Amiga item on that basis. What changed is not the licence
+// position but a fact about the core: libretro-uae compiles the AROS Kickstart
+// replacement into itself -- `sources/src/aros.rom.c` -- and
+// `puae_kickstart = "aros"` selects it, skipping the file check entirely
+// ("No path validations for AROS", libretro-core.c). The Internet Archive's own
+// Amiga player reaches the same conclusion by a different route: its
+// `sae-a500.json` names `aros-amiga-m68k-rom.bin` as its BIOS.
+//
+// So an Amiga now plays with no file from anybody, and the answer says which
+// firmware it is running on. See builtInFirmware in play_bios.go.
+func TestTheAmigaRunsOnTheCoresOwnFreeKickstart(t *testing.T) {
 	p := fakeArchive(t, map[string]string{
 		"amiga_item": itemJSON(t, map[string]any{
 			"identifier": "amiga_item", "emulator": "sae-a500", "emulator_ext": "adf",
@@ -524,9 +545,21 @@ func TestTheBIOSGateBeatsTheDownloadGate(t *testing.T) {
 		}, []fakeFile{{"disk.adf", "901120"}}),
 	})
 	got := p.Resolve(context.Background(), "amiga_item")
-	if !hasReason(got, reasonNeedsBIOS) {
-		t.Errorf("reasons=%v, want needs_bios: puae's core info marks Kickstart required",
-			reasonCodes(got))
+	if got.Route != routeEmulatorJS {
+		t.Fatalf("route=%q reasons=%v; AROS is built into puae", got.Route, reasonCodes(got))
+	}
+	if got.BiosNeeded == nil || got.BiosNeeded.Source != biosSourceBuiltIn {
+		t.Fatalf("bios=%+v, want the built-in source named", got.BiosNeeded)
+	}
+	// The whole of the firmware is a core option, and the client cannot invent
+	// it: without this the core falls back to looking for a Kickstart file that
+	// is not there, and reports it by refusing to boot.
+	if got.BiosNeeded.Options["puae_kickstart"] != "aros" {
+		t.Errorf("options=%v, want puae_kickstart=aros", got.BiosNeeded.Options)
+	}
+	if got.BiosNeeded.URL != "" || got.BiosNeeded.File != "" {
+		t.Errorf("a built-in replacement named a file: url=%q file=%q",
+			got.BiosNeeded.URL, got.BiosNeeded.File)
 	}
 }
 
@@ -1074,7 +1107,6 @@ func TestAgainstTheRealArchive(t *testing.T) {
 	// The negatives, against the real items they were derived from.
 	t.Run("the refusals are refusals in the real world too", func(t *testing.T) {
 		for _, tc := range []struct{ id, want, note string }{
-			{"davidrobinsonssupremecourtprototype", reasonStreamOnly, "Game Gear, stream-only"},
 			{"psx_kasparov", reasonNeedsBIOS, "PlayStation, 426 MiB .chd"},
 		} {
 			got := p.Resolve(context.Background(), tc.id)

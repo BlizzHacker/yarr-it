@@ -225,11 +225,21 @@ type rommClient struct {
 	user    string
 	pass    string
 	hc      *http.Client
+	// scope is what the token is asked for. A field rather than a constant
+	// because RomM scopes its token per area and refuses one it cannot grant:
+	// the firmware source (play_bios.go) needs firmware.read and this one does
+	// not, and asking for a scope the account lacks would fail the token request
+	// outright. Keeping them separate means a library that cannot read firmware
+	// still serves its games.
+	scope string
 
 	mu      sync.Mutex
 	token   string
 	tokenTo time.Time
 }
+
+// The scopes the library adapter needs, and the default when none is set.
+const rommLibraryScope = "roms.read platforms.read"
 
 func newRommClient(cfg rommConfig) *rommClient {
 	hc := cfg.HTTPClient
@@ -241,6 +251,7 @@ func newRommClient(cfg rommConfig) *rommClient {
 		user:    cfg.Username,
 		pass:    cfg.Password,
 		hc:      hc,
+		scope:   rommLibraryScope,
 	}
 }
 
@@ -257,11 +268,15 @@ func (c *rommClient) accessToken(ctx context.Context) (string, error) {
 	}
 	c.mu.Unlock()
 
+	scope := c.scope
+	if scope == "" {
+		scope = rommLibraryScope
+	}
 	form := url.Values{
 		"grant_type": {"password"},
 		"username":   {c.user},
 		"password":   {c.pass},
-		"scope":      {"roms.read platforms.read"},
+		"scope":      {scope},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/api/token", strings.NewReader(form.Encode()))

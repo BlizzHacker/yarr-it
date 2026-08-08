@@ -318,8 +318,53 @@ type playBIOS struct {
 	Label  string `json:"label"`
 	// Files are the names libretro's core info gives, so somebody looking at a
 	// folder of dumps knows which one to pick.
+	//
+	// The names are not decoration. EmulatorJS writes the firmware into the
+	// emulator's filesystem under the last path segment of the URL it fetched
+	// it from, and the core then looks for it BY NAME -- so a file under any
+	// other name is a core that reports no BIOS over a game that never booted.
 	Files  []string `json:"files"`
 	Detail string   `json:"detail"`
+
+	// MD5 is what the file must actually BE, published by the core itself.
+	//
+	// This is the field that makes an automatic choice safe. Every other signal
+	// -- the name, the size, the folder it was in -- can be right about a file
+	// that is wrong, and a BIOS of the right size and the wrong contents is
+	// loaded by the core, rejected, and reported by drawing its own error screen
+	// at a healthy frame rate over a game that never booted. A hash cannot be
+	// right about the wrong file.
+	//
+	// Not sent to a client: it is how THIS server picks a file out of somebody
+	// else's archive, and a client picks nothing.
+	MD5 []string `json:"-"`
+
+	// The four fields below describe firmware that is ACTUALLY IN USE, and are
+	// absent everywhere else -- on the invitation shown to somebody who has
+	// none, and on the catalogue listing, both of which are about firmware in
+	// the abstract. `omitempty` is doing real work: without any of this set the
+	// JSON is byte-for-byte what it was before there was a library to ask.
+
+	// Source is "yours" for a file this visitor supplied and "library" for one
+	// the household's library server holds. A client shows which, because a
+	// person who supplied a file deserves to know it is the one being used, and
+	// a person who supplied nothing deserves to know why it worked anyway.
+	Source string `json:"source,omitempty"`
+	// File is the library's name for it, and is the name the core will look
+	// for. Absent for "yours": that file never leaves the browser and this
+	// server never learns its name.
+	File string `json:"file,omitempty"`
+	// URL is where the client fetches the library's copy -- our own relay, never
+	// the library, because the library needs a credential the client must never
+	// have and may be on a network the client cannot reach.
+	URL       string `json:"url,omitempty"`
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+
+	// Options are EmulatorJS core options that have to be set for this firmware
+	// to be the one used. Only ever present for the "builtin" source, where
+	// there is no file at all and the whole of the firmware is a setting -- see
+	// builtInFirmware in play_bios.go.
+	Options map[string]string `json:"options,omitempty"`
 }
 
 // biosRequirements is what each blocked-for-firmware machine needs, taken from
@@ -339,7 +384,20 @@ var biosRequirements = map[string]playBIOS{
 	"coleco": {
 		System: "coleco",
 		Label:  "ColecoVision BIOS",
-		Files:  []string{"colecovision.rom"},
+		// Two names, and the second is not a guess: gearcoleco's own
+		// libretro.cpp tries `colecovision.rom` and then falls back to
+		// `coleco.rom` before giving up (load_bios, read 2026-08-08). Both are
+		// therefore names the core will actually find, and a library that files
+		// its ColecoVision BIOS under the shorter one -- which RomM does -- is
+		// filing it under a name that works.
+		Files: []string{"colecovision.rom", "coleco.rom"},
+		// gearcoleco's own core info publishes this, verbatim:
+		//   notes = "(!) colecovision.rom (md5): 2c66f5911e5b42b8ebe113403548eee7"
+		// The same 8,192 bytes appear inside the ColecoVision romset the
+		// Internet Archive's own player loads, and in RomM's `coleco.rom`.
+		// Three independent sources, one hash -- which is what makes picking a
+		// file out of an archive automatically defensible.
+		MD5: []string{"2c66f5911e5b42b8ebe113403548eee7"},
 		Detail: "gearcoleco marks colecovision.rom as required firmware. Supply " +
 			"your own copy and ColecoVision games play here.",
 	},

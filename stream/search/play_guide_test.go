@@ -503,11 +503,13 @@ func TestABIOSDoesNotLiftAnyOtherRefusal(t *testing.T) {
 	})
 	all := playOptions{BIOS: map[string]bool{"coleco": true, "psx": true, "amiga": true}, Isolated: true}
 
+	// stream_only is deliberately NOT in this list any more: it never was a
+	// technical obstacle, and it no longer routes anywhere. See
+	// TestAStreamOnlyItemPlaysHereAndIsNotOfferedAsADownload.
 	for id, want := range map[string]string{
-		"stream_only_coleco": reasonStreamOnly,
-		"huge_coleco":        reasonTooLarge,
-		"no_payload_coleco":  reasonNoPayload,
-		"arcade_item":        reasonNoCore,
+		"huge_coleco":       reasonTooLarge,
+		"no_payload_coleco": reasonNoPayload,
+		"arcade_item":       reasonNoCore,
 	} {
 		got := p.ResolveWith(context.Background(), id, all)
 		if got.Route != routeArchive {
@@ -532,10 +534,15 @@ func TestTheBIOSOfferIsWithheldWhereItWouldNotHelp(t *testing.T) {
 		"stream_only_coleco": colecoItem(t,
 			map[string]any{"collection": []string{"stream_only"}}, nil),
 	})
-	for _, id := range []string{"huge_coleco", "stream_only_coleco"} {
-		if got := p.Resolve(context.Background(), id); got.BiosNeeded != nil {
-			t.Errorf("%s: offered a BIOS that would not make it play", id)
-		}
+	// Only the size case now. A stream-only item DOES play here once it has
+	// firmware, so withholding the offer for one would be hiding the one thing
+	// that would help.
+	if got := p.Resolve(context.Background(), "huge_coleco"); got.BiosNeeded != nil {
+		t.Error("huge_coleco: offered a BIOS that would not make it play")
+	}
+	if got := p.Resolve(context.Background(), "stream_only_coleco"); got.BiosNeeded == nil {
+		t.Error("stream_only_coleco: firmware IS the only thing between this and " +
+			"our player, so the offer belongs here")
 	}
 }
 

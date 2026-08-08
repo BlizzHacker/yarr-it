@@ -13,7 +13,7 @@ import { whoAmI, displayName, signInURL, signOutURL, vpnGuidance, egressStatus }
 import { createAddonAPI, renderAddons, normaliseAddonURL, moveAddon } from './addons.js';
 import { keepShaped } from './embedfit.js';
 import {
-  ROUTE, fetchVerdict, toPlayable, canPlay, playerOptions, canSwitchPlayer,
+  ROUTE, BIOS_SOURCE, fetchVerdict, toPlayable, canPlay, playerOptions, canSwitchPlayer,
   choosePlayer, solePlayerSentence, readPlayerPreference, writePlayerPreference,
 } from './play.js';
 import { renderGuide, hasGuide } from './guide.js';
@@ -25,7 +25,7 @@ import {
 } from './shelf.js';
 import { attachSubtitles } from './subtitles.js';
 import { PlaybackError } from './failures.js';
-import { apiFetch, getServer, setServer, probeServer } from './server.js';
+import { api, apiFetch, getServer, setServer, probeServer } from './server.js';
 import { renderHome, itemFromCard, tileAction, domainSentence } from './home.js';
 import { openReader } from './reader.js';
 import {
@@ -845,15 +845,27 @@ async function startInPlayer(verdict, route, card) {
   detachAll(els);
   setPlayerStatus('');
 
+  // Firmware, when this machine needs any, and THEIR file wins.
+  //
+  // A blob: URL from this browser's own storage is tried first and is used if
+  // it is there: somebody who went and found a specific Kickstart revision has
+  // said something, and quietly running the library's copy instead would be us
+  // overruling them about their own machine. Only when there is nothing here
+  // does the library's copy get used, and that arrives as a path on the verdict
+  // -- resolved against the configured server, because a self-hoster's client
+  // may be served from somewhere other than the server it is pointed at.
   let biosUrl = null;
+  let biosBlob = false;
   if (route === ROUTE.EMULATORJS && verdict.biosNeeded?.system) {
     try {
       biosUrl = await (await getBiosStore()).objectURL(verdict.biosNeeded.system);
+      biosBlob = Boolean(biosUrl);
     } catch {
-      /* the verdict only reached this route because the file was declared, so
-         a failure here is storage that vanished mid-session. The emulator will
-         draw its own missing-BIOS screen, which is the truth. */
+      /* storage that vanished mid-session. Fall through to the library, and if
+         there is none the emulator draws its own missing-BIOS screen, which is
+         the truth. */
     }
+    if (!biosUrl && verdict.biosNeeded.url) biosUrl = api(verdict.biosNeeded.url);
   }
 
   let out;
@@ -865,7 +877,10 @@ async function startInPlayer(verdict, route, card) {
     return;
   }
 
-  state.game = { verdict, route, card, biosUrl };
+  // `biosBlob` is remembered rather than re-derived: only a blob: URL has bytes
+  // held alive behind it, and revoking anything else is a no-op that reads as if
+  // it were doing something.
+  state.game = { verdict, route, card, biosUrl, biosBlob };
   const el = renderPlayable(out, els);
   state.playable = out;
   fitEmbedToStage(out, el);
@@ -876,9 +891,15 @@ async function startInPlayer(verdict, route, card) {
   renderGamePanels(verdict, route);
 }
 
-/** Revoke the blob URL a BIOS was handed over as. */
+/**
+ * Revoke the blob URL a BIOS was handed over as.
+ *
+ * Only a blob: URL: the library's firmware is an ordinary path on our own
+ * server, and handing that to revokeObjectURL does nothing at all -- which is
+ * harmless but reads like cleanup that is happening when it is not.
+ */
 function releaseBios() {
-  if (state.game?.biosUrl) {
+  if (state.game?.biosBlob && state.game?.biosUrl) {
     try {
       URL.revokeObjectURL(state.game.biosUrl);
     } catch {
@@ -1004,16 +1025,53 @@ function renderPlayerSwitch(verdict, route) {
  * so the only place it can be explained is here, before it happens -- otherwise
  * a person who did everything right is looking at two words and no way back.
  */
+/**
+ * One sentence about the firmware a game is running on.
+ *
+ * The wording differs per source on purpose. "Running with a BIOS" is not the
+ * useful part -- WHERE it came from is, because that is the only thing that
+ * tells somebody what to change when the game misbehaves, and because a machine
+ * that silently started working is a machine that will silently stop.
+ */
+function biosSourceSentence(need) {
+  const wrong = 'If the game shows NO BIOS or the emulator\'s own error screen, '
+    + 'that firmware is not what it should be.';
+  switch (need.source) {
+    case BIOS_SOURCE.YOURS:
+      return `Running with the ${need.label} you supplied, held in this browser only. `
+        + `${wrong} Replace it below.`;
+    case BIOS_SOURCE.LIBRARY:
+      return `Running with ${need.file || need.label} from your own library — nothing `
+        + 'to add. It is sent from your own server rather than from the library '
+        + `directly, so it works from anywhere you can reach this page. ${wrong}`;
+    case BIOS_SOURCE.ARCHIVE:
+      return `Running with the ${need.label} the Internet Archive's own player uses, `
+        + 'relayed through your server — nothing to add, and nothing kept here. '
+        + `${wrong}`;
+    case BIOS_SOURCE.BUILTIN:
+      return need.detail
+        || `Running on the emulator's own free ${need.label}. Nothing to supply.`;
+    default:
+      return `Running with the ${need.label}.`;
+  }
+}
+
 function biosInUse(verdict) {
   const need = verdict.biosNeeded;
+  const ownFile = need.source === BIOS_SOURCE.YOURS;
   const box = el('div', 'bios-offer');
-  box.append(el('p', 'bios-why',
-    `Running with the ${need.label} you supplied, held in this browser only. `
-    + 'If the game shows NO BIOS or the emulator\'s own error screen, that file is '
-    + `not the one ${need.files[0]} should be — replace it below.`));
+
+  // WHOSE firmware is running is said out loud, and it is not a detail.
+  //
+  // Somebody who supplied a file deserves to know it is the one being used.
+  // Somebody who supplied nothing and got a game anyway deserves to know why --
+  // because otherwise a machine that refused them last month works today for no
+  // reason they can see, and they will have no idea where to look when it
+  // stops. Four sources, four sentences, and none of them says "it just works".
+  box.append(el('p', 'bios-why', biosSourceSentence(need)));
 
   const label = el('label', 'bios-pick');
-  label.append(el('span', null, 'Replace the file'));
+  label.append(el('span', null, ownFile ? 'Replace the file' : 'Use your own file instead'));
   const input = el('input');
   input.type = 'file';
   input.accept = '.rom,.bin,.A500,.A1200,application/octet-stream';
@@ -1028,7 +1086,12 @@ function biosInUse(verdict) {
     try {
       const store = await getBiosStore();
       await store.put(need.system, { name: file.name, bytes: await file.arrayBuffer() });
-      await startInPlayer(verdict, ROUTE.EMULATORJS, state.game?.card);
+      // Re-asked rather than restarted with the old verdict: the answer now has
+      // a different SOURCE, and this panel is the thing that reports it. Reusing
+      // the old one would run the new file while still saying the library's is
+      // the one in use, which is the exact confusion this panel exists to end.
+      const fresh = await fetchVerdict(verdict.id, { bios: await store.declared() });
+      await startInPlayer(fresh, ROUTE.EMULATORJS, state.game?.card);
     } catch (err) {
       status.textContent = err?.message || 'That file could not be stored.';
       status.className = 'bios-status bad';
@@ -1036,20 +1099,25 @@ function biosInUse(verdict) {
     }
   });
 
-  const forget = el('button', 'bios-forget', 'Forget this BIOS');
-  forget.type = 'button';
-  forget.addEventListener('click', async () => {
-    try {
-      await (await getBiosStore()).remove(need.system);
-    } catch {
-      /* nothing stored: the button has already done its job */
-    }
-    const fresh = await fetchVerdict(verdict.id, { bios: await (await getBiosStore()).declared() });
-    await startInPlayer(fresh, choosePlayer(fresh), state.game?.card);
-  });
-
   box.append(label);
-  box.append(forget);
+
+  // Only when there IS one of theirs to forget. Offering it over the library's
+  // copy would be a button that either does nothing or reads as "stop using my
+  // library", which is not what it does.
+  if (ownFile) {
+    const forget = el('button', 'bios-forget', 'Forget this BIOS');
+    forget.type = 'button';
+    forget.addEventListener('click', async () => {
+      try {
+        await (await getBiosStore()).remove(need.system);
+      } catch {
+        /* nothing stored: the button has already done its job */
+      }
+      const fresh = await fetchVerdict(verdict.id, { bios: await (await getBiosStore()).declared() });
+      await startInPlayer(fresh, choosePlayer(fresh), state.game?.card);
+    });
+    box.append(forget);
+  }
   box.append(status);
   return box;
 }
