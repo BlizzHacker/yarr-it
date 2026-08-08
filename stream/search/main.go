@@ -266,6 +266,13 @@ func main() {
 	// and CORS-open: it describes a public item and holds nothing personal.
 	registerPlayRoutes(mux)
 
+	// Stremio-protocol addons. Deliberately the ...With form rather than the
+	// one-line registerAddonRoutes: that one calls loadAuthConfig() again, which
+	// mints a SECOND signing key when SESSION_SECRET is unset, and it cannot put
+	// addons into the registry -- so they would be invisible to /api/providers
+	// and to every For(domain, role) lookup.
+	registerAddonRoutesWith(mux, auth, s.providers)
+
 	// ROMarr and RomM. Same split as the *arr routes and for the same reason:
 	// the convenience helper registers all five bare.
 	for _, p := range gameProvidersFromEnv() {
