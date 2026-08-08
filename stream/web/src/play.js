@@ -100,13 +100,15 @@ export function emptyVerdict(id = '', detail = 'the play service could not be re
  * try/catch whose catch block re-invents this function's default, and one of
  * those catch blocks would eventually get it wrong in the optimistic direction.
  */
-export async function fetchVerdict(id, { fetchImpl = fetch, base = '' } = {}) {
+export async function fetchVerdict(id, {
+  fetchImpl = fetch, base = '', bios = [], isolated = undefined,
+} = {}) {
   const key = String(id ?? '').trim();
   if (!key) return emptyVerdict('', 'no item was named.');
 
   let response;
   try {
-    response = await fetchImpl(`${base}/api/play/archive?id=${encodeURIComponent(key)}`);
+    response = await fetchImpl(`${base}/api/play/archive?${verdictQuery(key, bios, isolated)}`);
   } catch (error) {
     return emptyVerdict(key, `the play service could not be reached (${error?.message ?? error}).`);
   }
@@ -121,6 +123,35 @@ export async function fetchVerdict(id, { fetchImpl = fetch, base = '' } = {}) {
     return emptyVerdict(key, 'the play service did not answer with JSON.');
   }
   return normalise(verdict, key);
+}
+
+/**
+ * The two things only THIS browser knows, put on the query string.
+ *
+ * Both are capabilities, and both only ever turn a refusal into a game:
+ *
+ *   bios      the machines this browser holds firmware for. Three machines --
+ *             ColecoVision, PlayStation, Amiga -- are refused solely because
+ *             console firmware is not ours to ship, and it IS the owner's to
+ *             supply. The file never leaves this browser; only the machine's
+ *             NAME is sent, which says nothing about the file and everything
+ *             about which button to draw.
+ *   isolated  whether this document is cross-origin isolated, which is what
+ *             makes SharedArrayBuffer -- and therefore the threaded DOS and PSP
+ *             cores -- exist at all. Read from the platform rather than
+ *             configured, because a claim that disagreed with the browser would
+ *             produce a core that loads and then throws.
+ *
+ * Sending nothing is always safe: the server's answer for a caller that declares
+ * nothing is the answer for a visitor who has neither.
+ */
+export function verdictQuery(id, bios = [], isolated = undefined) {
+  const params = new URLSearchParams({ id });
+  const machines = [...new Set((bios ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))];
+  if (machines.length) params.set('bios', machines.sort().join(','));
+  const isolatedNow = isolated === undefined ? globalThis.crossOriginIsolated === true : isolated === true;
+  if (isolatedNow) params.set('isolated', '1');
+  return params.toString();
 }
 
 /**
@@ -164,6 +195,16 @@ export function normalise(raw, id = '') {
     route,
     reasons,
     playable: raw.playable === true,
+    // What the game is and which key is fire. Optional in exactly one direction:
+    // its absence costs an instructions panel, never a game.
+    guide: raw.guide && typeof raw.guide === 'object' && !Array.isArray(raw.guide)
+      ? raw.guide
+      : null,
+    // The firmware this machine needs, named. On a refusal it is an invitation;
+    // on a success it says which stored file to hand the emulator.
+    biosNeeded: raw.biosNeeded && typeof raw.biosNeeded === 'object' && raw.biosNeeded.system
+      ? { ...raw.biosNeeded }
+      : null,
   };
 
   // The invariants the server promises, re-checked. Not distrust of the server
@@ -247,6 +288,123 @@ function firstDetail(verdict) {
   return reason ? reason.detail : '';
 }
 
+// --------------------------------------------------------- the player switch --
+
+/**
+ * Where the viewer's choice of player is remembered.
+ *
+ * A preference, not a route: it says which player they would rather have, and it
+ * is applied only where that player can actually run the item. Storing a route
+ * per item would be a cache to invalidate; storing a taste is one value that
+ * never goes stale.
+ */
+export const PLAYER_PREF_KEY = 'yarrit.player';
+
+export function readPlayerPreference(storage = safeStorage()) {
+  try {
+    const stored = storage?.getItem(PLAYER_PREF_KEY);
+    return stored === ROUTE.ARCHIVE || stored === ROUTE.EMULATORJS ? stored : '';
+  } catch {
+    return '';
+  }
+}
+
+export function writePlayerPreference(route, storage = safeStorage()) {
+  if (route !== ROUTE.ARCHIVE && route !== ROUTE.EMULATORJS) return;
+  try {
+    storage?.setItem(PLAYER_PREF_KEY, route);
+  } catch {
+    /* private mode, or a webview with storage disabled: the choice lasts for
+       this session and that is the whole cost. */
+  }
+}
+
+function safeStorage() {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The two players, and whether each can run THIS item.
+ *
+ * Returns both entries always, in a fixed order, each with `available` and -- if
+ * not -- the one plain sentence saying why. A switch that hides its other half
+ * leaves a viewer wondering whether the option exists; a switch that offers a
+ * dead option is the dead button this whole path exists to remove. Showing both
+ * with one disabled and explained is the only version that is neither.
+ *
+ * The sentence is never invented here. It is the server's `reasons[0].detail`,
+ * which was written against the actual item, or -- where the server said nothing
+ * because there was nothing to say -- a statement of fact about the route.
+ */
+export function playerOptions(verdict) {
+  const reason = firstDetail(verdict);
+  const ours = verdict?.route === ROUTE.EMULATORJS;
+
+  return [
+    {
+      route: ROUTE.EMULATORJS,
+      label: 'Yarr.It player',
+      // The reason to want it, in four words.
+      note: 'On-screen controls, save states',
+      available: ours,
+      why: ours ? '' : (reason || 'This item cannot run in the Yarr.It player.'),
+    },
+    {
+      route: ROUTE.ARCHIVE,
+      label: 'Internet Archive player',
+      note: "Opens the Internet Archive's own player",
+      available: Boolean(verdict?.embed),
+      why: verdict?.embed
+        ? ''
+        : 'The Internet Archive has no player for this item.',
+    },
+  ];
+}
+
+/** Whether there is a real choice to offer, rather than one option and a label. */
+export function canSwitchPlayer(verdict) {
+  return playerOptions(verdict).filter((o) => o.available).length > 1;
+}
+
+/**
+ * Which player to start in.
+ *
+ * EmulatorJS by default, everywhere it can run -- that is the whole point. It is
+ * the only one of the two with on-screen controls, the only one whose canvas we
+ * can size, and the only one whose instructions we can be sure of. The viewer's
+ * remembered preference overrides that, and availability overrides everything:
+ * a preference for a player that cannot run this item is not a reason to show
+ * them nothing.
+ */
+export function choosePlayer(verdict, preference = readPlayerPreference()) {
+  const options = playerOptions(verdict);
+  const available = options.filter((o) => o.available);
+  if (!available.length) return ROUTE.NONE;
+
+  const wanted = available.find((o) => o.route === preference);
+  if (wanted) return wanted.route;
+
+  const ours = available.find((o) => o.route === ROUTE.EMULATORJS);
+  return (ours ?? available[0]).route;
+}
+
+/**
+ * The one plain sentence for a viewer who has no choice.
+ *
+ * '' when both players work, because then the switch speaks for itself.
+ */
+export function solePlayerSentence(verdict) {
+  const options = playerOptions(verdict);
+  const available = options.filter((o) => o.available);
+  if (available.length !== 1) return '';
+  const missing = options.find((o) => !o.available);
+  return `${available[0].label} only — ${missing.why}`;
+}
+
 /**
  * Turn a verdict into a Playable.
  *
@@ -259,7 +417,7 @@ function firstDetail(verdict) {
  * server's own sentence -- so what a person is told after pressing is the same
  * thing they were told before it.
  */
-export function toPlayable(verdict, { doc = undefined } = {}) {
+export function toPlayable(verdict, { doc = undefined, route = undefined, biosUrl = null } = {}) {
   if (!canPlay(verdict)) {
     throw new PlaybackError(
       FAILURE.UNSUPPORTED_CODEC,
@@ -267,7 +425,19 @@ export function toPlayable(verdict, { doc = undefined } = {}) {
     );
   }
 
-  if (verdict.route === ROUTE.ARCHIVE) {
+  // `route` is the viewer working the switch. It may only ever select a player
+  // that playerOptions() says can run this item -- a switch that could ask for
+  // an impossible route would be a way to build the dead button by hand.
+  const wanted = route ?? verdict.route;
+  const option = playerOptions(verdict).find((o) => o.route === wanted);
+  if (!option?.available) {
+    throw new PlaybackError(
+      FAILURE.UNSUPPORTED_CODEC,
+      option?.why || 'that player cannot run this item.',
+    );
+  }
+
+  if (wanted === ROUTE.ARCHIVE) {
     return makePlayable({ render: RENDER.EMBED, src: verdict.embed, mime: 'text/html' });
   }
 
@@ -287,6 +457,9 @@ export function toPlayable(verdict, { doc = undefined } = {}) {
       handle = mountEmulator(el, url, {
         core: verdict.core,
         name: label,
+        // Only ever the caller's blob: URL for firmware this browser already
+        // held. There is no path here that fetches a BIOS from anywhere.
+        ...(biosUrl ? { biosUrl } : {}),
         ...(doc ? { doc } : {}),
       });
     },
@@ -304,6 +477,10 @@ export function toPlayable(verdict, { doc = undefined } = {}) {
  * button needs the verdict BEFORE the click, and this convenience must not
  * become the reason somebody skips that.
  */
-export async function play(id, { fetchImpl = fetch, base = '', doc = undefined } = {}) {
-  return toPlayable(await fetchVerdict(id, { fetchImpl, base }), { doc });
+export async function play(id, {
+  fetchImpl = fetch, base = '', doc = undefined,
+  bios = [], isolated = undefined, route = undefined, biosUrl = null,
+} = {}) {
+  const verdict = await fetchVerdict(id, { fetchImpl, base, bios, isolated });
+  return toPlayable(verdict, { doc, route: route ?? choosePlayer(verdict), biosUrl });
 }

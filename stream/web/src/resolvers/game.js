@@ -59,7 +59,7 @@ export function isRom(input) {
 /**
  * Inject the EmulatorJS loader. Exported so tests can drive it without a DOM.
  */
-export function bootEmulator(el, { gameUrl, core, name, doc = document }) {
+export function bootEmulator(el, { gameUrl, core, name, biosUrl = null, doc = document }) {
   // EJS_player is a CSS SELECTOR STRING, not an element. Handing it the node
   // itself makes the loader run, fetch emulator.min.js and define its globals,
   // and then silently never construct the emulator -- an empty container with
@@ -75,6 +75,19 @@ export function bootEmulator(el, { gameUrl, core, name, doc = document }) {
   globalThis.EJS_pathtodata = dataPath();
   globalThis.EJS_startOnLoaded = true;
 
+  // Firmware the viewer supplied, as a blob: URL from their own storage --
+  // ColecoVision, PlayStation and Amiga will not boot without it. Cleared
+  // rather than left alone when there is none: these are GLOBALS, so a BIOS set
+  // for the previous game would otherwise be handed to the next one, and a
+  // Kickstart ROM fed to an NES core is a black screen with no error.
+  globalThis.EJS_biosUrl = biosUrl || '';
+
+  // SharedArrayBuffer only exists on a cross-origin-isolated page, and asking
+  // EmulatorJS for a threaded core without it loads a core that throws on
+  // construction. Reading the platform's own answer means this is right whether
+  // or not the isolation headers are deployed.
+  globalThis.EJS_threads = globalThis.crossOriginIsolated === true;
+
   const tag = doc.createElement('script');
   tag.src = `${dataPath()}loader.js`;
   tag.onerror = () => {
@@ -88,7 +101,7 @@ export function bootEmulator(el, { gameUrl, core, name, doc = document }) {
  * Boot EmulatorJS into `el` against any URL -- an http(s) ROM or a blob: URL
  * from a completed torrent file. Returns a handle whose destroy() stops it.
  */
-export function mountEmulator(el, url, { core, name, doc = document }) {
+export function mountEmulator(el, url, { core, name, biosUrl = null, doc = document }) {
   // A WASM emulator needs a REAL user gesture before the browser will let it
   // run: it opens an AudioContext, and autoplay policy holds the whole run loop
   // until the page has been interacted with. Relying on EJS_startOnLoaded alone
@@ -103,7 +116,7 @@ export function mountEmulator(el, url, { core, name, doc = document }) {
   button.textContent = `▶  Play ${name}`;
   el.replaceChildren(button);
 
-  const state = { tag: null, booted: false };
+  const state = { tag: null, booted: false, onResize: null };
 
   button.addEventListener('click', () => {
     if (state.booted) return;
@@ -113,7 +126,24 @@ export function mountEmulator(el, url, { core, name, doc = document }) {
     host.style.width = '100%';
     host.style.height = '100%';
     el.replaceChildren(host);
-    state.tag = bootEmulator(host, { gameUrl: url, core, name, doc });
+    state.tag = bootEmulator(host, { gameUrl: url, core, name, biosUrl, doc });
+
+    // EmulatorJS lays its canvas out once and does not always catch a viewport
+    // change: measured, a game booted at 1280x720 and then resized to 375x667
+    // kept drawing at a fraction of the new canvas, centred in black. On a phone
+    // that change is called turning the handset sideways, so it is worth a
+    // nudge. Guarded on every hop -- a missing method must cost the nudge, not
+    // the game.
+    if (typeof globalThis.addEventListener === 'function') {
+      state.onResize = () => {
+        try {
+          globalThis.EJS_emulator?.handleResize?.();
+        } catch {
+          /* the emulator is mid-teardown */
+        }
+      };
+      globalThis.addEventListener('resize', state.onResize);
+    }
   }, { once: true });
 
   return {
@@ -123,9 +153,11 @@ export function mountEmulator(el, url, { core, name, doc = document }) {
       try {
         state.tag?.remove();
         globalThis.EJS_emulator?.pause?.();
+        if (state.onResize) globalThis.removeEventListener?.('resize', state.onResize);
       } catch {
         /* nothing running */
       }
+      state.onResize = null;
       state.tag = null;
     },
   };

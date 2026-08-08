@@ -11,7 +11,14 @@ import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
 import { whoAmI, displayName, signInURL, signOutURL, vpnGuidance, egressStatus } from './account.js';
 import { createAddonAPI, renderAddons, normaliseAddonURL, moveAddon } from './addons.js';
-import { keepFitted } from './embedfit.js';
+import { keepShaped } from './embedfit.js';
+import {
+  ROUTE, fetchVerdict, toPlayable, canPlay, playerOptions, canSwitchPlayer,
+  choosePlayer, solePlayerSentence, readPlayerPreference, writePlayerPreference,
+} from './play.js';
+import { renderGuide, hasGuide } from './guide.js';
+import { createBiosStore } from './bios.js';
+import { identifierFrom, fileFrom } from './resolvers/archive.js';
 import {
   getContinueWatching, trackProgress, watchedFraction,
   getLibrary, addToLibrary, removeFromLibrary, keyFor,
@@ -51,6 +58,11 @@ const state = {
   // The open page reader, if any. Held so a second open closes the first
   // rather than leaving its keydown listener on the document.
   reader: null,
+  // The archive.org item currently in the player, and what the server said
+  // about it. Held so the player switch can restart the SAME item in the other
+  // player without a second metadata request, and so closing the player can
+  // revoke the BIOS blob URL it handed out.
+  game: null,
   filters: {
     seeders: 1, minSize: '', maxSize: '',
     quality: new Set(), codec: new Set(), groups: new Set(),
@@ -669,37 +681,434 @@ function closeDetail() {
 
 
 /**
- * Scale a fixed-size third-party embed up to fill the stage.
+ * Frame a third-party embed.
  *
- * The Internet Archive's emulator draws into a canvas that is 300x150 and stays
- * 300x150 at every viewport size -- measured identical at 640x480, 1482x415 and
- * 1600x900. Left alone that is about 3% of a full-screen player, jammed against
- * the left edge. Their page is cross-origin so no stylesheet of ours reaches
- * inside it, but the iframe ELEMENT is ours, and a transform on it scales
- * everything it contains.
+ * TWO DIFFERENT JOBS, and conflating them is how a film ends up in a 4:3 box.
+ *
+ * A YouTube video or an archive.org FILM is a modern player that fills whatever
+ * viewport it is given, so it gets the whole stage, as it always has.
+ *
+ * The Internet Archive's EMULATOR does not. Measured on live archive.org
+ * 2026-08-08: post-boot its canvas is a fixed size -- 512x480 for the NES,
+ * 704x446 for the 2600, 640x448 for the Genesis, 640x400 for DOS -- identical at
+ * 1920x1080, 1280x720, 800x600 and 640x480, always at x = 0 with the canvas
+ * vertically centred. It is their page and cross-origin, so nothing of ours
+ * reaches inside it and nothing can measure it at run time.
+ *
+ * That rules out both of the things already tried. Clamping the iframe to a
+ * guessed natural size clips the picture the moment the game boots and resizes
+ * its canvas -- which looked right until somebody pressed play. Handing it the
+ * whole stage does not make the picture bigger either, because their canvas
+ * ignores the room: it just surrounds the same small picture with more black.
+ *
+ * What is left is to give it a room of the right SHAPE and a sensible size: a
+ * 4:3 box, the television every one of these machines drew to, centred on a
+ * clean backdrop and capped at a width comfortably above every canvas measured.
+ * The picture inside it is still theirs to place. That is the honest ceiling on
+ * what can be done from out here, and it is why our own player is the default.
  */
 function fitEmbedToStage(playable, el) {
   state.stopFit?.();
   state.stopFit = null;
 
+  const outer = document.querySelector('#embed-wrap');
   const wrap = document.querySelector('#embed-fit');
-  if (!wrap) return;
+  const note = document.querySelector('#embed-note');
+  if (!wrap || !outer) return;
   if (playable.render !== 'embed') {
-    wrap.hidden = true;
+    outer.hidden = true;
     return;
   }
-  wrap.hidden = false;
-  // Give the frame the whole stage rather than clamping it to a guessed natural
-  // size. The Archive's emulator resizes its canvas on boot, and a clamped
-  // viewport clips it the moment the game starts -- which looked right until
-  // somebody actually pressed play.
-  wrap.style.width = '100%';
-  wrap.style.height = '100%';
+  outer.hidden = false;
   wrap.style.overflow = 'hidden';
   el.style.width = '100%';
   el.style.height = '100%';
   el.style.transform = '';
   el.style.border = '0';
+
+  // Only an emulated item gets the emulator treatment.
+  const emulated = state.game?.route === ROUTE.ARCHIVE;
+  if (note) note.hidden = !emulated;
+  if (!emulated) {
+    wrap.style.width = '100%';
+    wrap.style.height = '100%';
+    wrap.style.margin = '';
+    return;
+  }
+
+  // The caption under the frame is part of the wrapper, so its height is not
+  // available to the picture. Left unsubtracted, `max-height:100%` clipped the
+  // box back and the result was a 4:3 frame that measured 1.40:1.
+  const reserveHeight = note ? note.offsetHeight + 10 : 0;
+  state.stopFit = keepShaped(wrap, document.querySelector('#play-body .stage'), { reserveHeight });
+}
+
+// ------------------------------------------------------------ archive games --
+
+/**
+ * Firmware the viewer supplied, held in their own browser.
+ *
+ * Created lazily and once: opening IndexedDB costs nothing until something is in
+ * it, and the list of machines it will accept comes from the server rather than
+ * from a table here -- see bios.js for why that matters.
+ */
+let biosStore = null;
+async function getBiosStore() {
+  if (biosStore) return biosStore;
+  let allowed = [];
+  try {
+    const res = await apiFetch('/api/play/systems');
+    if (res.ok) allowed = ((await res.json()).bios || []).map((b) => b.system);
+  } catch {
+    // No list means no machine may be stored, which is the safe direction: a
+    // BIOS filed under a name the server does not use would never be found.
+  }
+  biosStore = createBiosStore({ allowed });
+  return biosStore;
+}
+
+/**
+ * Whether a source is an archive.org item that the play service should judge.
+ *
+ * A DIRECT FILE link is excluded on purpose. `/download/<id>/movie.mp4` is a
+ * video, and a <video> element gives real seeking and fullscreen that an iframe
+ * does not; sending it through the emulation verdict would cost a metadata
+ * request to be told it is not a game. Everything else -- including the plain
+ * details URL that a film or a comic also arrives as -- goes through, because
+ * `not_emulated` is exactly the answer that hands it back to the registry.
+ */
+function archiveItemFor(uri) {
+  const id = identifierFrom(uri);
+  if (!id) return null;
+  return fileFrom(uri) ? null : id;
+}
+
+/**
+ * Start an archive.org item in whichever player the viewer is owed.
+ *
+ * THIS IS THE CHANGE. Every emulated archive.org item used to be an iframe of
+ * somebody else's page: a 300x150 canvas that does not scale, no on-screen
+ * controls, and no way to say what the keys are. Our own player was reachable
+ * only from a second row in the source list that most people never saw.
+ *
+ * Now the server decides -- one metadata request, the same one the old path
+ * spent anyway -- and our player is the default everywhere it can run. Where it
+ * cannot, the Archive's player is offered on purpose rather than by accident,
+ * with the reason attached and the frame given the whole stage.
+ *
+ * Returns false when the item is not an emulated one at all, which hands it back
+ * to the resolver registry unchanged: an archive.org film is still a film.
+ */
+async function playArchiveItem(id, card, gen) {
+  let declared = [];
+  try {
+    declared = await (await getBiosStore()).declared();
+  } catch {
+    /* no firmware stored, or no storage at all: the conservative answer */
+  }
+
+  const verdict = await fetchVerdict(id, { bios: declared });
+  if (gen !== state.resolveGen) return true;
+
+  // Not a game. Hand it back rather than showing an emulator's refusal for
+  // something that was never going to be one.
+  if (!canPlay(verdict) && verdict.reasons?.[0]?.code === 'not_emulated') return false;
+
+  if (!canPlay(verdict)) {
+    setPlayerStatus(verdict.reasons?.[0]?.detail || 'This cannot be played here.');
+    renderGamePanels(verdict, ROUTE.NONE);
+    return true;
+  }
+
+  await startInPlayer(verdict, choosePlayer(verdict), card);
+  return true;
+}
+
+/**
+ * Boot one verdict in one named player, and draw everything around it.
+ *
+ * Split out from playArchiveItem because the switch calls it too: flipping
+ * players must restart the same item from the same verdict rather than
+ * re-resolving it, or every flip costs a metadata request and the two halves of
+ * the switch could disagree about what they are switching between.
+ */
+async function startInPlayer(verdict, route, card) {
+  try {
+    state.playable?.cleanup();
+  } catch (err) {
+    console.warn('[player] cleanup of outgoing playable failed:', err?.message || err);
+  }
+  state.playable = null;
+  releaseBios();
+
+  const els = playerElements();
+  detachAll(els);
+  setPlayerStatus('');
+
+  let biosUrl = null;
+  if (route === ROUTE.EMULATORJS && verdict.biosNeeded?.system) {
+    try {
+      biosUrl = await (await getBiosStore()).objectURL(verdict.biosNeeded.system);
+    } catch {
+      /* the verdict only reached this route because the file was declared, so
+         a failure here is storage that vanished mid-session. The emulator will
+         draw its own missing-BIOS screen, which is the truth. */
+    }
+  }
+
+  let out;
+  try {
+    out = toPlayable(verdict, { route, biosUrl });
+  } catch (err) {
+    setPlayerStatus(err.message);
+    renderGamePanels(verdict, route);
+    return;
+  }
+
+  state.game = { verdict, route, card, biosUrl };
+  const el = renderPlayable(out, els);
+  state.playable = out;
+  fitEmbedToStage(out, el);
+  // The swarm HUD means nothing over an iframe, an image or an emulator, and
+  // permanent zeros read as a stalled stream.
+  { const st = document.querySelector('.stats');
+    if (st) st.hidden = !(out.render === 'video' || out.render === 'audio'); }
+  renderGamePanels(verdict, route);
+}
+
+/** Revoke the blob URL a BIOS was handed over as. */
+function releaseBios() {
+  if (state.game?.biosUrl) {
+    try {
+      URL.revokeObjectURL(state.game.biosUrl);
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+/**
+ * The switch and the instructions.
+ *
+ * Both are drawn from the same verdict so they can never disagree about which
+ * player is running, and both are cleared for anything that is not an
+ * archive.org game -- a film has no player switch to offer.
+ */
+function renderGamePanels(verdict, route) {
+  renderPlayerSwitch(verdict, route);
+  // Peers, relay peers, speed and buffered are torrent vocabulary. On a game
+  // served by archive.org every one of them is 0 for the whole session, and
+  // four zeroes under a running game is the most reliable-looking part of the
+  // page reporting itself broken.
+  showSwarmStats(false);
+
+  const host = $('#guide');
+  if (!host) return;
+  host.replaceChildren();
+  const panel = hasGuide(verdict?.guide)
+    ? renderGuide(verdict.guide, { route })
+    : null;
+  if (panel) host.append(panel);
+  host.hidden = !panel;
+}
+
+function clearGamePanels() {
+  const bar = $('#player-switch');
+  if (bar) { bar.replaceChildren(); bar.hidden = true; }
+  const host = $('#guide');
+  if (host) { host.replaceChildren(); host.hidden = true; }
+  showSwarmStats(true);
+}
+
+/** The peers/speed/buffered row, which only means anything for a torrent. */
+function showSwarmStats(on) {
+  for (const sel of ['.progress-track', '.stats']) {
+    const node = document.querySelector(sel);
+    if (node) node.hidden = !on;
+  }
+}
+
+/**
+ * Two buttons, both always drawn.
+ *
+ * A switch that hides its other half leaves a viewer wondering whether the
+ * option exists at all; a switch that offers a dead option is the dead button
+ * this whole path exists to remove. Both drawn, one disabled, and the disabled
+ * one carries the server's own sentence explaining itself -- that is the only
+ * version that is neither.
+ */
+function renderPlayerSwitch(verdict, route) {
+  const bar = $('#player-switch');
+  if (!bar) return;
+  bar.replaceChildren();
+
+  if (!verdict || route === ROUTE.NONE) {
+    // Even here the reason is worth showing: this is the case where somebody
+    // pressed Play and got nothing, and silence is what makes that feel broken.
+    const why = verdict?.reasons?.[0]?.detail;
+    if (!why) { bar.hidden = true; return; }
+    bar.hidden = false;
+    bar.append(el('p', 'switch-note', why));
+    return;
+  }
+
+  bar.hidden = false;
+  bar.append(el('span', 'switch-label', 'Player'));
+
+  const group = el('div', 'switch-group');
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', 'Which player to use');
+
+  for (const option of playerOptions(verdict)) {
+    const on = option.route === route;
+    const btn = el('button', on ? 'switch-btn on' : 'switch-btn');
+    btn.type = 'button';
+    btn.setAttribute('role', 'radio');
+    btn.setAttribute('aria-checked', on ? 'true' : 'false');
+    btn.append(el('span', 'switch-name', option.label));
+    btn.append(el('span', 'switch-sub', option.available ? option.note : option.why));
+    if (!option.available) {
+      btn.disabled = true;
+      btn.title = option.why;
+    } else if (!on) {
+      btn.addEventListener('click', () => {
+        // Remembered before the restart, so a viewer who switches and then
+        // closes the tab still gets their choice next time.
+        writePlayerPreference(option.route);
+        startInPlayer(verdict, option.route, state.game?.card);
+      });
+    }
+    group.append(btn);
+  }
+  bar.append(group);
+
+  // When there is no choice, say which player this is and why in one sentence
+  // rather than leaving a greyed-out button to be interpreted.
+  const sole = solePlayerSentence(verdict);
+  if (sole && !canSwitchPlayer(verdict)) bar.append(el('p', 'switch-note', sole));
+
+  // Firmware would turn the greyed-out half into a real option. Offering it
+  // here, next to the thing it unlocks, is the only place a person is actually
+  // wondering about it.
+  if (verdict.biosNeeded && route !== ROUTE.EMULATORJS) bar.append(biosOffer(verdict));
+  if (verdict.biosNeeded && route === ROUTE.EMULATORJS) bar.append(biosInUse(verdict));
+}
+
+/**
+ * "Running with the BIOS you supplied."
+ *
+ * This exists because of a failure that was measured rather than imagined: a
+ * file of the right SIZE but the wrong contents is accepted by us and rejected
+ * by the core, which draws NO BIOS across the screen at a healthy frame rate and
+ * reports itself started. Nothing downstream can tell that from a working game,
+ * so the only place it can be explained is here, before it happens -- otherwise
+ * a person who did everything right is looking at two words and no way back.
+ */
+function biosInUse(verdict) {
+  const need = verdict.biosNeeded;
+  const box = el('div', 'bios-offer');
+  box.append(el('p', 'bios-why',
+    `Running with the ${need.label} you supplied, held in this browser only. `
+    + 'If the game shows NO BIOS or the emulator\'s own error screen, that file is '
+    + `not the one ${need.files[0]} should be — replace it below.`));
+
+  const label = el('label', 'bios-pick');
+  label.append(el('span', null, 'Replace the file'));
+  const input = el('input');
+  input.type = 'file';
+  input.accept = '.rom,.bin,.A500,.A1200,application/octet-stream';
+  label.append(input);
+
+  const status = el('p', 'bios-status');
+  status.hidden = true;
+
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const store = await getBiosStore();
+      await store.put(need.system, { name: file.name, bytes: await file.arrayBuffer() });
+      await startInPlayer(verdict, ROUTE.EMULATORJS, state.game?.card);
+    } catch (err) {
+      status.textContent = err?.message || 'That file could not be stored.';
+      status.className = 'bios-status bad';
+      status.hidden = false;
+    }
+  });
+
+  const forget = el('button', 'bios-forget', 'Forget this BIOS');
+  forget.type = 'button';
+  forget.addEventListener('click', async () => {
+    try {
+      await (await getBiosStore()).remove(need.system);
+    } catch {
+      /* nothing stored: the button has already done its job */
+    }
+    const fresh = await fetchVerdict(verdict.id, { bios: await (await getBiosStore()).declared() });
+    await startInPlayer(fresh, choosePlayer(fresh), state.game?.card);
+  });
+
+  box.append(label);
+  box.append(forget);
+  box.append(status);
+  return box;
+}
+
+/**
+ * "Add your ColecoVision BIOS."
+ *
+ * The file is read in the browser and stored in the browser. It is never
+ * uploaded -- there is no request in this path that leaves the machine -- which
+ * is both the correct place for it and the only place it can legitimately live:
+ * the firmware is not this project's to distribute and IS the console owner's
+ * to use.
+ */
+function biosOffer(verdict) {
+  const need = verdict.biosNeeded;
+  const box = el('div', 'bios-offer');
+  box.append(el('p', 'bios-why', `${need.label} needed. ${need.detail}`));
+  box.append(el('p', 'bios-files', `Look for: ${need.files.join(', ')}`));
+
+  const label = el('label', 'bios-pick');
+  label.append(el('span', null, 'Choose your BIOS file'));
+  const input = el('input');
+  input.type = 'file';
+  input.accept = '.rom,.bin,.A500,.A1200,application/octet-stream';
+  label.append(input);
+
+  const status = el('p', 'bios-status');
+  status.hidden = true;
+  const say = (text, bad = false) => {
+    status.textContent = text;
+    status.className = bad ? 'bios-status bad' : 'bios-status';
+    status.hidden = !text;
+  };
+
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    say('Reading…');
+    try {
+      const store = await getBiosStore();
+      await store.put(need.system, { name: file.name, bytes: await file.arrayBuffer() });
+      say('Stored in this browser. Re-checking…');
+      // Re-ask rather than assume: the item still has to pass every other check,
+      // and a BIOS does not make a 460 MB disc image smaller.
+      const fresh = await fetchVerdict(verdict.id, { bios: await store.declared() });
+      if (fresh.route === ROUTE.EMULATORJS) {
+        writePlayerPreference(ROUTE.EMULATORJS);
+        await startInPlayer(fresh, ROUTE.EMULATORJS, state.game?.card);
+        return;
+      }
+      say(fresh.reasons?.[0]?.detail || 'Stored, but this item still will not play here.', true);
+    } catch (err) {
+      say(err?.message || 'That file could not be stored.', true);
+    }
+  });
+
+  box.append(label);
+  box.append(status);
+  return box;
 }
 
 function playerElements() {
@@ -788,17 +1197,39 @@ async function play(card, src) {
 
   $('#library').hidden = true;
   $('#player').hidden = false;
+  // The player is a full-viewport overlay, so the page behind it must stop
+  // scrolling -- otherwise a full-screen game sits beside a live scrollbar for
+  // a search results page nobody can see. Restored on close the same way the
+  // reader does it, only when there is no detail sheet still open underneath.
+  document.body.style.overflow = 'hidden';
   $('#player-title').textContent = card.title + (card.year ? ` (${card.year})` : '');
   $('#player-sub').textContent = src.title ?? '';
   setPlayerStatus('Resolving…');
 
   const els = playerElements();
   detachAll(els);
+  clearGamePanels();
+  releaseBios();
+  state.game = null;
 
   if (!state.registry) state.registry = buildRegistry();
 
   const uri = src.magnet ?? src.uri;
   try {
+    // An archive.org item is asked about before it is resolved. `#swf` is the
+    // one exception: Flash is Ruffle's, the play service knows nothing about it,
+    // and routing it here would lose a working player to gain a verdict about a
+    // machine that is not involved.
+    const item = /#swf$/.test(uri) ? null : archiveItemFor(uri);
+    if (item) {
+      const handled = await playArchiveItem(item, card, gen);
+      if (gen !== state.resolveGen) return;
+      // `false` means the Archive says this is not an emulated item at all --
+      // a film, a comic, a photo set. It falls through to the registry, which
+      // plays it exactly as it did before.
+      if (handled) return;
+    }
+
     const out = await state.registry.resolve(makeSource({ kind: 'auto', uri }));
 
     if (gen !== state.resolveGen) {
@@ -890,8 +1321,15 @@ function renderStats(s) {
 function closePlayer() {
   state.playable?.cleanup();
   state.playable = null;
+  // A blob URL keeps its bytes alive until it is revoked, so a session that
+  // played ten ColecoVision games would otherwise be holding ten copies of the
+  // same BIOS.
+  releaseBios();
+  state.game = null;
+  clearGamePanels();
   $('#player').hidden = true;
   $('#library').hidden = true;
+  if ($('#detail').hidden) document.body.style.overflow = '';
   // detachAll pauses/loads every real media element (video, audio) and clears
   // src on all of them, not just video+image -- with the audio and embed
   // elements now in play, leaving those untouched would let a paused-looking
@@ -906,7 +1344,7 @@ function closePlayer() {
 
   state.stopFit = null;
 
-  { const w = document.querySelector('#embed-fit'); if (w) w.hidden = true; }
+  { const w = document.querySelector('#embed-wrap'); if (w) w.hidden = true; }
 
   detachAll(playerElements());
   state.engine?.destroyTorrent();

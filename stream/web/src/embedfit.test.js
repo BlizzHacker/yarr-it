@@ -86,3 +86,70 @@ test('applying it scales the iframe rather than resizing it', () => {
   assert.equal(wrapper.style.overflow, 'hidden', 'a scaled iframe paints outside its box');
   assert.equal(wrapper.style.margin, 'auto');
 });
+
+// --- the frame the Archive's own player gets --------------------------------
+
+import { containBox, CRT, MAX_EMBED_WIDTH } from './embedfit.js';
+
+/**
+ * The clamp above was one half of the mistake; giving the frame the whole stage
+ * was the other. Their canvas keeps its own size and place inside whatever
+ * viewport it is handed, so a 16:9 stage produces a small picture against a wall
+ * of black -- which is exactly the complaint. A 4:3 box, the shape of the
+ * television every one of these machines drew to, is a room their layout has far
+ * less space to be wrong in.
+ */
+test('the archive frame is 4:3 and never overflows, at every real size', () => {
+  for (const [w, h] of [[1920, 1080], [1280, 720], [375, 667], [1600, 860], [3840, 2160]]) {
+    const box = containBox(w, h);
+    assert.ok(box.width <= w, `width ${box.width} overflows a ${w} stage`);
+    assert.ok(box.height <= h, `height ${box.height} overflows a ${h} stage`);
+    // Within a pixel of 4:3 -- the floor() can cost at most one.
+    const ratio = box.width / box.height;
+    assert.ok(Math.abs(ratio - CRT.w / CRT.h) < 0.01,
+      `${w}x${h} produced ${box.width}x${box.height}, ratio ${ratio.toFixed(3)}`);
+  }
+});
+
+// Measured on live archive.org, post-boot, 2026-08-08: their canvas is 512x480
+// for NES, 704x446 for the 2600, 640x448 for Genesis and 640x400 for DOS --
+// IDENTICAL at 1920x1080, 1280x720, 800x600 and 640x480. A bigger frame
+// therefore buys more black around the same picture rather than a bigger one,
+// which is the whole reason the cap exists.
+test('the frame is capped, because a bigger one only buys more black', () => {
+  const big = containBox(3840, 2160);
+  assert.equal(big.width, MAX_EMBED_WIDTH);
+  assert.equal(big.height, Math.floor(MAX_EMBED_WIDTH * 3 / 4));
+
+  // At 1080p the cap turns a 512px canvas adrift in a 1440px box into a 1024px
+  // window it nearly fills.
+  const desktop = containBox(1920, 1080);
+  assert.equal(desktop.width, MAX_EMBED_WIDTH);
+  assert.ok(512 / desktop.width > 0.45,
+    'their widest-measured canvas should fill most of the frame, not a fifth of it');
+
+  // And the cap must stay above every canvas size measured, because below it
+  // their player squashes the canvas horizontally instead of leaving space --
+  // measured at a 400px viewport, where a 512px canvas rendered 400px wide.
+  for (const measured of [512, 704, 640]) {
+    assert.ok(MAX_EMBED_WIDTH > measured, `${measured}px canvas would be squashed`);
+  }
+});
+
+test('a stage smaller than the cap still gets the largest box that fits', () => {
+  const box = containBox(600, 400);
+  assert.equal(box.height, 400, 'height-limited here, so the height should be used up');
+  assert.equal(box.width, 533);
+});
+
+test('a phone in portrait gets a width-limited frame, not a sliver', () => {
+  const box = containBox(375, 667);
+  assert.equal(box.width, 375);
+  assert.equal(box.height, 281);
+});
+
+test('a stage with no size yields no box rather than a negative one', () => {
+  for (const [w, h] of [[0, 0], [-1, 100], [100, 0], [NaN, 100], ['', '']]) {
+    assert.deepEqual(containBox(w, h), { width: 0, height: 0 });
+  }
+});

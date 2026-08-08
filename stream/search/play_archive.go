@@ -461,7 +461,19 @@ type playAnswer struct {
 	// Embed is the Internet Archive's own player, present whenever the item
 	// declares an emulator -- including on the emulatorjs route, so a client can
 	// offer it as the fallback when a phone's memory will not hold a core.
+	// It is what makes the player switch possible: two routes, both real.
 	Embed string `json:"embed,omitempty"`
+
+	// BiosNeeded is set when firmware is the ONLY thing between this item and
+	// our own player. It is an invitation rather than an error: the file is not
+	// ours to ship and is the console owner's to supply, so naming it turns a
+	// refusal into an instruction. Absent when the item would fail for some
+	// other reason too, because offering somebody a way to unblock a game that
+	// would then be refused for its size is a worse lie than saying no.
+	BiosNeeded *playBIOS `json:"biosNeeded,omitempty"`
+
+	// Guide is what the game is and which key is fire. See play_guide.go.
+	Guide *playGuide `json:"guide,omitempty"`
 
 	// Touch says whether the offered route has on-screen controls. Their player
 	// expects a keyboard, so on a phone a console game there is something you
@@ -499,6 +511,20 @@ type playItemMetadata struct {
 		EmulatorExt json.RawMessage `json:"emulator_ext"`
 		Collection  json.RawMessage `json:"collection"`
 		AccessRestr json.RawMessage `json:"access-restricted-item"`
+
+		// The three fields the guide is built from. `emulator_instructions` is
+		// the Archive's own per-game control notes and is the single most
+		// valuable field on the whole item -- measured live 2026-08-07, River
+		// Raid's says which key is fire. `controller` is "joystick", "keyboard"
+		// or "paddle". See play_guide.go.
+		//
+		// All three are RawMessage for the reason emulator_ext is: archive.org
+		// sends a bare string when there is one value and a list when there is
+		// more than one, and an item with two descriptions must not decode as an
+		// outage. That trap has already been paid for once in this file.
+		Description          json.RawMessage `json:"description"`
+		EmulatorInstructions json.RawMessage `json:"emulator_instructions"`
+		Controller           json.RawMessage `json:"controller"`
 	} `json:"metadata"`
 	Files []struct {
 		Name   string `json:"name"`
@@ -690,16 +716,67 @@ func (p *playArchive) register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/play/systems", publicCORS(p.handleSystems))
 }
 
+// playOptions are the things only the CALLER can know, because they are facts
+// about the browser asking rather than about the item.
+//
+// Both of them turn a refusal into a game, and neither can be guessed from here:
+// a BIOS lives in one visitor's browser storage and nowhere else, and whether a
+// page is cross-origin isolated is a property of the document that loaded, not
+// of this server. Defaulting both to the pessimistic value is deliberate -- an
+// answer computed without them is the answer for a visitor who has neither, and
+// that is the one that must never be optimistic.
+type playOptions struct {
+	// BIOS is the set of EmulatorJS system names the caller holds firmware for.
+	BIOS map[string]bool
+	// Isolated is `crossOriginIsolated` in the calling document. When true,
+	// SharedArrayBuffer exists and the threaded cores (DOS, PSP) can run.
+	Isolated bool
+}
+
+func (o playOptions) hasBIOS(core string) bool {
+	return o.BIOS != nil && o.BIOS[core]
+}
+
+// parsePlayOptions reads the two capability declarations off the query string.
+//
+// A DECLARATION, not a promise: a client claiming a BIOS it does not have gets
+// our player and a game that will not boot, which is its own doing and its own
+// to fix. Nothing here is trusted with anything but the answer to "which button
+// do I draw", and being wrong costs that client one click.
+func parsePlayOptions(q url.Values) playOptions {
+	opts := playOptions{Isolated: q.Get("isolated") == "1"}
+	for _, field := range q["bios"] {
+		for _, name := range strings.Split(field, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if _, known := biosRequirements[name]; !known {
+				// Only the three machines that are actually blocked on firmware
+				// can be unblocked by it. Accepting an arbitrary name would let
+				// a typo look like a capability.
+				continue
+			}
+			if opts.BIOS == nil {
+				opts.BIOS = map[string]bool{}
+			}
+			opts.BIOS[name] = true
+		}
+	}
+	return opts
+}
+
 // handleArchive resolves one item.
 func (p *playArchive) handleArchive(w http.ResponseWriter, r *http.Request) {
-	id := archiveIdentifier(r.URL.Query().Get("id"))
+	q := r.URL.Query()
+	id := archiveIdentifier(q.Get("id"))
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "id is required: an archive.org identifier, or any archive.org item URL",
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, p.Resolve(r.Context(), id))
+	writeJSON(w, http.StatusOK, p.ResolveWith(r.Context(), id, parsePlayOptions(q)))
 }
 
 // handleSystems publishes the table.
@@ -718,6 +795,12 @@ func (p *playArchive) handleSystems(w http.ResponseWriter, r *http.Request) {
 		Playable bool   `json:"playable"`
 		Reason   string `json:"reason,omitempty"`
 		Detail   string `json:"detail,omitempty"`
+		// Unlockable says the refusal is about this visitor rather than about
+		// this machine, and names what would lift it. It is what lets a client
+		// draw a "add your ColecoVision BIOS" screen without a second table of
+		// which machines that could possibly apply to.
+		Unlockable string    `json:"unlockable,omitempty"`
+		BIOS       *playBIOS `json:"bios,omitempty"`
 	}
 	out := make([]systemView, 0, len(archivePlaySystems))
 	for emulator, plat := range archivePlaySystems {
@@ -731,6 +814,22 @@ func (p *playArchive) handleSystems(w http.ResponseWriter, r *http.Request) {
 		case blockedSystems[plat.Core].Reason != "":
 			b := blockedSystems[plat.Core]
 			v.Reason, v.Detail = b.Reason, b.Detail
+			switch b.Reason {
+			case reasonNeedsBIOS:
+				if need, ok := biosRequirements[plat.Core]; ok {
+					v.Unlockable, v.BIOS = "bios", &need
+				}
+			case reasonNeedsIsolation:
+				v.Unlockable = "isolation"
+			}
+			// The core is named ONLY when it could actually be used -- i.e.
+			// when the refusal is liftable. Arcade is refused for a reason no
+			// visitor can lift, and publishing `mame2003_plus` beside that
+			// refusal would advertise a core this endpoint will never choose.
+			if v.Unlockable != "" {
+				v.Core = plat.Core
+				v.CoreFile = emulatorJSSystems[plat.Core]
+			}
 		default:
 			v.Playable = true
 			v.Core = plat.Core
@@ -740,19 +839,38 @@ func (p *playArchive) handleSystems(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Emulator < out[j].Emulator })
 
+	// Every machine a visitor could unblock by supplying firmware, listed once
+	// rather than once per emulator id, so a settings screen has something to
+	// iterate that is not the 90-row table above.
+	biosList := make([]playBIOS, 0, len(biosRequirements))
+	for _, need := range biosRequirements {
+		biosList = append(biosList, need)
+	}
+	sort.Slice(biosList, func(i, j int) bool { return biosList[i].System < biosList[j].System })
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"domain":  "game",
 		"type":    "release",
 		"systems": out,
+		"bios":    biosList,
 		// The ceiling is part of the contract: a client that knows it can say
 		// "too big to play here" about a file it already has the size of.
 		"maxRelayBytes": maxRelayROMBytes,
 	})
 }
 
-// Resolve is the whole decision, and it is ordered so that the reason a person
-// is given is the FIRST thing that is wrong rather than the last check to run.
+// Resolve answers for a visitor who has declared nothing -- no BIOS, no
+// cross-origin isolation. That is the conservative answer and the right default:
+// every capability below only ever turns a `no` into a `yes`, so an answer
+// computed without them can be too pessimistic and never too optimistic.
 func (p *playArchive) Resolve(ctx context.Context, id string) playAnswer {
+	return p.ResolveWith(ctx, id, playOptions{})
+}
+
+// ResolveWith is the whole decision, and it is ordered so that the reason a
+// person is given is the FIRST thing that is wrong rather than the last check to
+// run.
+func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptions) playAnswer {
 	answer := playAnswer{ID: id, Domain: "game", Type: "release", Route: routeNone}
 
 	meta, err := p.metadata(ctx, id)
@@ -774,6 +892,14 @@ func (p *playArchive) Resolve(ctx context.Context, id string) playAnswer {
 	}
 	answer.Title = strings.TrimSpace(meta.Metadata.Title)
 
+	// The guide is attached HERE, before any refusal, and it is attached on
+	// every path from this point on. A person sent to the Archive's own player
+	// needs the instructions at least as much as one who got ours -- more,
+	// because that player has no on-screen pad to experiment with -- and an item
+	// that plays nowhere is still a game somebody may want to read about.
+	plat, known := archivePlaySystems[strings.ToLower(strings.TrimSpace(meta.Metadata.Emulator))]
+	answer.Guide = p.guideFor(meta, plat.Core, plat.Label)
+
 	// 1. Does the Archive itself say this is an emulated item? Their `emulator`
 	//    field IS the definition of "runs in a browser here", not a proxy for
 	//    it. Nothing is guessed from a filename: that is what boots a
@@ -793,7 +919,6 @@ func (p *playArchive) Resolve(ctx context.Context, id string) playAnswer {
 	// and the worst outcome is `archive`.
 	answer.Embed = p.embedBase + url.PathEscape(id)
 
-	plat, known := archivePlaySystems[strings.ToLower(emulator)]
 	answer.Platform, answer.System = plat.Platform, plat.Label
 
 	// 2. Do we know the machine, and is there a core for it?
@@ -816,7 +941,24 @@ func (p *playArchive) Resolve(ctx context.Context, id string) playAnswer {
 	//    the dangerous case: the emulator starts, draws its own error screen and
 	//    streams it at a healthy frame rate, so nothing downstream can tell that
 	//    from a working game.
-	if b, blocked := blockedSystems[plat.Core]; blocked {
+	//
+	//    Two of the three reasons a core is blocked are not facts about the core
+	//    at all -- they are facts about the visitor, and the visitor can change
+	//    them. Firmware we may not ship is firmware its owner may supply; a page
+	//    that is not cross-origin isolated is a page that could be. Where the
+	//    caller has declared the missing piece, the block does not apply, and
+	//    where it has not, the answer names what would lift it.
+	if b, blocked := blockedSystems[plat.Core]; blocked && !p.unblocked(b, plat.Core, opts) {
+		if need, ok := biosRequirements[plat.Core]; ok && b.Reason == reasonNeedsBIOS {
+			// Named only when firmware really is the last obstacle. See the
+			// field comment: pointing somebody at a 460 MB disc image's BIOS is
+			// a longer route to the same refusal, and the refusal would arrive
+			// after they had gone and found the file.
+			_, size, hasPayload := meta.payload()
+			if hasPayload && !meta.streamOnly() && size <= maxRelayROMBytes {
+				answer.BiosNeeded = &need
+			}
+		}
 		return p.viaArchive(answer, playReason{Code: b.Reason, Detail: b.Detail})
 	}
 
@@ -863,6 +1005,13 @@ func (p *playArchive) Resolve(ctx context.Context, id string) playAnswer {
 	answer.Core = plat.Core
 	answer.CoreFile = emulatorJSSystems[plat.Core]
 	answer.Touch = true
+	// Carried on the way OUT as well as on the way in: this route was reached
+	// because the caller declared firmware, and the client has to know which of
+	// its stored files to hand the emulator. Without this it would have to
+	// re-derive the mapping from `core`, which is a second copy of a table.
+	if need, ok := biosRequirements[plat.Core]; ok && opts.hasBIOS(plat.Core) {
+		answer.BiosNeeded = &need
+	}
 	answer.ROM = &playROM{
 		Name:      path.Base(name),
 		URL:       "/bridge/iptv?u=" + url.QueryEscape(direct),
@@ -870,6 +1019,25 @@ func (p *playArchive) Resolve(ctx context.Context, id string) playAnswer {
 		SizeBytes: size,
 	}
 	return answer
+}
+
+// unblocked reports whether the caller has supplied the one thing that was
+// missing.
+//
+// Only two of the three block reasons can be lifted this way, and the third is
+// the interesting one: `no_core` -- arcade -- stays blocked whatever anybody
+// declares, because a MAME romset must match the build reading it and no file a
+// visitor supplies changes that. Enumerating the liftable reasons rather than
+// defaulting to "lift it" is what keeps that true if a fourth reason is added.
+func (p *playArchive) unblocked(b blockedSystem, core string, opts playOptions) bool {
+	switch b.Reason {
+	case reasonNeedsBIOS:
+		return opts.hasBIOS(core)
+	case reasonNeedsIsolation:
+		return opts.Isolated
+	default:
+		return false
+	}
 }
 
 // viaArchive downgrades to the Internet Archive's own player, carrying the

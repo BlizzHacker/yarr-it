@@ -374,3 +374,199 @@ function fakeDocument() {
     createElement: (tag) => fakeElement(tag.toUpperCase()),
   };
 }
+
+// --- the player switch -------------------------------------------------------
+
+import {
+  playerOptions, canSwitchPlayer, choosePlayer, solePlayerSentence,
+  readPlayerPreference, writePlayerPreference, verdictQuery, PLAYER_PREF_KEY,
+} from './play.js';
+
+/**
+ * The headline change: EmulatorJS is the default everywhere it can run, and the
+ * viewer can move to the Internet Archive's player and be remembered.
+ *
+ * Two failure modes are being defended against, and they pull in opposite
+ * directions. A switch that hides its other half tells a viewer there is no
+ * choice; a switch that offers a dead option is the dead button this whole file
+ * exists to remove. Both drawn, one disabled, and the disabled one carrying the
+ * server's own sentence is the only version that is neither.
+ */
+
+const fakeStorage = (initial = {}) => {
+  const map = new Map(Object.entries(initial));
+  return {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => map.set(k, String(v)),
+    _map: map,
+  };
+};
+
+test('our own player is the default wherever it can run', () => {
+  const verdict = normalise(nesVerdict);
+  assert.equal(choosePlayer(verdict, ''), ROUTE.EMULATORJS);
+  assert.equal(canSwitchPlayer(verdict), true, 'an item with an embed can always go the other way');
+});
+
+test('both players are always offered, and the one that cannot run says why', () => {
+  const [ours, theirs] = playerOptions(normalise(streamOnlyVerdict));
+
+  assert.equal(ours.route, ROUTE.EMULATORJS);
+  assert.equal(ours.available, false);
+  assert.match(ours.why, /permits playing this in a browser but not downloading/,
+    "the refusal must be the server's own sentence, not one invented here");
+
+  assert.equal(theirs.route, ROUTE.ARCHIVE);
+  assert.equal(theirs.available, true);
+  assert.match(theirs.note, /Internet Archive's own player/);
+});
+
+test('a remembered choice wins, but only where that player can run the item', () => {
+  const both = normalise(nesVerdict);
+  assert.equal(choosePlayer(both, ROUTE.ARCHIVE), ROUTE.ARCHIVE);
+  assert.equal(choosePlayer(both, ROUTE.EMULATORJS), ROUTE.EMULATORJS);
+
+  // A preference for a player that cannot run THIS item is not a reason to show
+  // somebody nothing.
+  const theirsOnly = normalise(streamOnlyVerdict);
+  assert.equal(choosePlayer(theirsOnly, ROUTE.EMULATORJS), ROUTE.ARCHIVE);
+
+  // And nothing at all is still nothing.
+  assert.equal(choosePlayer(normalise(notEmulatedVerdict), ROUTE.ARCHIVE), ROUTE.NONE);
+});
+
+test('the choice is remembered as a taste, not as a route for one item', () => {
+  const storage = fakeStorage();
+  assert.equal(readPlayerPreference(storage), '');
+
+  writePlayerPreference(ROUTE.ARCHIVE, storage);
+  assert.equal(storage._map.get(PLAYER_PREF_KEY), ROUTE.ARCHIVE);
+  assert.equal(readPlayerPreference(storage), ROUTE.ARCHIVE);
+
+  // Anything that is not one of the two players is ignored in both directions,
+  // so a corrupted value can never select a player that does not exist.
+  writePlayerPreference('something-else', storage);
+  assert.equal(readPlayerPreference(storage), ROUTE.ARCHIVE);
+  assert.equal(readPlayerPreference(fakeStorage({ [PLAYER_PREF_KEY]: 'nonsense' })), '');
+});
+
+test('storage that throws costs the memory, never the player', () => {
+  const angry = {
+    getItem() { throw new Error('blocked'); },
+    setItem() { throw new Error('blocked'); },
+  };
+  assert.equal(readPlayerPreference(angry), '');
+  assert.doesNotThrow(() => writePlayerPreference(ROUTE.ARCHIVE, angry));
+});
+
+test('when only one player is possible, one plain sentence says which and why', () => {
+  const sentence = solePlayerSentence(normalise(streamOnlyVerdict));
+  assert.match(sentence, /^Internet Archive player only —/);
+  assert.match(sentence, /permits playing this in a browser but not downloading/);
+
+  // With a real choice there is nothing to explain; the switch speaks for itself.
+  assert.equal(solePlayerSentence(normalise(nesVerdict)), '');
+});
+
+test('the switch can only ever select a player that actually works', () => {
+  const theirsOnly = normalise(streamOnlyVerdict);
+  assert.throws(
+    () => toPlayable(theirsOnly, { route: ROUTE.EMULATORJS }),
+    /permits playing this in a browser but not downloading/,
+    'the switch was able to hand-build the dead button',
+  );
+
+  // And the legitimate direction really does produce the other player.
+  const both = normalise(nesVerdict);
+  assert.equal(toPlayable(both, { route: ROUTE.ARCHIVE, doc: fakeDocument() }).render, RENDER.EMBED);
+  assert.equal(toPlayable(both, { route: ROUTE.EMULATORJS, doc: fakeDocument() }).render, RENDER.CANVAS);
+});
+
+// --- what this browser declares ---------------------------------------------
+
+test('capabilities are declared on the query string, and never the files themselves', () => {
+  assert.equal(verdictQuery('x', [], false), 'id=x');
+  assert.equal(verdictQuery('x', ['coleco'], false), 'id=x&bios=coleco');
+  // Sorted and de-duplicated, so the same browser always produces the same URL.
+  assert.equal(verdictQuery('x', ['psx', 'coleco', 'psx'], false), 'id=x&bios=coleco%2Cpsx');
+  assert.equal(verdictQuery('x', ['', null, ' amiga '], false), 'id=x&bios=amiga');
+  assert.equal(verdictQuery('x', [], true), 'id=x&isolated=1');
+  assert.match(verdictQuery('a b/c', [], false), /^id=a\+b%2Fc$/);
+});
+
+test('the declaration reaches the server', async () => {
+  const asked = [];
+  await fetchVerdict('coleco_game', {
+    bios: ['coleco'],
+    isolated: true,
+    fetchImpl: async (url) => { asked.push(url); return okResponse(nesVerdict); },
+  });
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /[?&]bios=coleco(&|$)/);
+  assert.match(asked[0], /[?&]isolated=1(&|$)/);
+});
+
+// --- the guide comes through -------------------------------------------------
+
+test('the guide and the BIOS offer survive normalisation', () => {
+  const verdict = normalise({
+    ...biosVerdict,
+    guide: { description: 'A game.', controls: [{ button: 'A', key: 'Z' }] },
+    biosNeeded: { system: 'coleco', label: 'ColecoVision BIOS', files: ['colecovision.rom'] },
+  });
+  assert.equal(verdict.guide.description, 'A game.');
+  assert.equal(verdict.biosNeeded.system, 'coleco');
+
+  // And anything malformed becomes absent rather than half-present: an offer
+  // with no machine name is a file input pointed at nothing.
+  for (const bad of [null, 'text', [], {}, { label: 'x' }]) {
+    assert.equal(normalise({ ...biosVerdict, biosNeeded: bad }).biosNeeded, null);
+  }
+  for (const bad of [null, 'text', []]) {
+    assert.equal(normalise({ ...biosVerdict, guide: bad }).guide, null);
+  }
+});
+
+// A WASM emulator needs a real user gesture before the browser will let it run,
+// so mountEmulator hangs the boot off a click. Press it the way a person would.
+function boot(playable) {
+  const host = fakeElement('DIV');
+  playable.mount(host);
+  const [button] = host.children;
+  for (const fn of button.listeners.click ?? []) fn();
+  return host;
+}
+
+test('a BIOS URL is handed to the emulator and nothing else is', () => {
+  const doc = fakeDocument();
+  boot(toPlayable(normalise(nesVerdict), {
+    doc, route: ROUTE.EMULATORJS, biosUrl: 'blob:stored-locally',
+  }));
+  assert.equal(globalThis.EJS_biosUrl, 'blob:stored-locally');
+
+  // Globals persist between games, so a BIOS left set from the last one would
+  // be handed to the next: a Kickstart ROM fed to an NES core is a black screen
+  // with no error anywhere.
+  boot(toPlayable(normalise(nesVerdict), { doc, route: ROUTE.EMULATORJS }));
+  assert.equal(globalThis.EJS_biosUrl, '');
+});
+
+// SharedArrayBuffer only exists on a cross-origin-isolated page, and asking
+// EmulatorJS for a threaded core without it loads a core that throws on
+// construction. Reading the platform's own answer means this is right whether or
+// not the isolation headers are ever deployed.
+test('threading is claimed only when the platform says the page is isolated', () => {
+  const doc = fakeDocument();
+  const before = globalThis.crossOriginIsolated;
+  try {
+    globalThis.crossOriginIsolated = false;
+    boot(toPlayable(normalise(nesVerdict), { doc, route: ROUTE.EMULATORJS }));
+    assert.equal(globalThis.EJS_threads, false);
+
+    globalThis.crossOriginIsolated = true;
+    boot(toPlayable(normalise(nesVerdict), { doc, route: ROUTE.EMULATORJS }));
+    assert.equal(globalThis.EJS_threads, true);
+  } finally {
+    globalThis.crossOriginIsolated = before;
+  }
+});

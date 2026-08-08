@@ -919,11 +919,16 @@ func TestTheSystemsEndpointAgreesWithTheResolver(t *testing.T) {
 	var body struct {
 		Domain  string `json:"domain"`
 		Systems []struct {
-			Emulator string `json:"emulator"`
-			Core     string `json:"core"`
-			Playable bool   `json:"playable"`
-			Reason   string `json:"reason"`
-			Detail   string `json:"detail"`
+			Emulator   string `json:"emulator"`
+			Core       string `json:"core"`
+			Playable   bool   `json:"playable"`
+			Reason     string `json:"reason"`
+			Detail     string `json:"detail"`
+			Unlockable string `json:"unlockable"`
+			BIOS       *struct {
+				System string   `json:"system"`
+				Files  []string `json:"files"`
+			} `json:"bios"`
 		} `json:"systems"`
 		MaxRelayBytes int64 `json:"maxRelayBytes"`
 	}
@@ -952,8 +957,23 @@ func TestTheSystemsEndpointAgreesWithTheResolver(t *testing.T) {
 		if s.Reason == "" || s.Detail == "" {
 			t.Errorf("%s: refused with nothing to show a person", s.Emulator)
 		}
-		if s.Core != "" {
-			t.Errorf("%s: refused but still advertising core %q", s.Emulator, s.Core)
+		// A refused row may name a core only when the refusal is one a visitor
+		// can actually lift -- firmware they own, or a page that is isolated.
+		// Anywhere else a core name is an advertisement for something this
+		// endpoint will never choose, which is the original rule this test was
+		// written to hold and is unchanged for every non-liftable refusal.
+		if s.Unlockable == "" && s.Core != "" {
+			t.Errorf("%s: refused for good and still advertising core %q", s.Emulator, s.Core)
+		}
+		if s.Unlockable == "bios" {
+			if s.Core == "" {
+				t.Errorf("%s: unlockable by BIOS but names no core to unlock", s.Emulator)
+			}
+			if s.BIOS == nil || len(s.BIOS.Files) == 0 {
+				t.Errorf("%s: unlockable by BIOS without naming a single file", s.Emulator)
+			} else if s.BIOS.System != s.Core {
+				t.Errorf("%s: BIOS filed under %q but core is %q", s.Emulator, s.BIOS.System, s.Core)
+			}
 		}
 	}
 }
