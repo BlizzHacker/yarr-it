@@ -371,3 +371,37 @@ func TestAdultArchiveCardsAreHiddenByDefault(t *testing.T) {
 		t.Fatalf("expected only Tintin to survive, got %d", len(visible))
 	}
 }
+
+// Books had no archive.org scope at all, so kind=literature returned EPUB
+// torrents and nothing anyone could open, while the Archive holds Gutenberg and
+// LibriVox in full.
+func TestLiteratureHasAnArchiveScope(t *testing.T) {
+	scope, ok := scopeFor("literature")
+	if !ok || scope == "" {
+		t.Fatal("literature has no archive.org scope; books are torrent-only")
+	}
+	// Comics are also mediatype:(texts) and drown a book search. They have
+	// their own scope, so this one must exclude them.
+	if !strings.Contains(scope, "NOT collection:(comics") {
+		t.Error("the literature scope does not exclude comics; a novel search fills with comic books")
+	}
+	// Controlled-lending collections are deliberately absent: they need an
+	// account and a loan, so they open onto a waiting list rather than a book.
+	for _, lending := range []string{"inlibrary", "internetarchivebooks"} {
+		if strings.Contains(scope, lending) {
+			t.Errorf("scope includes %q, which is lend-only and mostly unavailable", lending)
+		}
+	}
+}
+
+// Every domain the schema defines should have somewhere to search, or selecting
+// it returns nothing with no explanation.
+func TestEveryDomainHasEitherAnArchiveScopeOrIndexerCategories(t *testing.T) {
+	for id := range schema.Domains {
+		_, hasScope := scopeFor(id)
+		hasCats := categoriesFor(id) != nil
+		if !hasScope && !hasCats {
+			t.Errorf("domain %q has neither an archive.org scope nor indexer categories", id)
+		}
+	}
+}

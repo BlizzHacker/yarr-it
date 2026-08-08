@@ -53,6 +53,28 @@ var archiveScopes = map[string]string{
 	// Comics live in texts. The collection narrows it to scanned comics rather
 	// than the whole book library, which is otherwise almost entirely prose.
 	"comic": `mediatype:(texts) AND collection:(comics OR comicbooks)`,
+	// Books and audiobooks. Without this entry `kind=literature` had no
+	// archive.org source at all, so a search for a book returned EPUB torrents
+	// and nothing that could actually be opened -- while the Archive holds
+	// Gutenberg's texts and LibriVox's recordings, both free and both readable
+	// or playable here.
+	//
+	// Comics are excluded explicitly. They are also mediatype:(texts) and they
+	// dominate a plain text search, so without this a search for a novel comes
+	// back full of comic books -- and they already have their own scope above.
+	// The collections are named deliberately and the omissions matter more than
+	// the inclusions. `internetarchivebooks` and `inlibrary` are far larger --
+	// 1,383 and 937 hits for one query against gutenberg's 8 -- but they are
+	// controlled digital lending: a reader needs an account and a loan, and most
+	// of the time the loan is unavailable. Listing them would fill this domain
+	// with results that open onto a waiting list, which is the dead end this
+	// whole section exists to avoid. What is here is free to read or hear now.
+	//
+	// Comics are excluded explicitly: they are also mediatype:(texts), they
+	// dominate a plain text search, and they already have their own scope above.
+	"literature": `(mediatype:(texts) OR mediatype:(audio)) ` +
+		`AND collection:(gutenberg OR librivoxaudio OR americana) ` +
+		`AND NOT collection:(comics OR comicbooks)`,
 	"video": `mediatype:(movies)`,
 }
 
