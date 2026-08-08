@@ -21,22 +21,26 @@ sub runRequest()
         ' device=roku makes the server drop anything this box cannot decode --
         ' AVI, WMV, XviD and so on. Roku shows a bare "cannot play" error with no
         ' explanation, so a source it will refuse is worse than no source at all.
-        url = globalNode.searchBase + "/api/search?device=roku"
+        ' Built once and used for both the search and the collection of its
+        ' remainder. The filters have to be identical on both, or the settled
+        ' result is a differently-filtered, differently-sorted set that replaces
+        ' the first one -- which reads as the results changing their minds.
+        qs = "device=roku"
 
         ' An empty query is a browse: "show me comics". The server accepts that
         ' as long as a kind or group says what to browse.
         if req.query <> invalid and req.query <> ""
-            url = url + "&q=" + urlEncode(req.query)
+            qs = qs + "&q=" + urlEncode(req.query)
         end if
 
         ' Category. `kind` narrows to what a thing IS (image, comic); `groups`
         ' narrows by catalogue section. Movies needs the group, because a film
         ' and a TV episode are both kind=video.
         if req.filterKind <> invalid and req.filterKind <> ""
-            url = url + "&kind=" + urlEncode(req.filterKind)
+            qs = qs + "&kind=" + urlEncode(req.filterKind)
         end if
         if req.filterGroups <> invalid and req.filterGroups <> ""
-            url = url + "&groups=" + urlEncode(req.filterGroups)
+            qs = qs + "&groups=" + urlEncode(req.filterGroups)
         end if
 
         ' Ranking. Sorting by seeders is what makes the first row the one most
@@ -44,16 +48,37 @@ sub runRequest()
         ' browser: there is no second window to go and check another candidate.
         sortBy = "seeders"
         if req.sort <> invalid and req.sort <> "" then sortBy = req.sort
-        url = url + "&sort=" + urlEncode(sortBy)
+        qs = qs + "&sort=" + urlEncode(sortBy)
 
         ' Dead torrents waste the whole minute the gateway spends waiting for
         ' metadata before failing. Stills have no seeders at all, so the floor
         ' only applies where it means something.
         if req.filterKind <> "image" and req.filterKind <> "comic"
-            url = url + "&minSeeders=1"
+            qs = qs + "&minSeeders=1"
         end if
 
-        m.top.response = { kind: kind, ok: true, data: httpGetJson(url, 150) }
+        url = globalNode.searchBase + "/api/search?" + qs
+
+        ' The server answers within a few hundred milliseconds with whatever it
+        ' already had -- its cache and archive.org -- and finishes the torrent
+        ' fan-out behind a job id. This box waited for the whole thing before:
+        ' measured against the live server, 23 to 40 seconds, and 112 seconds
+        ' ending in an error whenever Prowlarr stalled.
+        '
+        ' The rest is collected with the same plain GET this file already does.
+        ' That is why the server offers a job id rather than an event stream:
+        ' roUrlTransfer cannot read a stream, and cannot parse a body it has
+        ' not finished receiving.
+        first = httpGetJson(url, 30)
+        m.top.response = { kind: kind, ok: true, data: first }
+
+        ' Deliberately two repaints and no more: the first, at once, and one
+        ' settled result. A TV grid redraws from the top, so publishing every
+        ' arrival would move the tile somebody is pointing the remote at.
+        final = collectSearch(globalNode, first, qs)
+        if final <> invalid
+            m.top.response = { kind: kind, ok: true, data: final }
+        end if
 
     else if kind = "deviceStart"
         ' RFC 8628. The TV asks for a code; the person approves it on a phone.
@@ -101,6 +126,41 @@ sub runRequest()
 end sub
 
 ' httpGetJson performs a GET and parses JSON, returning invalid on any failure.
+' Collect the rest of a search that has already answered.
+'
+' Returns the settled result, or invalid when there was nothing more to get --
+' a cache hit, a search with no job, or a collection that never grew. Returning
+' invalid rather than the first paint again is what keeps this to one extra
+' repaint instead of a guaranteed second one.
+function collectSearch(globalNode as Object, first as Object, qs as String) as Object
+    ' Split rather than chained with `or`: these are equality tests against
+    ' invalid, and a chained comparison that evaluates both sides is a type
+    ' mismatch at runtime rather than a false.
+    if first = invalid then return invalid
+    if first.job = invalid then return invalid
+    if first.job = "" then return invalid
+    if first.complete = true then return invalid
+
+    latest = invalid
+    ' Twelve tries at a second apart covers the fast indexer tier comfortably
+    ' and most of the slow one. A television is not the place to keep a network
+    ' task alive for a minute chasing the last few results.
+    for i = 1 to 12
+        sleep(1000)
+        upd = httpGetJson(globalNode.searchBase + "/api/search/updates?" + qs + "&job=" + urlEncode(first.job), 20)
+        if upd = invalid then exit for
+        ' The job was swept. What is already on screen is still a real answer.
+        if upd.gone = true then exit for
+        latest = upd
+        if upd.complete = true then exit for
+    end for
+
+    if latest = invalid then return invalid
+    if latest.cards = invalid then return invalid
+    if first.cards <> invalid and latest.cards.count() <= first.cards.count() then return invalid
+    return latest
+end function
+
 function httpGetJson(url as String, timeoutSec as Integer) as Object
     xfer = CreateObject("roUrlTransfer")
     xfer.setUrl(url)

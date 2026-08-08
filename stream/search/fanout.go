@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -185,16 +186,34 @@ func mergeCards(a, b []card) []card {
 // cache behind the response.
 // How long the indexer list may take before a search gives up on it.
 //
-// Deliberately short: this is a small local call that either answers at once or
-// is not going to. Everything else in a search is bounded, so leaving this one
-// open meant one sick backend could hold a request open indefinitely.
-const indexerListDeadline = 12 * time.Second
+// This is a small local call over the tunnel: it answers in milliseconds or it
+// is not going to answer. Twelve seconds was a floor picked to stop an infinite
+// hang, and it showed: while Prowlarr stalled, every search spent twelve
+// seconds learning nothing before it even began. Five is still an order of
+// magnitude more than a healthy answer needs.
+const indexerListDeadline = 5 * time.Second
+
+// errIndexersUnreachable means the backend did not answer at all, as distinct
+// from a search that failed. Only the second is worth retrying another way.
+var errIndexersUnreachable = errors.New("indexer backend unreachable")
 
 // A client with a ceiling. http.DefaultClient has no timeout at all, which is
-// fine for a script and wrong for a request path a person is waiting on: a peer
-// that accepts the connection and then goes quiet holds the goroutine, the
-// request and the user's patience for as long as it likes.
-var prowlarrClient = &http.Client{Timeout: 110 * time.Second}
+// fine for a script and wrong for a peer that accepts the connection and then
+// goes quiet -- it holds the goroutine and the connection for as long as it
+// likes.
+//
+// Fifty seconds, not a hundred and ten: the longest legitimate use is the
+// background tier, which is itself abandoned at slowTierBudget. A ceiling below
+// that would cut off honest work; one far above it just means a dead socket
+// lingers for a minute after everything that cared has given up.
+var prowlarrClient = &http.Client{
+	Timeout: 50 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     2 * time.Minute,
+	},
+}
 
 func (s *server) searchTiered(ctx context.Context, q, kind string,
 	onFull func([]card)) ([]card, bool, error) {
@@ -209,7 +228,13 @@ func (s *server) searchTiered(ctx context.Context, q, kind string,
 	defer listCancel()
 	t, err := s.tiers(listCtx)
 	if err != nil {
-		return nil, false, err
+		// Wrapped, because the caller's next move depends on which failure this
+		// was. A host that will not answer "list your indexers" -- a call that
+		// returns in milliseconds when it is well -- is not going to answer a
+		// search either, and retrying with the unscoped aggregate call spends
+		// another thirty seconds proving it. Measured against a blackholed
+		// address: 35s to conclude what the first 5s had already established.
+		return nil, false, fmt.Errorf("%w: %v", errIndexersUnreachable, err)
 	}
 
 	fastCtx, cancel := context.WithTimeout(ctx, fastTierDeadline)

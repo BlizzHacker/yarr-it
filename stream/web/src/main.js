@@ -33,6 +33,8 @@ import {
   routeAdvice, describeService, healthLabel, normaliseServiceURL,
 } from './services.js';
 import { TRANSPORT, extensionAvailable } from './transport.js';
+import { runSearch, sleeper, describeProgress } from './progressive.js';
+import { createSuggester, suggestKey, suggestionHint } from './suggest.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -46,6 +48,16 @@ const state = {
   cards: [],
   facets: null,
   query: '',
+  // The AbortController for the running search. A search is now a first
+  // response plus a poll loop that outlives it, so "the previous search" is a
+  // thing that has to be stopped rather than merely ignored.
+  searchAbort: null,
+  // Whether #grid holds real results yet, as opposed to placeholders from
+  // before the first arrival.
+  gridLive: false,
+  // Type-ahead: the current list and which entry the keyboard is on.
+  suggestions: [],
+  suggestIndex: -1,
   engine: null,
   registry: null,
   playable: null,
@@ -91,9 +103,46 @@ function filterParams() {
   return p;
 }
 
+/**
+ * One JSON call against the search API.
+ *
+ * A 410 is not an error: it means the job being collected has been swept, which
+ * is a normal end to a search that was left running in a background tab. It is
+ * handed back as data so the poll loop can stop rather than throw.
+ */
+async function fetchSearchJSON(url, opts) {
+  const res = await apiFetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 410) return { ...data, gone: true, complete: true };
+  if (!res.ok) {
+    const err = new Error(data.error || `Search failed (${res.status}).`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+/**
+ * Search, painting results as they arrive.
+ *
+ * The server answers in a few hundred milliseconds with whatever it already
+ * had -- the cache, archive.org -- and finishes the torrent fan-out behind a
+ * job id. Before this, the browser waited for the whole thing: measured on the
+ * live site, 27 seconds for a cold query and 112 seconds ending in an error
+ * while Prowlarr was stalled, with a spinner over an empty screen throughout.
+ */
 async function search({ showSpinner = true } = {}) {
   // A category with no words is a valid search: "show me games".
   if (!state.query && !state.filters.groups.size) return;
+
+  // Stop whatever the previous search is still doing. A poll loop that outlives
+  // its query will happily paint its own results over the new one -- and the
+  // older search, being older, usually finishes last and therefore wins.
+  if (state.searchAbort) state.searchAbort.abort();
+  const ctl = new AbortController();
+  state.searchAbort = ctl;
+  closeSuggestions();
+
   $('#intro').hidden = true;
   $('#discover').hidden = true;
   $('#get').hidden = true;
@@ -104,29 +153,44 @@ async function search({ showSpinner = true } = {}) {
   // brand new, unrelated search. Every fresh search must start clean.
   $('#library').hidden = true;
   if (showSpinner) {
-    $('#status').textContent = 'Searching every indexer…';
-    $('#status').hidden = false;
+    $('#status').hidden = true;
     showSkeletons();
   }
 
+  state.cards = [];
+  // The grid still holds the previous search's tiles, or skeletons. It is
+  // cleared on the first arrival that has something to put there, so a slow
+  // first paint shows placeholders rather than a blank page.
+  state.gridLive = false;
+  let painted = 0;
+
   try {
-    const res = await apiFetch(`/api/search?${filterParams()}`);
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      // A 504 means the indexers were slow, not that the query was bad — offer
-      // a retry rather than a dead end.
-      showRetry(data.error || `Search failed (${res.status}).`, () => search());
-      return;
-    }
-
-    state.cards = data.cards || [];
-    state.facets = data.facets || null;
-    $('#status').hidden = true;
-    renderFilters();
-    renderResults(data);
+    const params = filterParams();
+    const data = await runSearch({
+      url: `/api/search?${params}`,
+      updatesURL: (job) => `/api/search/updates?job=${encodeURIComponent(job)}&${params}`,
+      fetchJson: fetchSearchJSON,
+      wait: sleeper,
+      signal: ctl.signal,
+      onPaint: ({ cards, added, data: body }) => {
+        state.cards = cards;
+        if (body.facets) state.facets = body.facets;
+        // The filter chips are drawn once and again at the end. Redrawing them
+        // on every arrival churns the row a person is reaching for.
+        if (!painted || body.complete) renderFilters();
+        painted++;
+        paintCards(added, body);
+        updateResultBar(body);
+      },
+    });
+    finishResults(data);
   } catch (err) {
-    showRetry(`Could not reach the search service: ${err.message}`, () => search());
+    // A newer search took over. Its results are what should be on screen, so
+    // saying anything here would put an error over them.
+    if (err && err.name === 'AbortError') return;
+    showRetry(err.status
+      ? err.message
+      : `Could not reach the search service: ${err.message}`, () => search());
   }
 }
 
@@ -252,35 +316,73 @@ function showSkeletons(n = 12) {
 
 // ----------------------------------------------------------------- results --
 
-function renderResults(data) {
+/**
+ * Add the cards that are new since the last arrival.
+ *
+ * Appended, never re-sorted. Somebody can start reading and clicking before the
+ * search has finished, and a tile that moves between the decision and the click
+ * is worse than a tile that arrives late.
+ */
+function paintCards(added, data) {
   const grid = $('#grid');
-  grid.replaceChildren();
+  if (!state.gridLive) {
+    // Nothing yet and more is coming: leave the placeholders in place. Clearing
+    // them here is what produces a spinner over an empty screen.
+    if (!added.length && !data.complete) return;
+    grid.replaceChildren();
+    state.gridLive = true;
+  }
+  for (const c of added) grid.append(tile(c));
+}
 
+/**
+ * The line above the grid: how many, for what, and what is still coming.
+ *
+ * All on one line and rewritten in place, deliberately. A note that appears
+ * below the bar while a search runs and vanishes when it finishes moves the
+ * entire grid up by a line at the exact moment somebody is aiming at it.
+ */
+function updateResultBar(data) {
   const bar = $('#resultbar');
   bar.replaceChildren();
   bar.hidden = false;
+
+  const progress = describeProgress(data);
   bar.append(el('b', null, `${state.cards.length}`));
+
   // A category browse has no query, so naming one renders as empty quotes.
   const picked = [...state.filters.groups].map((g) => GROUP_LABELS[g] || g);
   const what = state.query
     ? `for “${state.query}”`
     : (picked.length ? `in ${picked.join(' + ')}` : '');
-  bar.append(el('span', null,
-    `result${state.cards.length === 1 ? '' : 's'} ${what}`.trim() +
-    (data.total && data.total !== state.cards.length ? ` · ${data.total} before filters` : '')));
+  const counted = `result${state.cards.length === 1 ? '' : 's'} ${what}`.trim()
+    + (!progress.done ? ' so far' : '')
+    + (data.total && data.total !== state.cards.length ? ` · ${data.total} before filters` : '');
+  bar.append(el('span', null, counted));
 
-  if (data.stale) {
-    const n = el('p', 'stale-note',
-      'Indexers are slow right now — showing the last known results. Search again for fresh ones.');
-    bar.after(n);
+  if (progress.text) {
+    bar.append(el('span', `progress ${progress.tone}`, progress.text));
   }
+  if (data.stale) {
+    bar.append(el('span', 'progress degraded',
+      'Showing the last known results — search again for fresh ones.'));
+  }
+}
 
-  if (!state.cards.length) {
-    $('#status').textContent = 'Nothing matched. Try loosening the filters.';
-    $('#status').hidden = false;
+/** The end of a search: say so, or say there was nothing. */
+function finishResults(data) {
+  updateResultBar(data);
+  if (state.cards.length) {
+    $('#status').hidden = true;
     return;
   }
-  for (const c of state.cards) grid.append(tile(c));
+  $('#grid').replaceChildren();
+  state.gridLive = true;
+  const progress = describeProgress(data);
+  $('#status').textContent = progress.tone === 'degraded'
+    ? `${progress.text} Nothing was found for this search.`
+    : 'Nothing matched. Try loosening the filters.';
+  $('#status').hidden = false;
 }
 
 function tile(card) {
@@ -390,10 +492,16 @@ function restoreLanding() {
  * about 0.3s once the 45-minute cache has it. Discover, by contrast, is
  * cached for three hours and answers immediately.
  */
-async function browseDomain(domain) {
+async function browseDomain(domain, signal) {
   // minSeeders=0 because a hosted archive.org result has no swarm at all, and
   // the default of 1 would drop the only results these rows have.
-  const res = await apiFetch(`/api/search?kind=${encodeURIComponent(domain)}&minSeeders=0`);
+  //
+  // The signal is not optional garnish. A browse is issued for every domain
+  // discover has no row for, and someone who types a search two seconds after
+  // the page opens leaves all of them in flight -- filling the connection pool
+  // the search itself needs, for rows that are about to be hidden.
+  const res = await apiFetch(
+    `/api/search?kind=${encodeURIComponent(domain)}&minSeeders=0`, { signal });
   if (!res.ok) throw new Error(`browse ${domain}: ${res.status}`);
   const data = await res.json();
   // A rail is a rail, not a result set; the rest is a search away.
@@ -408,11 +516,19 @@ async function browseDomain(domain) {
  * only supplies the two things a module of pure structure cannot have: where
  * the data comes from, and what a click does.
  */
+// Everything the landing page has in flight. Aborted the moment a search
+// starts: the rails are about to be hidden, and their requests would otherwise
+// go on competing with the search for the same connections.
+let homeAbort = null;
+
 async function loadHome() {
+  if (homeAbort) homeAbort.abort();
+  homeAbort = new AbortController();
+  const homeSignal = homeAbort.signal;
   const host = $('#discover');
   let rows = [];
   try {
-    const res = await apiFetch('/api/discover');
+    const res = await apiFetch('/api/discover', { signal: homeSignal });
     if (res.ok) rows = (await res.json()).rows || [];
   } catch {
     // No curated rows is survivable: every domain simply falls back to a
@@ -432,7 +548,7 @@ async function loadHome() {
   try {
     await renderHome(host, {
       discoverRows: rows,
-      browse: browseDomain,
+      browse: (domain) => browseDomain(domain, homeSignal),
       resume,
       handlers: {
         onActivate(item, action) {
@@ -1520,6 +1636,133 @@ function showStatus(text) {
   s.hidden = false;
 }
 
+// --------------------------------------------------------------- type-ahead --
+
+/**
+ * Suggestions while you type.
+ *
+ * The server side of this asks only memory and archive.org -- never a torrent
+ * indexer -- because nothing that asks an indexer can keep up with a keyboard.
+ * It also has a second job: every keystroke pulls archive.org's answer for that
+ * prefix into the server's cache, so the search that follows a moment later
+ * reads it out of memory instead of paying for it.
+ */
+const suggester = createSuggester({
+  fetchJson: async (url, opts) => {
+    const res = await apiFetch(url, opts);
+    if (!res.ok) throw new Error(`suggest: ${res.status}`);
+    return res.json();
+  },
+  onResult: ({ q, suggestions }) => {
+    // The box moved on while this was in flight. Drawing it would put
+    // suggestions for an older prefix under the cursor.
+    if (q !== $('#q').value.trim()) return;
+    renderSuggestions(suggestions);
+  },
+});
+
+function renderSuggestions(list) {
+  const host = $('#suggest');
+  state.suggestions = list || [];
+  state.suggestIndex = -1;
+  host.replaceChildren();
+
+  if (!state.suggestions.length) {
+    closeSuggestions();
+    return;
+  }
+  for (const [i, s] of state.suggestions.entries()) {
+    const li = el('li', 'sg');
+    li.setAttribute('role', 'option');
+    li.id = `sg-${i}`;
+    li.append(el('span', 'sg-title', s.title));
+    const hint = suggestionHint(s);
+    if (hint) li.append(el('span', 'sg-hint', hint));
+    // mousedown, not click: the input's blur fires first and would close the
+    // list out from under the pointer before a click could land.
+    li.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      chooseSuggestion(i);
+    });
+    li.addEventListener('mouseenter', () => highlightSuggestion(i));
+    host.append(li);
+  }
+  host.hidden = false;
+  $('#q').setAttribute('aria-expanded', 'true');
+}
+
+function highlightSuggestion(i) {
+  state.suggestIndex = i;
+  const host = $('#suggest');
+  for (const [n, li] of [...host.children].entries()) {
+    li.classList.toggle('on', n === i);
+  }
+  $('#q').setAttribute('aria-activedescendant', i >= 0 ? `sg-${i}` : '');
+}
+
+function closeSuggestions() {
+  const host = $('#suggest');
+  if (!host) return;
+  host.hidden = true;
+  host.replaceChildren();
+  state.suggestions = [];
+  state.suggestIndex = -1;
+  $('#q').setAttribute('aria-expanded', 'false');
+  $('#q').setAttribute('aria-activedescendant', '');
+}
+
+function chooseSuggestion(i) {
+  const picked = state.suggestions[i];
+  if (!picked) return;
+  suggester.cancel();
+  closeSuggestions();
+  $('#q').value = picked.title;
+  state.query = picked.title;
+  history.replaceState(null, '', `?q=${encodeURIComponent(picked.title)}`);
+  $('#search-form button[type=submit]').textContent = 'Search';
+  search();
+}
+
+function wireTypeAhead() {
+  const input = $('#q');
+
+  input.addEventListener('input', () => {
+    const kind = state.filters.groups.size === 1 ? [...state.filters.groups][0] : '';
+    suggester.query(input.value, { kind, adult: state.filters.adult });
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const move = suggestKey(e.key, {
+      index: state.suggestIndex, count: state.suggestions.length,
+    });
+    // Not a key this list handles -- including Enter with nothing highlighted,
+    // which must stay an ordinary search for what was typed.
+    if (!move) return;
+    e.preventDefault();
+    if (move.action === 'close') {
+      suggester.cancel();
+      closeSuggestions();
+      return;
+    }
+    if (move.action === 'choose') {
+      chooseSuggestion(move.index);
+      return;
+    }
+    highlightSuggestion(move.index);
+  });
+
+  input.addEventListener('blur', () => {
+    suggester.cancel();
+    closeSuggestions();
+  });
+  input.addEventListener('focus', () => {
+    if (input.value.trim().length >= 2) {
+      const kind = state.filters.groups.size === 1 ? [...state.filters.groups][0] : '';
+      suggester.query(input.value, { kind, adult: state.filters.adult });
+    }
+  });
+}
+
 async function streamPasted() {
   const raw = $('#magnet').value.trim();
   if (!raw) {
@@ -2049,8 +2292,12 @@ function init() {
     $('#privacy').hidden = true;
   });
 
+  wireTypeAhead();
+
   $('#search-form').addEventListener('submit', (e) => {
     e.preventDefault();
+    suggester.cancel();
+    closeSuggestions();
     state.query = $('#q').value.trim();
     // No words but a category ticked is a browse: "show me games".
     if (!state.query && !state.filters.groups.size) return;
@@ -2139,7 +2386,8 @@ function init() {
     // Innermost first: settings can be opened over a detail sheet, and the
     // service editor sits inside settings. Escaping out of a half-typed key
     // straight past the panel would lose the whole entry.
-    if (!$('#svc-editor').hidden) closeServiceEditor();
+    if (!$('#suggest').hidden) { suggester.cancel(); closeSuggestions(); }
+    else if (!$('#svc-editor').hidden) closeServiceEditor();
     else if (!$('#settings').hidden) closeSettings();
     else if (!$('#reader').hidden) closeReader();
     else if (!$('#player').hidden) closePlayer();

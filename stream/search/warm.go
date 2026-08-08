@@ -101,7 +101,14 @@ func (w *warmer) run() {
 			continue
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		// archive.org first, and separately cached. It is the source a person
+		// actually waits on now -- the first paint of a search asks it and
+		// gives up after a few hundred milliseconds -- so warming it is worth
+		// more than warming the indexers, and costs a single cheap request.
+		if ia, err := w.srv.searchArchiveCached(ctx, title, ""); err == nil && len(ia) > 0 {
+			log.Printf("warmed archive.org %q (%d cards)", title, len(ia))
+		}
 		cards, err := w.srv.searchProwlarr(ctx, title, "")
 		if err == nil && len(cards) > 0 {
 			w.srv.tmdb.enrich(ctx, cards, 24)

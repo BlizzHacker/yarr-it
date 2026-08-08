@@ -24,7 +24,106 @@ import (
 // is a metadata query, and playback is an iframe pointed at their player, so no
 // game byte ever crosses our relay.
 
-const archiveSearchAPI = "https://archive.org/advancedsearch.php"
+// A var rather than a const so a test can point it at a stub. archive.org is
+// now the source a person actually waits on, and "does the first paint carry
+// its results" is not a question that can be answered honestly by calling the
+// real archive.org from a test.
+var archiveSearchAPI = "https://archive.org/advancedsearch.php"
+
+// One client for the whole process, with a warm connection pool.
+//
+// This was a fresh `&http.Client{}` per call, which is a fresh TLS handshake
+// per call. Measured against archive.org from the VPS: 187ms of the 310ms
+// round trip was the handshake, and the query itself was 120ms. Since
+// archive.org is now the source a person actually waits on, that handshake was
+// most of the wait -- paid again on every single search, for nothing.
+//
+// The timeout is per request and generous, because this client is no longer on
+// anybody's critical path: the first paint gives up on it after its own budget
+// and collects the answer later.
+var archiveClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     5 * time.Minute,
+		ForceAttemptHTTP2:   true,
+	},
+}
+
+// warmArchiveConnection opens the TLS connection to archive.org before anybody
+// needs it.
+//
+// The handshake is 187ms of a 310ms round trip, and without this the first
+// search after a restart pays all of it -- which is the search a person runs
+// immediately after a deploy, and therefore the one they judge it by. The
+// warmer's own traffic keeps the pool alive after that; this only covers the
+// gap between starting up and the first thing it does.
+func warmArchiveConnection() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, archiveSearchAPI, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", "yarr.it/1.0 (+https://yarrit.com)")
+	resp, err := archiveClient.Do(req)
+	if err != nil {
+		// Not worth reporting. A cold pool costs one search 180ms; a log line
+		// about it at every start would say nothing anybody can act on.
+		return
+	}
+	_ = resp.Body.Close()
+}
+
+// archiveCacheKey namespaces archive.org results away from merged search
+// results in the same map. They must not collide: one is a whole answer, the
+// other is one source's contribution to it, and serving the second as the
+// first is how a search silently loses its torrents.
+func archiveCacheKey(q, kind string) string {
+	return "ia\x00" + kind + "\x00" + strings.ToLower(strings.TrimSpace(q))
+}
+
+// searchArchiveCached is searchArchive with the result kept.
+//
+// The point is not to save archive.org the traffic. It is that type-ahead asks
+// this same question a few hundred milliseconds before the search does -- so by
+// the time somebody presses Enter, the answer is already in memory and the
+// first paint carries real results instead of a promise.
+//
+// Concurrent callers for the same query collapse onto one request: the search
+// and the keystroke that triggered it would otherwise both go out.
+func (s *server) searchArchiveCached(ctx context.Context, q, kind string) ([]card, error) {
+	key := archiveCacheKey(q, kind)
+	if cards, ok := s.getCached(key); ok {
+		return cards, nil
+	}
+
+	wait, leader := s.claim(key)
+	if !leader {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		if cards, ok := s.getAny(key); ok {
+			return cards, nil
+		}
+		// The leader failed. Falling through and asking again is right: two
+		// failures are cheaper than a silent empty result.
+	} else {
+		defer s.release(key)
+	}
+
+	cards, err := s.searchArchive(ctx, q, kind)
+	if err != nil {
+		return nil, err
+	}
+	if len(cards) > 0 {
+		s.putCached(key, cards)
+	}
+	return cards, nil
+}
 
 // What counts as a playable game.
 //
@@ -334,8 +433,7 @@ func (s *server) searchArchive(ctx context.Context, q, kind string) ([]card, err
 	}
 	req.Header.Set("User-Agent", "yarr.it/1.0 (+https://yarrit.com)")
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := archiveClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("archive.org search: %w", err)
 	}

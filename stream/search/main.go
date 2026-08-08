@@ -105,12 +105,20 @@ type server struct {
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
 
-	// inflight collapses concurrent identical queries into one upstream call.
-	// A search fans out to ~28 indexers and can take a minute; without this,
-	// three people searching the same title triple the load on Prowlarr and
-	// make the timeouts that much likelier.
+	// inflight collapses concurrent identical calls to one upstream source into
+	// a single request. Without it, a keystroke's type-ahead and the search it
+	// precedes both ask archive.org the same question at the same moment.
 	flightMu sync.Mutex
 	inflight map[string]chan struct{}
+
+	// Searches still running after their response was sent, collectable by id.
+	// This is what lets a search answer in 300ms and still deliver everything a
+	// 30-second indexer fan-out finds.
+	jobs jobStore
+
+	// Trips when Prowlarr is failing, so a stalled backend costs one search its
+	// budget rather than every search for as long as it is down.
+	indexerBreaker breaker
 
 	// Fast/slow indexer split, so it is not recomputed per search.
 	ixMu      sync.Mutex
@@ -181,6 +189,9 @@ func main() {
 	go lib.flushLoop()
 
 	s.warm = newWarmer(s)
+	// archive.org answers the first paint of every search, so its connection is
+	// opened before the first person needs it rather than during their search.
+	go warmArchiveConnection()
 	go s.evictLoop()
 	// Pre-search the titles on the landing rails so the common path --
 	// browse trending, click a poster -- hits cache instead of a 14s fan-out.
@@ -215,6 +226,14 @@ func main() {
 	// Catalogue endpoints are open to any origin, so a client can point at any
 	// instance. Personal endpoints below deliberately are not.
 	mux.HandleFunc("/api/search", publicCORS(auth.requireAuth(s.handleSearch)))
+	// Collecting the rest of a search that has already answered. A separate
+	// path as well as the `job=` parameter above, because a television's HTTP
+	// client is easier to point at a URL than to teach a query-string protocol
+	// -- and both reach the same handler, so they cannot drift.
+	mux.HandleFunc("/api/search/updates", publicCORS(auth.requireAuth(s.handleSearch)))
+	// Type-ahead. Answers from memory and archive.org only -- never from an
+	// indexer -- because nothing that asks an indexer can keep up with typing.
+	mux.HandleFunc("/api/suggest", publicCORS(auth.requireAuth(s.handleSuggest)))
 	mux.HandleFunc("/api/discover", publicCORS(auth.requireAuth(s.handleDiscover)))
 	// Turns an archive.org item into displayable images. A television cannot
 	// render a PDF or follow a details page, so this is what makes comics and
@@ -423,10 +442,82 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			status = "ok"
 		}
 	}
-	writeJSON(w, 200, map[string]any{"prowlarr": status, "cachedQueries": n})
+	body := map[string]any{"prowlarr": status, "cachedQueries": n}
+	// Whether searches are currently skipping the indexers on purpose. Without
+	// this, a breaker that has tripped looks exactly like an index with nothing
+	// in it -- results simply stop arriving and nothing says why.
+	if s.indexerBreaker.open() {
+		body["indexerBreaker"] = "open"
+	}
+	writeJSON(w, 200, body)
+}
+
+// searchState is everything the response says about itself beyond the cards:
+// where they came from, what is still coming, and what failed.
+type searchState struct {
+	cache   string
+	job     string
+	pending bool
+	sources map[string]string
+	stale   bool
+	partial bool
+}
+
+// respondSearch writes one search response, in the one shape every caller of
+// this endpoint gets -- the first paint, a poll, and a straight cache hit.
+//
+// Filters are applied here rather than upstream, so changing one costs no
+// indexer traffic and a poll can re-narrow a growing result set for free.
+func respondSearch(w http.ResponseWriter, q string, f filters,
+	dev *deviceProfile, cards []card, st searchState) {
+
+	visible := dev.applyDevice(cards)
+	body := map[string]any{
+		"query":  q,
+		"cards":  f.apply(visible),
+		"facets": buildFacets(visible),
+		"total":  len(visible),
+	}
+	if dev != nil {
+		body["device"] = dev.Name
+		body["filteredOut"] = len(cards) - len(visible)
+	}
+	if st.stale {
+		body["stale"] = true
+	}
+	if st.partial {
+		body["partial"] = true
+	}
+	if st.job != "" {
+		body["job"] = st.job
+	}
+	// Always present, never inferred from its absence. A client that has to
+	// guess whether more is coming will guess wrong in exactly the case that
+	// matters -- an empty first paint, where "no results" and "not yet" look
+	// identical.
+	body["pending"] = st.pending
+	body["complete"] = !st.pending
+	if st.pending {
+		// What the client should wait before collecting. Advisory: the client
+		// backs off on its own, and a client that ignores it is merely rude
+		// rather than wrong, because a poll is a map lookup.
+		body["retryMs"] = 400
+	}
+	if len(st.sources) > 0 {
+		body["sources"] = st.sources
+	}
+	w.Header().Set("X-Cache", st.cache)
+	writeJSON(w, 200, body)
 }
 
 func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	// A poll for a job an earlier request started. Handled before anything
+	// else, because everything below starts work and a poll must start none.
+	if id := strings.TrimSpace(r.URL.Query().Get("job")); id != "" {
+		s.handleSearchCollect(w, r, id)
+		return
+	}
+
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(q) > 128 {
 		q = q[:128]
@@ -451,128 +542,104 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	dev := deviceProfileFor(r.URL.Query().Get("device"))
 	cacheKey := searchCacheKey(q, kind)
 
-	// Set when the indexers failed but archive.org answered, so the response
-	// can admit it is incomplete rather than presenting a partial result as a
-	// whole one.
-	partial := false
-
-	// Filters are applied to the cached result set, so changing one is instant
-	// and costs no indexer traffic.
-	respond := func(cards []card, cacheState string, stale bool) {
-		visible := dev.applyDevice(cards)
-		body := map[string]any{
-			"query":  q,
-			"cards":  f.apply(visible),
-			"facets": buildFacets(visible),
-			"total":  len(visible),
-		}
-		if dev != nil {
-			body["device"] = dev.Name
-			body["filteredOut"] = len(cards) - len(visible)
-		}
-		if stale {
-			body["stale"] = true
-		}
-		if partial {
-			body["partial"] = true
-		}
-		w.Header().Set("X-Cache", cacheState)
-		writeJSON(w, 200, body)
-	}
-
+	// A complete answer already in memory. Nothing else can beat this, and it
+	// is the state the warmer and every previous search are working towards.
 	if cards, ok := s.getCached(cacheKey); ok {
-		respond(cards, "HIT", false)
+		respondSearch(w, q, f, dev, cards, searchState{cache: "HIT"})
 		return
 	}
 
-	// Collapse duplicate concurrent queries; the loser waits and then reads
-	// whatever the winner cached.
-	if wait, leader := s.claim(cacheKey); !leader {
-		select {
-		case <-wait:
-		case <-r.Context().Done():
-			return
-		}
-		if cards, ok := s.getAny(cacheKey); ok {
-			respond(cards, "COALESCED", false)
-			return
-		}
-	} else {
-		defer s.release(cacheKey)
-	}
-
-	// archive.org runs concurrently with the indexers rather than after them:
-	// it answers in well under a second while a 28-indexer fan-out can take
-	// most of a minute, so making it wait would be pure added latency.
-	type iaResult struct {
-		cards []card
-		err   error
-	}
-	ia := make(chan iaResult, 1)
-	// archive.org is asked for any kind it has a scope for, not just games.
-	// Restricting it to games was why `kind=image` and `kind=comic` had no
-	// source of their own -- the torrent indexers carry almost no images, so
-	// the honest answer for those kinds comes from here.
 	_, wantArchive := scopeFor(kind)
-	if wantArchive {
-		go func() {
-			c, err := s.searchArchive(r.Context(), q, kind)
-			ia <- iaResult{c, err}
-		}()
-	}
 
-	cards, err := s.searchProwlarr(r.Context(), q, kind)
-
-	if wantArchive {
-		got := <-ia
-		if got.err != nil {
-			// A dead archive.org must not take the torrent results down with
-			// it, so this is logged and dropped rather than returned.
-			log.Printf("archive.org search %q: %v", q, got.err)
-		} else if len(got.cards) > 0 {
-			cards = append(cards, got.cards...)
-			// archive.org alone is a usable answer, but saying so silently
-			// turned "the indexers failed" into "there are only six results",
-			// which is indistinguishable from a working search that found
-			// little -- and cost an hour of chasing a break that was not one.
-			if err != nil {
-				log.Printf("search %q: indexers failed, serving %d archive.org results only: %v",
-					q, len(got.cards), err)
-				partial = true
-			}
-			err = nil
-		}
-	}
-
-	if err != nil {
-		log.Printf("search %q: %v", q, err)
-		// A slow indexer should not turn into a dead end. If we have ever had
-		// results for this query, stale ones beat an error page.
+	// Nothing on this instance could ever answer this: no indexer is
+	// configured and the kind has no archive.org scope. Waiting does not fix
+	// that, so say which of the two problems it is rather than offering a
+	// retry that can only fail again.
+	if s.apiKey == "" && !wantArchive {
 		if stale, ok := s.getAny(cacheKey); ok {
-			respond(stale, "STALE", true)
+			respondSearch(w, q, f, dev, stale, searchState{cache: "STALE", stale: true})
 			return
 		}
-		// "Try again in a moment" is false advice for an instance that has no
-		// indexer at all -- waiting never fixes it. Say which of the two it is.
-		if errors.Is(err, errNoIndexers) {
-			writeJSON(w, 503, map[string]string{
-				"error": "no torrent indexer is configured on this server — " +
-					"add a Prowlarr URL and API key to enable search",
-			})
-			return
-		}
-		writeJSON(w, 504, map[string]string{
-			"error": "indexers are taking too long right now — try again in a moment",
+		writeJSON(w, 503, map[string]string{
+			"error": "no torrent indexer is configured on this server — " +
+				"add a Prowlarr URL and API key to enable search",
 		})
 		return
 	}
 
-	// Artwork only for the leading cards: enriching 200 of them would be slow
-	// and most are never scrolled to.
-	s.tmdb.enrich(r.Context(), cards, 40)
+	// Start (or join) the job that will do the slow half, then answer with
+	// whatever is ready inside the first-paint budget. The response never waits
+	// on the indexers: that wait is the defect this replaces.
+	job, _ := s.jobs.start(s, q, kind)
 
-	s.putCached(cacheKey, cards)
-	respond(cards, "MISS", false)
+	select {
+	case <-job.firstWave:
+	case <-time.After(firstPaintBudget):
+	case <-r.Context().Done():
+		return
+	}
+
+	snap := job.snapshot()
+
+	// Cards already in memory from adjacent queries and from the warmer. This
+	// is what makes a first paint carry something real when archive.org has not
+	// answered yet -- a search for "mario kart" shows the matching part of a
+	// cached "mario" immediately.
+	cards := mergeCards(snap.cards, s.localCards(q, kind, localPaintLimit))
+	if len(cards) == 0 {
+		// Last resort before an empty grid: anything we ever had for exactly
+		// this query, however old.
+		if old, ok := s.getAny(cacheKey); ok {
+			cards = old
+		}
+	}
+
+	st := searchState{
+		cache:   "PARTIAL",
+		job:     job.id,
+		pending: !snap.complete,
+		sources: snap.sources,
+		partial: !snap.complete,
+	}
+	if snap.complete {
+		st.cache = "MISS"
+	}
+	respondSearch(w, q, f, dev, cards, st)
+}
+
+// handleSearchCollect answers a poll: everything the job has found so far.
+//
+// It does no work of its own -- a lock, a copy and a filter pass. That is the
+// property that makes polling affordable where an open stream would not be:
+// there is no goroutine and no connection held per waiting client.
+func (s *server) handleSearchCollect(w http.ResponseWriter, r *http.Request, id string) {
+	f := parseFilters(r.URL.Query())
+	dev := deviceProfileFor(r.URL.Query().Get("device"))
+
+	job, ok := s.jobs.get(id)
+	if !ok {
+		// The job was swept, or this client has been away long enough that it
+		// was. 410 rather than 404: the id was real, the results are simply no
+		// longer collectable, and the client should start a fresh search rather
+		// than treat it as a bad request.
+		writeJSON(w, 410, map[string]any{
+			"error": "that search has expired — run it again",
+			"gone":  true,
+		})
+		return
+	}
+
+	snap := job.snapshot()
+	q := job.query
+	cards := mergeCards(snap.cards, s.localCards(q, job.kind, localPaintLimit))
+
+	respondSearch(w, q, f, dev, cards, searchState{
+		cache:   "JOB",
+		job:     job.id,
+		pending: !snap.complete,
+		sources: snap.sources,
+		partial: !snap.complete,
+	})
 }
 
 // claim returns (wait, true) for the goroutine that should do the upstream
@@ -580,6 +647,9 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 func (s *server) claim(k string) (<-chan struct{}, bool) {
 	s.flightMu.Lock()
 	defer s.flightMu.Unlock()
+	if s.inflight == nil {
+		s.inflight = map[string]chan struct{}{}
+	}
 	if ch, ok := s.inflight[k]; ok {
 		return ch, false
 	}
@@ -622,13 +692,30 @@ func (s *server) getAny(k string) ([]card, bool) {
 func (s *server) putCached(k string, cards []card) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cache[k] = cacheEntry{cards: cards, expires: time.Now().Add(s.ttl)}
+	if s.cache == nil {
+		s.cache = map[string]cacheEntry{}
+	}
+	ttl := s.ttl
+	if ttl <= 0 {
+		ttl = defaultTTL
+	}
+	s.cache[k] = cacheEntry{cards: cards, expires: time.Now().Add(ttl)}
 }
 
 func (s *server) evictLoop() {
-	t := time.NewTicker(5 * time.Minute)
+	t := time.NewTicker(1 * time.Minute)
 	defer t.Stop()
+	n := 0
 	for range t.C {
+		// Finished searches nobody can still be collecting. Swept every minute
+		// rather than every five: a job holds its whole result set, and on a
+		// 1 GB box a busy hour of unswept jobs is real memory.
+		s.jobs.sweep()
+
+		n++
+		if n%5 != 0 {
+			continue
+		}
 		// Expired means "re-query", not "discard": expired entries are the
 		// fallback when indexers time out. Only drop genuinely ancient ones so
 		// memory stays bounded on a 1 GB box.
@@ -675,7 +762,11 @@ func (s *server) searchProwlarr(ctx context.Context, q, kind string) ([]card, er
 }
 
 func (s *server) searchProwlarrAggregate(ctx context.Context, q, kind string) ([]card, error) {
-	ctx, cancel := context.WithTimeout(ctx, 100*time.Second)
+	// Thirty seconds, not a hundred. This is the unscoped fan-out to every
+	// indexer at once and it is the slowest thing in the system; it now runs
+	// behind a response that has already been sent, so a longer ceiling buys
+	// nothing but a socket held open past the point anyone is collecting.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	u := fmt.Sprintf("%s/api/v1/search?query=%s&limit=200", s.prowlarrURL, url.QueryEscape(q))
