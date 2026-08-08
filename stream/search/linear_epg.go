@@ -77,6 +77,15 @@ type LinearEngine struct {
 
 	resolver LinearResolver
 
+	// Who may see what. publicProviders is the allowlist a channel's
+	// SourceProvider has to appear in before a stranger can read it;
+	// privateProviders is every provider that fed the engine an ordinary
+	// library and always wins over it. Both are keyed by lowercased provider
+	// id. See linear_access.go -- the rule is default-deny and lives there.
+	publicProviders  map[string]bool
+	privateProviders map[string]bool
+	ownerFn          linearOwnerFunc
+
 	// Injectable so tests can stand at a chosen instant, run a DST weekend, or
 	// prove two readers agree without racing a real clock.
 	nowFn func() time.Time
@@ -89,15 +98,20 @@ type LinearEngine struct {
 
 func NewLinearEngine(dir string) *LinearEngine {
 	e := &LinearEngine{
-		dir:           dir,
-		channels:      map[string]*LinearChannel{},
-		schedules:     map[string]*linearScheduleState{},
-		pools:         map[string]*linearLibEntry{},
-		nowFn:         time.Now,
-		pastBuffer:    linearDefaultPast,
-		poolTTL:       linearPoolTTL,
-		retryAttempts: 3,
-		retryBackoff:  250 * time.Millisecond,
+		dir:       dir,
+		channels:  map[string]*LinearChannel{},
+		schedules: map[string]*linearScheduleState{},
+		pools:     map[string]*linearLibEntry{},
+		// Both start empty, which means no provider is public and no request is
+		// the owner's. A brand-new engine therefore shows a stranger nothing at
+		// all, and only becomes readable as libraries and an owner are declared.
+		publicProviders:  map[string]bool{},
+		privateProviders: map[string]bool{},
+		nowFn:            time.Now,
+		pastBuffer:       linearDefaultPast,
+		poolTTL:          linearPoolTTL,
+		retryAttempts:    3,
+		retryBackoff:     250 * time.Millisecond,
 	}
 	if dir != "" {
 		if err := e.load(); err != nil {
@@ -113,9 +127,19 @@ func NewLinearEngine(dir string) *LinearEngine {
 func (e *LinearEngine) now() time.Time { return e.nowFn().UTC() }
 
 // AddLibrary registers a source of programmes.
+//
+// Everything added this way is private, and the provider it names is recorded
+// as private for good. That record is what makes the public allowlist safe:
+// registering a Jellyfin under a provider id that also has a public library
+// cannot make its channels readable, because private is checked first. Use
+// AddPublicLibrary for public-domain sources -- see linear_access.go.
 func (e *LinearEngine) AddLibrary(l LinearLibrary) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.privateProviders == nil {
+		e.privateProviders = map[string]bool{}
+	}
+	e.privateProviders[linearProviderKey(l.LinearProviderID())] = true
 	e.libs = append(e.libs, l)
 }
 
@@ -679,6 +703,52 @@ func (e *LinearEngine) persistSchedule(id string) error {
 	return linearWriteFileAtomic(filepath.Join(e.dir, linearSchedFile(id)), b)
 }
 
+// The seed marker records which built-in channels have ever been created, so
+// that deleting one makes it stay deleted instead of reappearing at the next
+// restart. It is kept separate from channels.json because it has to outlive the
+// rows it names -- which is the whole point of it.
+const linearSeedMarkerFile = "seeded.json"
+
+func (e *LinearEngine) loadSeedMarker() map[string]bool {
+	out := map[string]bool{}
+	if e.dir == "" {
+		return out
+	}
+	b, err := os.ReadFile(filepath.Join(e.dir, linearSeedMarkerFile))
+	if err != nil {
+		return out
+	}
+	var ids []string
+	if err := json.Unmarshal(b, &ids); err != nil {
+		// Unreadable means "nothing has been seeded", which re-creates the
+		// built-in channels. That is the recoverable direction: a duplicate
+		// channel can be deleted, a channel that never appears cannot be found.
+		return out
+	}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out
+}
+
+func (e *LinearEngine) saveSeedMarker(seeded map[string]bool) {
+	if e.dir == "" {
+		return
+	}
+	ids := make([]string, 0, len(seeded))
+	for id := range seeded {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return
+	}
+	if err := linearWriteFileAtomic(filepath.Join(e.dir, linearSeedMarkerFile), b); err != nil {
+		log.Printf("linear: could not record which channels have been seeded: %v", err)
+	}
+}
+
 func (e *LinearEngine) load() error {
 	b, err := os.ReadFile(filepath.Join(e.dir, "channels.json"))
 	if err != nil {
@@ -785,22 +855,33 @@ func LinearDefaultEngine() *LinearEngine {
 
 // registerLinearRoutes wires the linear-TV endpoints onto a mux.
 //
-// It takes only the mux so main.go can call it in one line. The handlers are
-// registered unwrapped; whether they sit behind publicCORS or a session gate
-// is main.go's decision, and the guide is catalogue data while channel
-// editing is not.
+// It takes only the mux so main.go can call it in one line.
 func registerLinearRoutes(mux *http.ServeMux) {
 	LinearDefaultEngine().RegisterRoutes(mux)
 }
 
 // RegisterRoutes is the same thing against a specific engine, which is how the
 // tests drive a real mux without touching process-wide state.
+//
+// There is exactly one registration path and every handler on it is gated. An
+// earlier shape registered these bare and left the gate to main.go, which is
+// fine right up until somebody adds a sixth route and forgets -- and the
+// symptom of forgetting is a private schedule served to the world, which
+// nothing would report. Whether a route also wants publicCORS or an owner-only
+// session check on top is still main.go's call; what it cannot do is opt out of
+// the per-channel boundary.
+//
+// The split below is by what a route *is*. Reading what is on a channel is a
+// per-channel question, so guide, now and stream go through the gate and answer
+// for whatever that caller may see. Creating, editing, deleting and previewing
+// are administration of the installation itself, which no stranger has any form
+// of, so they are owner-only outright.
 func (e *LinearEngine) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc(linearRoutePrefix+"channels", e.handleChannels)
-	mux.HandleFunc(linearRoutePrefix+"preview", e.handlePreview)
-	mux.HandleFunc(linearRoutePrefix+"guide", e.handleGuide)
-	mux.HandleFunc(linearRoutePrefix+"now", e.handleNow)
-	mux.HandleFunc(linearRoutePrefix+"stream", e.handleStream)
+	mux.HandleFunc(linearRoutePrefix+"channels", e.gate(e.handleChannels))
+	mux.HandleFunc(linearRoutePrefix+"preview", e.ownerOnly(e.handlePreview))
+	mux.HandleFunc(linearRoutePrefix+"guide", e.gate(e.handleGuide))
+	mux.HandleFunc(linearRoutePrefix+"now", e.gate(e.handleNow))
+	mux.HandleFunc(linearRoutePrefix+"stream", e.gate(e.handleStream))
 }
 
 // linearChannelRow is what the channel list returns: the wire Channel every
@@ -819,8 +900,15 @@ func (e *LinearEngine) handleChannels(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		defs := e.ChannelDefs()
+		owner := linearViewerOf(r).owner
 		rows := make([]linearChannelRow, 0, len(defs))
 		for i := range defs {
+			// A stranger is told only about public channels. Omitted rather
+			// than listed-and-marked: a row saying "Wade's Films, private"
+			// still publishes that the channel exists and what it is called.
+			if !owner && !e.channelIsPublic(&defs[i]) {
+				continue
+			}
 			row := linearChannelRow{
 				Channel:    defs[i].toChannel(linearProviderID),
 				Definition: defs[i],
@@ -850,6 +938,14 @@ func (e *LinearEngine) handleChannels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"channels": rows})
 
 	case http.MethodPost:
+		// Writing a channel is administration, whoever it would belong to.
+		// Checked here as well as at the route, because this handler serves
+		// three methods with three different answers and the read one is the
+		// only one a stranger has any business reaching.
+		if !linearViewerOf(r).owner {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})
+			return
+		}
 		var ch LinearChannel
 		if err := decodeBody(r, &ch); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "malformed body"})
@@ -863,6 +959,10 @@ func (e *LinearEngine) handleChannels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"channel": saved})
 
 	case http.MethodDelete:
+		if !linearViewerOf(r).owner {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})
+			return
+		}
 		id := strings.TrimSpace(r.URL.Query().Get("id"))
 		if id == "" {
 			writeJSON(w, 400, map[string]string{"error": "id is required"})
@@ -903,14 +1003,37 @@ func (e *LinearEngine) handleGuide(w http.ResponseWriter, r *http.Request) {
 			ids = append(ids, v)
 		}
 	}
+	// Narrow to what this caller may read *before* asking for a schedule.
+	// Filtering the programmes afterwards would be equivalent here and wrong in
+	// one way that matters: generating a private channel's window as a side
+	// effect of a stranger's request is work done on their behalf, and the
+	// timings of it are observable.
+	//
+	// A stranger who names a private channel gets the same answer as one who
+	// invents an id: the id is dropped and the guide comes back without it.
+	ids, anyVisible := e.visibleIDs(r, ids)
+
 	from := linearQueryInt(q.Get("from"), 0)
 	to := linearQueryInt(q.Get("to"), 0)
+	tz := strings.TrimSpace(q.Get("tz"))
+
+	if !anyVisible {
+		// Nothing this caller may read. An empty grid, not an error and not the
+		// whole lineup: a stranger asking for a private channel gets exactly
+		// what one asking for a channel that never existed gets.
+		writeJSON(w, 200, map[string]any{
+			"programs":  []LinearGuideEntry{},
+			"tz":        tz,
+			"serverNow": e.now().Unix(),
+		})
+		return
+	}
+
 	programs, err := e.Guide(r.Context(), ids, from, to)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	tz := strings.TrimSpace(q.Get("tz"))
 	writeJSON(w, 200, map[string]any{
 		"programs":  linearRender(programs, tz),
 		"tz":        tz,
