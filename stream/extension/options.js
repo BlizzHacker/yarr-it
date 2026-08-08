@@ -12,6 +12,7 @@
  */
 
 import { BUILTIN_ORIGINS, describeTarget, hostPattern, normaliseOrigin } from './relay-core.js';
+import { parseProxy } from './vpn-core.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -257,12 +258,201 @@ $('#add-origin').addEventListener('submit', async (ev) => {
   renderAll();
 });
 
+// ---------------------------------------------------- network protection ---
+//
+// The switch lives here for the same reason the relay's Allow buttons do:
+// `chrome.permissions.request` needs a user gesture, and a gesture only exists
+// in an extension surface. The worker does the applying -- it owns the auth
+// listener and has to survive this tab being closed -- so this half is a form
+// and a status line, and the status line is read back from the browser rather
+// than from what we asked for.
+
+function send(type, payload) {
+  return chrome.runtime.sendMessage({ type, payload });
+}
+
+/**
+ * Draw protectionSummary() as it comes back, word for word.
+ *
+ * It is deliberately unflattering -- it says "leaking", it says "this browser
+ * only" -- and rewriting any of it here to sound better would put the reassuring
+ * copy in a different file from the logic that decides whether it is true. The
+ * only thing added is the colour: points that begin WARNING are shown as
+ * warnings.
+ */
+function renderSummary(summary) {
+  $('#vpn-state').className = `state lvl-${summary.level}`;
+  $('#vpn-headline').textContent = summary.headline;
+  const list = $('#vpn-points');
+  list.textContent = '';
+  for (const p of summary.points) {
+    const li = document.createElement('li');
+    li.textContent = p;
+    if (/^WARNING/.test(p)) li.className = 'warn';
+    list.append(li);
+  }
+}
+
+let lastVpnState = null;
+
+async function renderVpn() {
+  let s;
+  try {
+    const r = await send('yarrit:vpn:state');
+    if (!r?.ok) return;
+    s = r.state;
+  } catch {
+    return; // worker asleep or mid-reload; the next event redraws
+  }
+  lastVpnState = s;
+  renderSummary(s.summary);
+
+  const addr = $('#vpn-address');
+  // Never overwrite what someone is in the middle of typing.
+  if (document.activeElement !== addr && s.config.host) {
+    addr.value = `${s.config.scheme}://${s.config.host}:${s.config.port}`;
+  }
+  $('#vpn-kill').checked = s.config.killSwitch !== false;
+  $('#vpn-lan').checked = s.config.exemptLan !== false;
+  if (s.hasCredentials && !$('#vpn-user').value) $('#vpn-user').placeholder = '(saved)';
+
+  // "Saved" and "deliverable" are different facts, and the gap between them is
+  // invisible from the outside: the page just fails with
+  // ERR_INVALID_AUTH_CREDENTIALS and nothing points here. Measured on Edge 151:
+  // the listener does attach when the permission is granted mid-session, but if
+  // it ever does not, this is the only thing that would say so.
+  if (s.hasCredentials && !s.authWired) {
+    say($('#vpn-msg'),
+      'Your proxy password is saved, but Chrome is not letting Yarr.It answer the '
+      + 'proxy\'s password prompt. Requests will fail with an authentication error. '
+      + 'Turn Yarr.It off and on again in your extensions list.', false);
+  }
+
+  // Two ways to be lied to by a stored boolean, both worth saying out loud.
+  if (s.drift && s.stored) {
+    say($('#vpn-msg'),
+      s.measured.proxyControl === 'controlled_by_other_extensions'
+        ? 'Another extension has taken over Chrome\'s proxy setting, so Yarr.It is not protecting anything. '
+          + 'Disable the other extension and turn this on again.'
+        : 'Yarr.It had protection switched on, but Chrome is no longer using it. You are not protected.',
+      false);
+  }
+}
+
+$('#vpn-on').addEventListener('click', () => {
+  // Validated first, because it is synchronous and there is no reason to make
+  // someone approve a permission prompt for an address that cannot work.
+  const parsed = parseProxy($('#vpn-address').value);
+  if (!parsed.ok) {
+    say($('#vpn-msg'), parsed.error, false);
+    return;
+  }
+
+  // Read from the field rather than from storage: a storage read is an await,
+  // and an await before permissions.request means the prompt never appears.
+  const username = $('#vpn-user').value.trim();
+  // `privacy` and not `proxy`: Chrome refuses to grant `proxy` at runtime even
+  // when it is listed as optional -- "Only permissions specified in the manifest
+  // may be requested" -- so it is declared up front instead. See vpn-bg.js for
+  // the measurement and for why that is the harmless one of the two.
+  const req = { permissions: ['privacy'] };
+  if (username) {
+    req.permissions.push('webRequest', 'webRequestAuthProvider');
+    req.origins = ['*://*/*'];
+  }
+
+  chrome.permissions.request(req).then(async (granted) => {
+    if (!granted) {
+      say($('#vpn-msg'), 'Chrome did not grant that, so nothing changed and you are not protected.', false);
+      return;
+    }
+    if (username) {
+      await send('yarrit:vpn:credentials', { username, password: $('#vpn-pass').value });
+    }
+    const r = await send('yarrit:vpn:enable', {
+      address: $('#vpn-address').value,
+      killSwitch: $('#vpn-kill').checked,
+      exemptLan: $('#vpn-lan').checked,
+    });
+    if (r?.ok) {
+      $('#vpn-ip').textContent = 'not checked';
+      say($('#vpn-msg'), `This browser now goes through ${parsed.host}:${parsed.port}. `
+        + 'Press Test to see what address the internet gives back.');
+    } else {
+      say($('#vpn-msg'), r?.error || 'Chrome refused to apply the proxy.', false);
+    }
+    renderVpn();
+  }).catch((e) => say($('#vpn-msg'), e?.message || 'Chrome refused that request.', false));
+});
+
+$('#vpn-off').addEventListener('click', async () => {
+  const r = await send('yarrit:vpn:disable');
+  $('#vpn-ip').textContent = 'not checked';
+  say($('#vpn-msg'), r?.ok
+    ? 'Off. Chrome is back on your own connection and WebRTC works normally again.'
+    : (r?.error || 'Could not fully turn it off.'), Boolean(r?.ok));
+  renderVpn();
+});
+
+$('#vpn-test').addEventListener('click', async () => {
+  $('#vpn-ip').textContent = 'checking…';
+  const r = await send('yarrit:vpn:ip');
+  if (r?.ok) {
+    $('#vpn-ip').textContent = r.ip;
+    say($('#vpn-msg'), `${r.via} says this browser is at ${r.ip}.`
+      + (lastVpnState?.summary?.level === 'off'
+        ? ' Protection is off, so that is your own address.'
+        : ' Compare it with protection off — if it is the same, the proxy is not carrying your traffic.'));
+  } else {
+    $('#vpn-ip').textContent = 'no answer';
+    // With the kill switch on this is the correct result for a dead proxy, and
+    // it is the opposite of a leak. Say which one it is rather than "error".
+    say($('#vpn-msg'), lastVpnState?.summary?.level === 'off'
+      ? `Could not reach the internet at all. ${r?.error || ''}`
+      : 'No answer — which is what the kill switch is supposed to do when the proxy is down. '
+        + 'Nothing fell back to your own address. '
+        + `(${r?.error || ''})`, false);
+  }
+});
+
+$('#vpn-save-creds').addEventListener('click', () => {
+  const username = $('#vpn-user').value.trim();
+  if (!username) {
+    say($('#vpn-msg'), 'Enter the username your provider gave you, or use Forget them.', false);
+    return;
+  }
+  chrome.permissions.request({
+    permissions: ['webRequest', 'webRequestAuthProvider'],
+    origins: ['*://*/*'],
+  }).then(async (granted) => {
+    if (!granted) {
+      say($('#vpn-msg'), 'Without that, Chrome will show its own password box on every request '
+        + 'instead of Yarr.It answering it. Nothing was saved.', false);
+      return;
+    }
+    await send('yarrit:vpn:credentials', { username, password: $('#vpn-pass').value });
+    $('#vpn-pass').value = '';
+    say($('#vpn-msg'), 'Saved on this machine only. They are not in your synced Chrome profile.');
+    renderVpn();
+  }).catch((e) => say($('#vpn-msg'), e?.message || 'Chrome refused that request.', false));
+});
+
+$('#vpn-clear-creds').addEventListener('click', async () => {
+  $('#vpn-user').value = '';
+  $('#vpn-pass').value = '';
+  $('#vpn-user').placeholder = '';
+  await send('yarrit:vpn:credentials', { username: '', password: '' });
+  say($('#vpn-msg'), 'Forgotten.');
+  renderVpn();
+});
+
 // ------------------------------------------------------------------ boot ---
 
 function renderAll() {
   renderGranted();
   renderPending();
   renderOrigins();
+  renderVpn();
 }
 
 chrome.permissions.onAdded.addListener(renderAll);
@@ -274,5 +464,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'session' && changes.relayPending) renderPending();
   if (area === 'sync' && changes.relayOrigins) renderOrigins();
   if (area === 'sync' && changes[HOSTS_KEY]) { renderGranted(); renderPending(); }
+  // Protection can be turned off from somewhere other than this tab, and a
+  // screen still reading "Protected" after that is the worst thing this page
+  // could do.
+  if (area === 'local' && changes.vpnConfig) renderVpn();
 });
 renderAll();

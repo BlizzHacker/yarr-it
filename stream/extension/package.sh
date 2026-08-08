@@ -7,8 +7,8 @@ mkdir -p dist
 OUT="dist/yarrit-extension-${VERSION}.zip"
 rm -f "$OUT"
 
-# The rules the relay enforces are worth failing the build over.
-node --test relay-core.test.js
+# The rules the relay and the proxy enforce are worth failing the build over.
+node --test relay-core.test.js vpn-core.test.js
 
 # Only ship what the extension actually loads, and derive that from the manifest
 # rather than keeping a second list beside it. A relay script silently missing
@@ -28,7 +28,7 @@ for (const cs of m.content_scripts||[]) {
   for (const f of cs.css||[]) s.add(f);
 }
 // Loaded by the pages and the worker above rather than named in the manifest.
-for (const f of ['sites.js','popup.js','options.js','relay-core.js','relay-bg.js']) s.add(f);
+for (const f of ['sites.js','popup.js','options.js','relay-core.js','relay-bg.js','vpn-core.js','vpn-bg.js']) s.add(f);
 const files=[...s].sort();
 const missing=files.filter(f=>!fs.existsSync(f));
 if (missing.length) { console.error('missing: '+missing.join(', ')); process.exit(1); }

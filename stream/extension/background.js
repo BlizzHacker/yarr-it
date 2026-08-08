@@ -10,6 +10,12 @@
 // should not mean reading past omnibox suggestions to get there.
 import './relay-bg.js';
 
+// Browser-level protection: chrome.proxy plus the WebRTC lock that stops torrent
+// peers walking around it. Same reasoning for keeping it in its own file --
+// it can reroute every request this browser makes, so it should be readable on
+// its own rather than found halfway down a file about context menus.
+import './vpn-bg.js';
+
 const SITE = 'https://yarrit.com';
 
 const streamURL = (magnet) => `${SITE}/?magnet=${encodeURIComponent(magnet)}`;

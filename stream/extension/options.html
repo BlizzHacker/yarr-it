@@ -42,21 +42,124 @@
   .msg.show { display:block; }
   .msg.ok { background:#0d2b26; color:var(--accent); }
   .msg.err { background:#2b1315; color:var(--bad); }
+
+  /* --- protection --- */
+  .state { display:flex; align-items:baseline; gap:10px; margin:0 0 10px; }
+  .state .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); flex:none; }
+  .state h3 { margin:0; font-size:16px; font-weight:650; }
+  .lvl-on .dot { background:var(--accent); }
+  .lvl-on h3 { color:var(--accent); }
+  .lvl-partial .dot { background:var(--warn); }
+  .lvl-partial h3 { color:var(--warn); }
+  .lvl-off .dot { background:var(--muted); }
+  ul.points { margin:0 0 14px; }
+  ul.points li { display:list-item; border:0; padding:2px 0 2px 16px; position:relative;
+                 color:var(--muted); font-size:12.5px; line-height:1.55; }
+  ul.points li::before { content:"—"; position:absolute; left:0; color:var(--line); }
+  ul.points li.warn { color:var(--warn); }
+  .field { display:flex; gap:8px; align-items:center; margin-top:10px; }
+  .field label { width:104px; flex:none; color:var(--muted); font-size:12.5px; }
+  .checks { display:flex; flex-direction:column; gap:8px; margin:14px 0 4px; }
+  .checks label { display:flex; gap:8px; align-items:flex-start; font-size:12.5px; color:var(--muted); }
+  .checks input { flex:none; width:auto; margin-top:2px; }
+  .checks b { color:var(--fg); font-weight:600; }
+  .actions { display:flex; gap:8px; margin-top:16px; align-items:center; }
+  .ip { margin-top:14px; padding-top:12px; border-top:1px solid var(--line);
+        display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--muted); }
+  .ip code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--fg); font-size:13px; }
+  details.creds { margin-top:14px; }
+  details.creds summary { cursor:pointer; color:var(--muted); font-size:12.5px; }
+  details.creds .hint { margin-top:8px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>▶ <span>Yarr.It</span> — home network access</h1>
+  <h1>▶ <span>Yarr.It</span> — network settings</h1>
   <p class="lede">
-    Yarr.It can reach services on your own network that a website is not allowed
-    to touch. Everything it may reach is listed here, and you can take any of it
-    back at any time.
+    Two things a web page cannot do and an extension can: send this browser
+    through a proxy, and reach services on your own network. Both are off until
+    you turn them on, everything they may touch is listed here, and you can take
+    any of it back at any time.
   </p>
 
   <section class="pending" id="pending-section" hidden>
     <h2>Waiting for your permission</h2>
     <p class="hint">A page asked for these and has not been allowed yet.</p>
     <ul id="pending"></ul>
+  </section>
+
+  <section>
+    <h2>Network protection</h2>
+    <p class="hint">
+      Send this browser's traffic through your VPN provider's proxy, and stop
+      WebRTC going around it. Torrent peers connect over WebRTC, so without that
+      second half a proxy covers your page loads and leaves every peer you
+      connect to seeing your real address.
+    </p>
+
+    <div class="state lvl-off" id="vpn-state">
+      <span class="dot"></span>
+      <h3 id="vpn-headline">Not protected</h3>
+    </div>
+    <ul class="points" id="vpn-points"></ul>
+
+    <div class="field">
+      <label for="vpn-address">Proxy</label>
+      <input id="vpn-address" placeholder="socks5://proxy-nl.example.com:1080" spellcheck="false" />
+    </div>
+
+    <details class="creds">
+      <summary>This proxy needs a username and password</summary>
+      <p class="hint">
+        Chrome cannot take a password from the address, so it is entered here and
+        kept on this machine only — never in your synced Chrome profile. Asking
+        Chrome for the access needed to answer a proxy's password prompt shows a
+        broad warning, so it is only requested if you fill this in.
+        <b>Chrome cannot do this for SOCKS proxies at all</b> — it has no support
+        for SOCKS username and password. If your provider's SOCKS proxy needs
+        one, use their HTTPS proxy instead.
+      </p>
+      <div class="field">
+        <label for="vpn-user">Username</label>
+        <input id="vpn-user" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label for="vpn-pass">Password</label>
+        <input id="vpn-pass" type="password" autocomplete="off" />
+      </div>
+      <div class="actions">
+        <button id="vpn-save-creds" type="button">Save these</button>
+        <button id="vpn-clear-creds" class="danger" type="button">Forget them</button>
+      </div>
+    </details>
+
+    <div class="checks">
+      <label>
+        <input type="checkbox" id="vpn-kill" checked />
+        <span><b>Fail instead of falling back.</b> If the proxy stops answering,
+        requests fail. Turn this off and traffic quietly continues from your real
+        address the moment the proxy dies, with nothing to tell you.</span>
+      </label>
+      <label>
+        <input type="checkbox" id="vpn-lan" checked />
+        <span><b>Skip my own network.</b> Addresses like 192.168.x.x go direct. A
+        proxy in another country cannot reach the server in the next room, and
+        that traffic never leaves the house anyway.</span>
+      </label>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="vpn-on" type="button">Turn on protection</button>
+      <button class="danger" id="vpn-off" type="button">Turn off</button>
+    </div>
+
+    <div class="ip">
+      <span>Your apparent address:</span>
+      <code id="vpn-ip">not checked</code>
+      <button id="vpn-test" type="button">Test</button>
+    </div>
+
+    <div class="msg" id="vpn-msg"></div>
   </section>
 
   <section>

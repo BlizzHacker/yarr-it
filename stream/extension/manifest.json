@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Yarr.It — view before you download",
+  "name": "Yarr.It \u2014 view before you download",
   "short_name": "Yarr.It",
   "version": "1.1.0",
   "description": "Stream any magnet link in your browser, and reach your own home media services from yarrit.com without running a server.",
@@ -10,7 +10,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "Yarr.It — stream this page's torrents",
+    "default_title": "Yarr.It \u2014 stream this page's torrents",
     "default_popup": "popup.html",
     "default_icon": {
       "48": "icons/icon-48.png",
@@ -25,28 +25,56 @@
     "page": "options.html",
     "open_in_tab": true
   },
-  "omnibox": { "keyword": "st" },
-  "permissions": ["contextMenus", "storage", "scripting", "offscreen"],
-  "host_permissions": ["https://yarrit.com/*"],
-  "optional_host_permissions": ["*://*/*"],
+  "omnibox": {
+    "keyword": "st"
+  },
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "scripting",
+    "offscreen",
+    "proxy"
+  ],
+  "host_permissions": [
+    "https://yarrit.com/*"
+  ],
+  "optional_host_permissions": [
+    "*://*/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["*://*/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "*://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
-      "matches": ["https://yarrit.com/*", "https://www.yarrit.com/*"],
-      "js": ["relay-main.js"],
+      "matches": [
+        "https://yarrit.com/*",
+        "https://www.yarrit.com/*"
+      ],
+      "js": [
+        "relay-main.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": false
     },
     {
-      "matches": ["https://yarrit.com/*", "https://www.yarrit.com/*"],
-      "js": ["relay.js"],
+      "matches": [
+        "https://yarrit.com/*",
+        "https://www.yarrit.com/*"
+      ],
+      "js": [
+        "relay.js"
+      ],
       "run_at": "document_start",
       "world": "ISOLATED",
       "all_frames": false
@@ -54,8 +82,18 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["icons/*", "pip.html"],
-      "matches": ["*://*/*"]
+      "resources": [
+        "icons/*",
+        "pip.html"
+      ],
+      "matches": [
+        "*://*/*"
+      ]
     }
+  ],
+  "optional_permissions": [
+    "privacy",
+    "webRequest",
+    "webRequestAuthProvider"
   ]
 }
