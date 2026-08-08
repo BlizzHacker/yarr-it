@@ -237,6 +237,31 @@ func main() {
 	// somebody is downloading is personal.
 	mux.HandleFunc("/api/activity", auth.requireUser(s.handleActivity))
 
+	// Radarr / Sonarr / Lidarr, one entry per configured instance. A missing
+	// instance is not an error: a self-hoster who runs none of these still gets
+	// a working search, and one that will not register must not stop the rest.
+	for _, p := range arrProvidersFromEnv() {
+		if err := s.providers.Add(p); err != nil {
+			log.Printf("provider %s: %v", p.ID(), err)
+		}
+	}
+
+	// Registered individually rather than through registerArrRoutes, because
+	// those handlers arrive unwrapped and only two of the five are safe that
+	// way. Search and details describe things that exist in the world; library,
+	// status and request expose or change what this household has.
+	arr := &arrAPI{reg: s.providers}
+	mux.HandleFunc("/api/arr/search", publicCORS(arr.handleSearch))
+	mux.HandleFunc("/api/arr/details", publicCORS(arr.handleDetails))
+	mux.HandleFunc("/api/arr/library", auth.requireUser(
+		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleLibrary(w, r) }))
+	mux.HandleFunc("/api/arr/status", auth.requireUser(
+		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleStatus(w, r) }))
+	// Requesting spends someone else's disk and bandwidth. It needs a session
+	// even when AUTH_SCOPE would otherwise let a reader through.
+	mux.HandleFunc("/api/arr/request", auth.requireUser(
+		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleRequest(w, r) }))
+
 	// Live TV. Gated by what each route actually is rather than by prefix: a
 	// guide is catalogue data that a television reads cross-origin, while
 	// creating or editing a channel is administration. Registering the whole
