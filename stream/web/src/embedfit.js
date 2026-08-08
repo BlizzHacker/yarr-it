@@ -31,6 +31,20 @@
 /** The natural box their embed draws into. */
 export const NATURAL = { w: 300, h: 155 };
 
+/**
+ * Clamping the iframe to NATURAL is right up until the emulator boots.
+ *
+ * The Archive's player resizes its own canvas to the game's native resolution
+ * once it starts -- Pac-Man is taller than 155px -- and a viewport locked to
+ * 300x155 then overflows, clips, and anchors the picture top-left, with a
+ * scrollbar. Pre-boot it looked perfect, which is why it shipped.
+ *
+ * We cannot observe that resize from out here, so a fixed natural size cannot
+ * be correct for both states. `fitEmbed` is kept for the maths and the tests,
+ * but the player now gives the frame room and lets the viewer choose the zoom.
+ */
+export const CLAMP_TO_NATURAL = false;
+
 /** Pixel art scaled by a whole number stays sharp; 2.37x makes it mush. */
 const SNAP_TOLERANCE = 0.12;
 

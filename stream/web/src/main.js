@@ -689,8 +689,17 @@ function fitEmbedToStage(playable, el) {
     return;
   }
   wrap.hidden = false;
-  const stage = wrap.closest('.stage');
-  if (stage) state.stopFit = keepFitted(wrap, el, stage);
+  // Give the frame the whole stage rather than clamping it to a guessed natural
+  // size. The Archive's emulator resizes its canvas on boot, and a clamped
+  // viewport clips it the moment the game starts -- which looked right until
+  // somebody actually pressed play.
+  wrap.style.width = '100%';
+  wrap.style.height = '100%';
+  wrap.style.overflow = 'hidden';
+  el.style.width = '100%';
+  el.style.height = '100%';
+  el.style.transform = '';
+  el.style.border = '0';
 }
 
 function playerElements() {
