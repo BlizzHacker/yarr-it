@@ -356,11 +356,31 @@ func main() {
 	// prefix one way would either lock TVs out of the guide or leave channel
 	// editing open.
 	linear := LinearDefaultEngine()
+	// Who the owner is, answered by owner.go and by nothing else. The engine
+	// takes the predicate rather than the auth config so that it stays testable
+	// without one, but the predicate IS authConfig.isOwner -- there is no second
+	// definition of ownership and no second environment variable. Installed
+	// before any library, because until it is set nobody is the owner and every
+	// private channel is invisible.
+	linear.SetOwnerFunc(auth.isOwner)
+
+	// Nostalgia TV: public-domain classic television and cartoons from
+	// archive.org. Registered through AddPublicLibrary, which is what makes
+	// channels built on it readable without an account -- see linear_access.go.
+	// It needs no configuration and reaches nothing on the home network, so it
+	// is always on: a fresh install has something playing before anybody has
+	// connected a media server, and before anybody has signed in.
+	archiveLibs, archiveResolver := newArchiveLinear()
+	for _, l := range archiveLibs {
+		linear.AddPublicLibrary(l)
+	}
+	var resolvers []LinearResolver
+	resolvers = append(resolvers, archiveResolver)
+
 	// Media servers feed the linear engine its programmes and resolve them to
 	// something playable. Constructed even when discovery fails, so an instance
 	// that is merely restarting reports an honest health state instead of
 	// disappearing from the settings screen.
-	var resolvers []LinearResolver
 	lctx, lcancel := context.WithTimeout(context.Background(), 20*time.Second)
 	if u := os.Getenv("JELLYFIN_URL"); u != "" {
 		p, libs, res, err := newJellyfinLinear(lctx, jellyfinConfig{
@@ -425,11 +445,72 @@ func main() {
 	// The cost is that a television must present a credential for Live TV.
 	// It already can: bearer.go exists precisely so a set-top box that finished
 	// the device flow can prove who it is without a cookie jar.
-	mux.HandleFunc("/api/v1/linear/guide", auth.requireOwner(linear.handleGuide))
-	mux.HandleFunc("/api/v1/linear/now", auth.requireOwner(linear.handleNow))
-	mux.HandleFunc("/api/v1/linear/stream", auth.requireOwner(linear.handleStream))
-	mux.HandleFunc("/api/v1/linear/channels", auth.requireOwner(linear.handleChannels))
-	mux.HandleFunc("/api/v1/linear/preview", auth.requireOwner(linear.handlePreview))
+	//
+	// ALL OF THAT STANDS. What follows narrows it rather than relaxing it.
+	//
+	// Nostalgia TV is public-domain film scheduled off archive.org. It touches
+	// no library, names no file of Wade's, and its whole purpose is that anybody
+	// can watch without an account -- so "every linear route is owner-only" is
+	// too coarse a rule to express it, in the same way "reading is safe, writing
+	// is administration" was too coarse above. The axis that is actually right
+	// is neither the route nor the verb but THE CHANNEL'S SOURCE, and that is
+	// what linear_access.go decides, default-deny, with the owner predicate
+	// installed above.
+	//
+	// So the reasoning in the block above is unchanged for every channel it was
+	// written about: a channel scheduled from Jellyfin or Plex is owner-only on
+	// all four read routes, and a stranger who guesses its id gets the same
+	// answer as one who invents an id. What changes is only that a channel
+	// scheduled from a public-domain source is not that channel.
+	//
+	// Preview stays owner-only outright, on the same route gate as before: it
+	// reads the whole pool before any rule is applied, so there is no
+	// per-channel question to ask and no public answer to give.
+	//
+	// Put Nostalgia TV on air. After the libraries are registered, because
+	// SaveChannel is where a channel's schedule is first generated and it needs
+	// something to schedule.
+	if added := SeedNostalgiaChannels(linear); len(added) > 0 {
+		log.Printf("nostalgia TV: created %s", strings.Join(added, ", "))
+	}
+	// Fill the archive.org pools now rather than making the first viewer wait
+	// for a couple of hundred metadata requests. Same reasoning as
+	// warmArchiveConnection: the first person after a deploy is the one who
+	// judges it.
+	//
+	// One goroutine and one budget PER COLLECTION. Measured against the live
+	// service: a collection of ~220 candidates takes four to six minutes to
+	// resolve at this concurrency, so running them in series under a shared
+	// deadline means the second reliably runs out of time and its channel stays
+	// dark -- which is exactly what happened the first time this was run for
+	// real.
+	for _, lib := range archiveLibs {
+		go func(l LinearLibrary) {
+			wctx, wcancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer wcancel()
+			started := time.Now()
+			items, err := l.LinearItems(wctx)
+			if err != nil {
+				log.Printf("nostalgia TV: %s: %v", l.LinearLibraryID(), err)
+				return
+			}
+			log.Printf("nostalgia TV: %s has %d programmes (%s)",
+				l.LinearLibraryID(), len(linearSchedulable(items)),
+				time.Since(started).Round(time.Second))
+		}(lib)
+	}
+
+	// One registration path, and every handler on it carries the per-channel
+	// boundary. Registering these bare and gating in main.go is what the merged
+	// shape did; the trouble with it is that a sixth route added later is one
+	// forgotten wrapper away from serving a private schedule to the world, and
+	// nothing would report it. linearEdge adds only the cross-origin decision,
+	// which genuinely does belong out here.
+	linearMux := http.NewServeMux()
+	linear.RegisterRoutes(linearMux)
+	for _, route := range []string{"channels", "preview", "guide", "now", "stream"} {
+		mux.HandleFunc(linearRoutePrefix+route, auth.linearEdge(linearMux.ServeHTTP))
+	}
 	if err := s.providers.Add(NewLinearProvider(linear)); err != nil {
 		// Not fatal: an unregisterable linear engine means no Live TV, which is
 		// a missing feature rather than a reason to refuse to serve search.

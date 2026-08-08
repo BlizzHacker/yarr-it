@@ -285,6 +285,17 @@ func (e *LinearEngine) handleNow(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "channel is required"})
 		return
 	}
+	// Checked before anything is computed, and the refusal is byte-identical to
+	// the one for an id that does not exist. Guessing a private channel's id
+	// must teach a stranger nothing -- not its name, not that it is there.
+	if _, ok := e.visibleChannel(r, id); !ok {
+		writeJSON(w, 404, LinearNowPlaying{
+			State:     LinearStateUnknown,
+			Detail:    fmt.Sprintf("no channel %q", id),
+			ServerNow: e.now().Unix(),
+		})
+		return
+	}
 	np := e.NowPlaying(r.Context(), id, strings.TrimSpace(r.URL.Query().Get("tz")))
 	if np.State == LinearStateUnknown {
 		writeJSON(w, 404, np)
@@ -299,6 +310,18 @@ func (e *LinearEngine) handleStream(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.URL.Query().Get("channel"))
 	if id == "" {
 		writeJSON(w, 400, map[string]string{"error": "channel is required"})
+		return
+	}
+	// The route that hands out bytes, so the check comes first and is the same
+	// 404 a nonexistent channel gets. Nothing about a private channel -- not
+	// its programme, not its artwork, not a signed URL -- is computed for a
+	// caller who may not have it.
+	if _, ok := e.visibleChannel(r, id); !ok {
+		writeJSON(w, 404, LinearTuneIn{LinearNowPlaying: LinearNowPlaying{
+			State:     LinearStateUnknown,
+			Detail:    fmt.Sprintf("no channel %q", id),
+			ServerNow: e.now().Unix(),
+		}})
 		return
 	}
 	t := e.TuneIn(r.Context(), id, strings.TrimSpace(r.URL.Query().Get("tz")))

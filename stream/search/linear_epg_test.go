@@ -721,6 +721,13 @@ func TestLinearProviderHealthDistinguishesUnconfiguredFromBroken(t *testing.T) {
 
 func linearTestServer(t *testing.T, e *LinearEngine) *httptest.Server {
 	t.Helper()
+	// These tests are the owner's view: they create channels, edit them and
+	// read back every one. Saying so explicitly is required now that the
+	// routes carry the per-channel boundary -- without it the engine's
+	// default-deny is correct and the fixture channels, which come from a
+	// private library, are invisible. linear_access_test.go is where the
+	// stranger's view is exercised.
+	e.SetOwnerFunc(func(*http.Request) bool { return true })
 	mux := http.NewServeMux()
 	e.RegisterRoutes(mux)
 	srv := httptest.NewServer(mux)
