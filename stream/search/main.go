@@ -262,6 +262,30 @@ func main() {
 	mux.HandleFunc("/api/arr/request", auth.requireUser(
 		func(w http.ResponseWriter, r *http.Request, _ string) { arr.handleRequest(w, r) }))
 
+	// ROMarr and RomM. Same split as the *arr routes and for the same reason:
+	// the convenience helper registers all five bare.
+	for _, p := range gameProvidersFromEnv() {
+		if rp, ok := p.(*rommProvider); ok {
+			// Play is earned, not assumed -- confirm the emulator loader really
+			// serves before advertising that anything can be played.
+			pctx, pcancel := context.WithTimeout(context.Background(), 4*time.Second)
+			rp.verifyPlay(pctx)
+			pcancel()
+		}
+		if err := s.providers.Add(p); err != nil {
+			log.Printf("provider %s: %v", p.ID(), err)
+		}
+	}
+	game := &gameAPI{reg: s.providers}
+	mux.HandleFunc("/api/game/search", publicCORS(game.handleSearch))
+	mux.HandleFunc("/api/game/details", publicCORS(game.handleDetails))
+	mux.HandleFunc("/api/game/library", auth.requireUser(
+		func(w http.ResponseWriter, r *http.Request, _ string) { game.handleLibrary(w, r) }))
+	mux.HandleFunc("/api/game/status", auth.requireUser(
+		func(w http.ResponseWriter, r *http.Request, _ string) { game.handleStatus(w, r) }))
+	mux.HandleFunc("/api/game/request", auth.requireUser(
+		func(w http.ResponseWriter, r *http.Request, _ string) { game.handleRequest(w, r) }))
+
 	// Live TV. Gated by what each route actually is rather than by prefix: a
 	// guide is catalogue data that a television reads cross-origin, while
 	// creating or editing a channel is administration. Registering the whole
