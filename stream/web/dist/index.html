@@ -710,7 +710,23 @@
 
     <div class="set-sep"></div>
 
-    <p class="set-label">Your services</p>
+    <p class="set-label">Add-ons</p>
+      <p class="set-lede">
+        Yarr.It speaks the Stremio add-on protocol, so add-ons written for Stremio
+        work here — in a browser, with nothing to install. Paste an add-on's
+        manifest URL.
+      </p>
+      <div class="set-row">
+        <input id="addon-url" placeholder="https://v3-cinemeta.strem.io/manifest.json"
+               autocomplete="off" spellcheck="false" inputmode="url" />
+        <button class="btn" id="addon-add" type="button">Add</button>
+      </div>
+      <p class="set-result" id="addon-result" hidden></p>
+      <div id="addon-list"></div>
+
+      <div class="set-sep"></div>
+
+      <p class="set-label">Your services</p>
     <p class="set-lede">
       Connect the Radarr, Jellyfin, Plex, Komga or RomM you run yourself. No account, ever —
       this list lives in this browser and nowhere else, so a machine you have never signed in
@@ -807,9 +823,15 @@
     <img id="image" hidden alt="" />
     <audio id="audio" controls hidden></audio>
     <div id="canvas" hidden></div>
-    <iframe id="embed" hidden allowfullscreen
-            allow="autoplay; encrypted-media; picture-in-picture"
-            referrerpolicy="strict-origin-when-cross-origin"></iframe>
+    <!-- The wrapper exists so a fixed-size third-party embed can be scaled
+         from out here: the Archive's emulator canvas is 300x150 whatever the
+         viewport, so the iframe keeps its natural size and the wrapper takes
+         the scaled box. See src/embedfit.js. -->
+    <div id="embed-fit" hidden>
+      <iframe id="embed" allowfullscreen
+              allow="autoplay; encrypted-media; picture-in-picture"
+              referrerpolicy="strict-origin-when-cross-origin"></iframe>
+    </div>
     <p id="player-status" hidden></p>
   </div>
   <div class="progress-track"><div id="progress"></div></div>
@@ -821,6 +843,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=cee663b4bb3c"></script>
+<script type="module" src="/app.js?v=f47cf7de7fa7"></script>
 </body>
 </html>

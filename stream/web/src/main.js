@@ -10,6 +10,8 @@ import { archiveResolver } from './resolvers/archive.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
 import { whoAmI, displayName, signInURL, signOutURL, vpnGuidance, egressStatus } from './account.js';
+import { createAddonAPI, renderAddons, normaliseAddonURL, moveAddon } from './addons.js';
+import { keepFitted } from './embedfit.js';
 import {
   getContinueWatching, trackProgress, watchedFraction,
   getLibrary, addToLibrary, removeFromLibrary, keyFor,
@@ -665,6 +667,32 @@ function closeDetail() {
 
 // ------------------------------------------------------------------ player --
 
+
+/**
+ * Scale a fixed-size third-party embed up to fill the stage.
+ *
+ * The Internet Archive's emulator draws into a canvas that is 300x150 and stays
+ * 300x150 at every viewport size -- measured identical at 640x480, 1482x415 and
+ * 1600x900. Left alone that is about 3% of a full-screen player, jammed against
+ * the left edge. Their page is cross-origin so no stylesheet of ours reaches
+ * inside it, but the iframe ELEMENT is ours, and a transform on it scales
+ * everything it contains.
+ */
+function fitEmbedToStage(playable, el) {
+  state.stopFit?.();
+  state.stopFit = null;
+
+  const wrap = document.querySelector('#embed-fit');
+  if (!wrap) return;
+  if (playable.render !== 'embed') {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  const stage = wrap.closest('.stage');
+  if (stage) state.stopFit = keepFitted(wrap, el, stage);
+}
+
 function playerElements() {
   return {
     video: $('#video'),
@@ -794,6 +822,7 @@ async function play(card, src) {
     }
     const el = renderPlayable(out, els);
     state.playable = out;
+    fitEmbedToStage(out, el);
 
     // Remember where this viewer gets to, so the same title resumes on any
     // other device. Only real media has a position; an image or an emulator
@@ -863,6 +892,12 @@ function closePlayer() {
   // somebody actually wants back.
   state.stopTracking?.();
   state.stopTracking = null;
+
+  state.stopFit?.();
+
+  state.stopFit = null;
+
+  { const w = document.querySelector('#embed-fit'); if (w) w.hidden = true; }
 
   detachAll(playerElements());
   state.engine?.destroyTorrent();
@@ -1421,6 +1456,77 @@ function wireAccount() {
   refreshAccount();
 }
 
+
+/**
+ * The add-on panel.
+ *
+ * Wired here rather than left as a module nobody imports, which is how the
+ * service setup and the sign-in button both shipped invisible. A finished
+ * feature that no control reaches has not shipped.
+ */
+const addonAPI = createAddonAPI();
+
+async function refreshAddons() {
+  const host = $('#addon-list');
+  if (!host) return;
+  let addons = [];
+  try {
+    addons = await addonAPI.list();
+  } catch {
+    // Signed out is the normal case: the list route needs a session because an
+    // add-on URL can carry a debrid key. An empty panel is the right answer,
+    // not an error.
+    addons = [];
+  }
+  renderAddons(host, {
+    addons,
+    handlers: {
+      onRemove: async (id) => { await addonAPI.remove(id).catch(() => {}); refreshAddons(); },
+      onMove: async (id, delta) => {
+        const next = moveAddon(addons, id, delta);
+        await addonAPI.reorder(next.map((a) => a.id)).catch(() => {});
+        refreshAddons();
+      },
+    },
+  });
+}
+
+function wireAddons() {
+  const input = $('#addon-url');
+  const btn = $('#addon-add');
+  const out = $('#addon-result');
+  if (!input || !btn) return;
+
+  const say = (msg, ok) => {
+    if (!out) return;
+    out.textContent = msg;
+    out.classList.toggle('ok', ok === true);
+    out.classList.toggle('bad', ok === false);
+    out.hidden = !msg;
+  };
+
+  const add = async () => {
+    const url = normaliseAddonURL(input.value);
+    if (!url) {
+      say('That does not look like an add-on manifest URL.', false);
+      return;
+    }
+    say('Checking…', null);
+    try {
+      const a = await addonAPI.add(url);
+      say(`Added ${a?.name || 'add-on'}.`, true);
+      input.value = '';
+      refreshAddons();
+    } catch (e) {
+      say(String(e && e.message ? e.message : e), false);
+    }
+  };
+
+  btn.addEventListener('click', add);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+  refreshAddons();
+}
+
 function init() {
   if (localStorage.getItem('privacy-ack') === '1') $('#privacy').hidden = true;
   $('#privacy-ok').addEventListener('click', () => {
@@ -1485,6 +1591,7 @@ function init() {
 
   $('#settings-open').addEventListener('click', openSettings);
   wireAccount();
+  wireAddons();
   $('#settings-close').addEventListener('click', closeSettings);
   $('#settings').addEventListener('click', (e) => { if (e.target.id === 'settings') closeSettings(); });
   $('#set-test').addEventListener('click', testServer);
