@@ -19,6 +19,29 @@
 
 const KEY = 'yarrit_server';
 
+
+/**
+ * A host that can only be plain HTTP in practice.
+ *
+ * A LAN box has no certificate for 192.168.x, so defaulting it to https gives
+ * ERR_CONNECTION_REFUSED and a message about the server being unreachable --
+ * when the real problem is that we guessed the wrong scheme. services.js has
+ * always got this right; the server box did not, so the same text typed into
+ * two boxes in the same panel produced two different answers.
+ */
+function looksPrivate(hostish) {
+  const h = String(hostish).split(':')[0].toLowerCase();
+  if (h === 'localhost' || h.endsWith('.local') || h.endsWith('.lan')) return true;
+  const m = h.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 10 || a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return a === 169 && b === 254;
+}
+
 /** Trailing slashes and stray whitespace are the usual paste damage. */
 export function normaliseServer(raw) {
   if (!raw) return '';
@@ -35,7 +58,7 @@ export function normaliseServer(raw) {
   // front of: the port must be digits to the end, and a scheme like "ftp://x"
   // has slashes after the colon and cannot match.
   if (/^[a-z0-9][a-z0-9.-]*:\d+$/i.test(s)) {
-    s = 'https://' + s;
+    s = (looksPrivate(s) ? 'http://' : 'https://') + s;
   } else {
     // Only prepend a scheme when there is genuinely none. Testing for "starts
     // with http" is not the same test: "ftp://example.com" has a scheme, fails
@@ -48,7 +71,7 @@ export function normaliseServer(raw) {
       if (proto !== 'http' && proto !== 'https') return '';
     } else {
       // A bare host is the common case: people type "yarrit.com", not a URL.
-      s = 'https://' + s;
+      s = (looksPrivate(s) ? 'http://' : 'https://') + s;
     }
   }
   try {

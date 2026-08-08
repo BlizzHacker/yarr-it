@@ -17,7 +17,17 @@ test('paths, queries and trailing slashes are stripped', () => {
 test('a self-hoster on a plain-http LAN box is supported', () => {
   // Insisting on https would lock out exactly the people this feature is for.
   assert.equal(normaliseServer('http://192.168.1.50:8802'), 'http://192.168.1.50:8802');
-  assert.equal(normaliseServer('192.168.1.50:8802'), 'https://192.168.1.50:8802');
+  // This line used to assert https, under a test named "a plain-http LAN box is
+  // supported" -- the name stated the requirement and the assertion pinned its
+  // opposite, with the suite fully green. A LAN box has no certificate, so
+  // https here means ERR_CONNECTION_REFUSED and a message blaming the network.
+  assert.equal(normaliseServer('192.168.1.50:8802'), 'http://192.168.1.50:8802');
+  assert.equal(normaliseServer('localhost:8096'), 'http://localhost:8096');
+  assert.equal(normaliseServer('nas.local:8080'), 'http://nas.local:8080');
+  assert.equal(normaliseServer('10.0.0.5'), 'http://10.0.0.5');
+  // A public host still defaults to https, which is the safe guess there.
+  assert.equal(normaliseServer('yarrit.com'), 'https://yarrit.com');
+  assert.equal(normaliseServer('example.com:8443'), 'https://example.com:8443');
 });
 
 test('a non-http scheme is refused rather than half-accepted', () => {
@@ -95,11 +105,16 @@ test('the relay follows the configured server, not the page it was loaded from',
 // anyone types into a server box -- along with every other named host with a
 // port. Found by testing the settings UI against real services.
 test('a hostname with a port is a host, not a scheme', () => {
-  assert.equal(normaliseServer('localhost:8096'), 'https://localhost:8096');
+  // Private hosts get http, because a LAN box has no certificate; public ones
+  // get https. The point of this test is that the colon is read as a port
+  // separator at all -- "localhost:" matches a scheme pattern perfectly, which
+  // is what used to reject every one of these outright.
+  assert.equal(normaliseServer('localhost:8096'), 'http://localhost:8096');
+  assert.equal(normaliseServer('box.local:5000'), 'http://box.local:5000');
+  assert.equal(normaliseServer('192.168.0.26:7878'), 'http://192.168.0.26:7878');
+  // A name we cannot tell is private defaults to https, which is the safe guess.
   assert.equal(normaliseServer('nas:8080'), 'https://nas:8080');
-  assert.equal(normaliseServer('box.local:5000'), 'https://box.local:5000');
   assert.equal(normaliseServer('jellyfin:8096'), 'https://jellyfin:8096');
-  assert.equal(normaliseServer('192.168.0.26:7878'), 'https://192.168.0.26:7878');
 });
 
 // The narrow host:port rule must not become a way back in for the schemes the

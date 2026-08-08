@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Regression tests for defects that were live and silent.
@@ -80,5 +82,57 @@ func TestUnconfiguredSearchSaysSoRatherThanBlamingTiming(t *testing.T) {
 	}
 	if !strings.Contains(low, "indexer") {
 		t.Errorf("message %q never mentions the actual problem", msg)
+	}
+}
+
+// A search must never hang forever when the indexer backend goes quiet.
+//
+// Measured before this was bounded: 280s with no response at all, and a browser
+// fetch still pending at 829 seconds. The indexer-list call sat before the
+// fast-tier deadline, and used http.DefaultClient, which has no timeout -- the
+// one outbound request in the package with no ceiling, on the critical path of
+// every uncached search.
+func TestASearchGivesUpWhenTheIndexerGoesQuiet(t *testing.T) {
+	// A server that accepts the connection and then says nothing, which is the
+	// failure mode that hangs. Refusing the connection would not reproduce it.
+	quiet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer quiet.Close()
+
+	s := &server{
+		prowlarrURL: quiet.URL,
+		apiKey:      "test",
+		cache:       map[string]cacheEntry{},
+		inflight:    map[string]chan struct{}{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := s.searchTiered(ctx, "anything", "video", func([]card) {})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a silent indexer produced no error; the caller cannot tell it failed")
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("searchTiered did not return; a silent indexer still hangs the request")
+	}
+}
+
+// Every outbound client on a request path a person waits on must have a
+// ceiling. http.DefaultClient does not.
+func TestTheProwlarrClientHasATimeout(t *testing.T) {
+	if prowlarrClient.Timeout <= 0 {
+		t.Fatal("prowlarrClient has no timeout; a quiet peer holds the request open indefinitely")
+	}
+	if indexerListDeadline <= 0 {
+		t.Fatal("the indexer list call is unbounded")
 	}
 }

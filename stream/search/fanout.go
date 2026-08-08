@@ -121,7 +121,7 @@ func (s *server) prowlarrJSON(ctx context.Context, path string, into any) error 
 		return err
 	}
 	req.Header.Set("X-Api-Key", s.apiKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := prowlarrClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func (s *server) searchTier(ctx context.Context, ids []int, q, kind string) ([]c
 	}
 	req.Header.Set("X-Api-Key", s.apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := prowlarrClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -183,10 +183,31 @@ func mergeCards(a, b []card) []card {
 
 // searchTiered answers from the fast indexers and folds the slow ones into the
 // cache behind the response.
+// How long the indexer list may take before a search gives up on it.
+//
+// Deliberately short: this is a small local call that either answers at once or
+// is not going to. Everything else in a search is bounded, so leaving this one
+// open meant one sick backend could hold a request open indefinitely.
+const indexerListDeadline = 12 * time.Second
+
+// A client with a ceiling. http.DefaultClient has no timeout at all, which is
+// fine for a script and wrong for a request path a person is waiting on: a peer
+// that accepts the connection and then goes quiet holds the goroutine, the
+// request and the user's patience for as long as it likes.
+var prowlarrClient = &http.Client{Timeout: 110 * time.Second}
+
 func (s *server) searchTiered(ctx context.Context, q, kind string,
 	onFull func([]card)) ([]card, bool, error) {
 
-	t, err := s.tiers(ctx)
+	// Bounded, because this call sits before the fast-tier deadline below and
+	// was therefore the only unbounded outbound request in the package. A
+	// Prowlarr that accepts connections and never answers made every uncached
+	// search hang forever: measured 280s with no response, and a browser fetch
+	// still pending at 829s. Failing fast reaches the client's retry path,
+	// which already exists and already says something useful.
+	listCtx, listCancel := context.WithTimeout(ctx, indexerListDeadline)
+	defer listCancel()
+	t, err := s.tiers(listCtx)
 	if err != nil {
 		return nil, false, err
 	}
