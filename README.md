@@ -14,11 +14,11 @@ run — without caring which one answered. [yarrit.com](https://yarrit.com)
 Move Weight
 └─ Yarr.It ................ you are here
    └─ Cartridge ........... tools for self-hosting a retro game library
-      └─ Romarr ........... the *arr for games: request it, get it, file it
+      └─ ROMarr ........... the *arr for games: request it, get it, file it
          └─ ROM Hub ....... the plugin host underneath
 ```
 
-Each layer is usable on its own. Yarr.It does not require Cartridge, and Romarr
+Each layer is usable on its own. Yarr.It does not require Cartridge, and ROMarr
 and ROM Hub each run perfectly well without anything above them — they answer
 the same webhook by different means, and
 [ROM Hub's README](https://github.com/BlizzHacker/rom-hub#an-alternative-to-romarr-not-a-replacement-for-it)
@@ -37,7 +37,7 @@ Everything below is running, not planned:
 | **TV** | a Roku channel, pointed at your own server |
 | **Self-host** | `curl -fsSL https://yarrit.com/selfhost.sh \| bash` |
 
-**In progress, and not yet claimed:** Radarr / Sonarr / Lidarr / Romarr
+**In progress, and not yet claimed:** Radarr / Sonarr / Lidarr / ROMarr
 request routing, Live TV with a real programme guide, and the in-app readers.
 Those are being built against the provider contract in
 [`stream/search/provider.go`](stream/search/provider.go); this README will say
