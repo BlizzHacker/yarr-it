@@ -154,6 +154,9 @@ func main() {
 	}
 
 	s := &server{
+		// Always non-nil. The endpoints tolerate a nil registry, but a nil one
+		// here would silently mean no provider could ever be added.
+		providers:   &Registry{},
 		prowlarrURL: strings.TrimRight(*prowlarr, "/"),
 		apiKey:      key,
 		ttl:         *ttl,
@@ -233,6 +236,34 @@ func main() {
 	// What every backend is currently doing, merged. Needs a session -- what
 	// somebody is downloading is personal.
 	mux.HandleFunc("/api/activity", auth.requireUser(s.handleActivity))
+
+	// Live TV. Gated by what each route actually is rather than by prefix: a
+	// guide is catalogue data that a television reads cross-origin, while
+	// creating or editing a channel is administration. Registering the whole
+	// prefix one way would either lock TVs out of the guide or leave channel
+	// editing open.
+	linear := LinearDefaultEngine()
+	// Read-only and CORS-open: a Roku or a Tizen set is a different origin and
+	// has to be able to read the guide before it can show anything.
+	mux.HandleFunc("/api/v1/linear/guide", publicCORS(linear.handleGuide))
+	mux.HandleFunc("/api/v1/linear/now", publicCORS(linear.handleNow))
+	mux.HandleFunc("/api/v1/linear/stream", publicCORS(linear.handleStream))
+	mux.HandleFunc("/api/v1/linear/channels", publicCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			linear.handleChannels(w, r)
+			return
+		}
+		auth.requireUser(func(w http.ResponseWriter, r *http.Request, _ string) {
+			linear.handleChannels(w, r)
+		})(w, r)
+	}))
+	mux.HandleFunc("/api/v1/linear/preview", auth.requireUser(
+		func(w http.ResponseWriter, r *http.Request, _ string) { linear.handlePreview(w, r) }))
+	if err := s.providers.Add(NewLinearProvider(linear)); err != nil {
+		// Not fatal: an unregisterable linear engine means no Live TV, which is
+		// a missing feature rather than a reason to refuse to serve search.
+		log.Printf("linear TV: %v", err)
+	}
 
 	// Personal data, so these need a session whatever AUTH_SCOPE says.
 	mux.HandleFunc("/api/v1/library", auth.requireUser(s.handleLibrary))
