@@ -15,14 +15,15 @@ Move Weight
 └─ Yarr.It ................ you are here
    └─ Cartridge ........... tools for self-hosting a retro game library
       └─ ROMarr ........... the *arr for games: request it, get it, file it
-         └─ ROM Hub ....... the plugin host underneath
+         └─ ROM Hub ....... ROMarr's plugin factory
 ```
 
-Each layer is usable on its own. Yarr.It does not require Cartridge, and ROMarr
-and ROM Hub each run perfectly well without anything above them — they answer
-the same webhook by different means, and
-[ROM Hub's README](https://github.com/BlizzHacker/rom-hub#an-alternative-to-romarr-not-a-replacement-for-it)
-explains when to prefer which.
+Each layer is usable on its own — Yarr.It does not require Cartridge, and
+ROMarr runs without anything above it.
+
+[ROM Hub](https://github.com/BlizzHacker/rom-hub) is ROMarr's plugin factory:
+where sources are written, run and sandboxed, for us and for anyone who wants
+to add one. Write a plugin there and ROMarr gains a source.
 
 ## What works today
 
