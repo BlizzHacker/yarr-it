@@ -25,18 +25,31 @@ export function normaliseServer(raw) {
   let s = String(raw).trim();
   if (!s) return '';
 
-  // Only prepend a scheme when there is genuinely none. Testing for "starts
-  // with http" is not the same test: "ftp://example.com" has a scheme, fails
-  // that check, and becomes "https://ftp://example.com" -- which URL happily
-  // parses with the hostname "ftp". A rejected scheme must not turn into a
-  // plausible-looking host.
-  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(s);
-  if (scheme) {
-    const proto = scheme[1].toLowerCase();
-    if (proto !== 'http' && proto !== 'https') return '';
-  } else {
-    // A bare host is the common case: people type "yarrit.com", not a URL.
+  // host:port has to be settled BEFORE anything treats a colon as a scheme
+  // separator, because "localhost:8096" is letters-then-colon and matches a
+  // scheme pattern perfectly. That rejected the single most common thing anyone
+  // types into this box, along with "nas:8080" and "box.local:5000" -- every
+  // hostname with a port that was not a bare IP.
+  //
+  // Kept narrow on purpose so it cannot readmit the scheme it is standing in
+  // front of: the port must be digits to the end, and a scheme like "ftp://x"
+  // has slashes after the colon and cannot match.
+  if (/^[a-z0-9][a-z0-9.-]*:\d+$/i.test(s)) {
     s = 'https://' + s;
+  } else {
+    // Only prepend a scheme when there is genuinely none. Testing for "starts
+    // with http" is not the same test: "ftp://example.com" has a scheme, fails
+    // that check, and becomes "https://ftp://example.com" -- which URL happily
+    // parses with the hostname "ftp". A rejected scheme must not turn into a
+    // plausible-looking host.
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(s);
+    if (scheme) {
+      const proto = scheme[1].toLowerCase();
+      if (proto !== 'http' && proto !== 'https') return '';
+    } else {
+      // A bare host is the common case: people type "yarrit.com", not a URL.
+      s = 'https://' + s;
+    }
   }
   try {
     const u = new URL(s);

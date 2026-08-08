@@ -89,3 +89,27 @@ test('the relay follows the configured server, not the page it was loaded from',
     assert.equal(bridgeSocketURL(), 'wss://mybox.example/bridge/socket');
   });
 });
+
+// A hostname with a port is letters-then-colon, which matches a scheme pattern
+// exactly. That rejected "localhost:8096" -- the single most common thing
+// anyone types into a server box -- along with every other named host with a
+// port. Found by testing the settings UI against real services.
+test('a hostname with a port is a host, not a scheme', () => {
+  assert.equal(normaliseServer('localhost:8096'), 'https://localhost:8096');
+  assert.equal(normaliseServer('nas:8080'), 'https://nas:8080');
+  assert.equal(normaliseServer('box.local:5000'), 'https://box.local:5000');
+  assert.equal(normaliseServer('jellyfin:8096'), 'https://jellyfin:8096');
+  assert.equal(normaliseServer('192.168.0.26:7878'), 'https://192.168.0.26:7878');
+});
+
+// The narrow host:port rule must not become a way back in for the schemes the
+// function exists to reject.
+test('fixing host:port did not readmit a rejected scheme', () => {
+  assert.equal(normaliseServer('ftp://example.com'), '');
+  assert.equal(normaliseServer('javascript:alert(1)'), '');
+  assert.equal(normaliseServer('file:///etc/passwd'), '');
+  // Looks port-ish but is a scheme with a path; must not be treated as a host.
+  assert.equal(normaliseServer('ftp://example.com:21'), '');
+  // A scheme whose "port" is not digits to the end cannot slip through.
+  assert.equal(normaliseServer('data:text/html,x'), '');
+});
