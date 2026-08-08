@@ -1,0 +1,122 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+language: en-US
+tone_instructions: >-
+  Be direct; skip praise and preamble. Yarr.It is a self-hostable media app with
+  a shared canonical schema across services. Prioritize schema consistency,
+  auth boundaries, and CORS/data-exposure correctness over style.
+early_access: false
+enable_free_tier: true
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  auto_apply_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: true
+  abort_on_close: true
+
+  slop_detection:
+    enabled: true
+    label: slop
+
+  path_filters:
+    - "!**/*.min.js"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/node_modules/**"
+    - "!**/*.lock"
+    - "!**/vendor/**"
+    - "!brand/**"
+
+  path_instructions:
+    - path: "**/schema.json"
+      instructions: >-
+        This is the single canonical schema consumed by multiple services in
+        different languages and served over an API endpoint. It is not a local
+        type definition.
+
+        Any change here is a cross-service breaking change. Require that every
+        consumer is updated in the same change, and say explicitly which
+        consumers you believe are affected. A field renamed or removed here
+        without matching consumer updates is a production break, not a
+        refactor.
+
+        Media-type aliasing is deliberate: audio and music are aliases rather
+        than distinct types. Flag changes that split, rename, or special-case
+        those without addressing every consumer.
+    - path: "gateway/**"
+      instructions: >-
+        The gateway is the last LAN-side dependency and the network boundary.
+
+        CORS is deliberately split: catalogue data may be served cross-origin,
+        but personal data — library state, resume positions, user identity,
+        tokens — must never be. Flag any CORS change that widens allowed origins
+        on a route carrying user-specific data, and any new route that returns
+        personal data without confirming which CORS policy applies to it.
+
+        Auth: distinguish "a valid user is required" from "a request is merely
+        authenticated". Flag routes returning user-scoped data that check only
+        the weaker of the two.
+
+        Flag any outbound proxying that could be steered by client input into
+        reaching arbitrary hosts.
+    - path: "extension/**"
+      instructions: >-
+        Browser extension code. Flag host permission widening, injected script
+        that trusts page-supplied data, and any capture of credentials or tokens
+        beyond what the documented flow requires.
+    - path: "**/*.{js,ts,jsx,tsx}"
+      instructions: >-
+        Flag fetches without timeout or abort handling, and unbounded
+        concurrency against upstream services. Do not suggest adding types or
+        JSDoc purely for completeness where surrounding code does not use them.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Check for unpinned third-party actions, secrets exposed to
+        pull_request_target, and steps interpolating untrusted PR text into run
+        blocks.
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_usernames:
+      - dependabot
+      - dependabot[bot]
+
+  tools:
+    eslint:
+      enabled: true
+    biome:
+      enabled: true
+    gitleaks:
+      enabled: true
+    semgrep:
+      enabled: true
+    actionlint:
+      enabled: true
+    zizmor:
+      enabled: true
+    languagetool:
+      enabled: false
+
+chat:
+  art: false
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: auto
