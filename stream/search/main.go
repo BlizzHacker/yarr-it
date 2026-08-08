@@ -292,6 +292,57 @@ func main() {
 	// prefix one way would either lock TVs out of the guide or leave channel
 	// editing open.
 	linear := LinearDefaultEngine()
+	// Media servers feed the linear engine its programmes and resolve them to
+	// something playable. Constructed even when discovery fails, so an instance
+	// that is merely restarting reports an honest health state instead of
+	// disappearing from the settings screen.
+	var resolvers []LinearResolver
+	lctx, lcancel := context.WithTimeout(context.Background(), 20*time.Second)
+	if u := os.Getenv("JELLYFIN_URL"); u != "" {
+		p, libs, res, err := newJellyfinLinear(lctx, jellyfinConfig{
+			ID: "jellyfin", Name: "Jellyfin", BaseURL: u,
+			APIKey: os.Getenv("JELLYFIN_API_KEY"), UserID: os.Getenv("JELLYFIN_USER_ID"),
+		})
+		if err != nil {
+			log.Printf("jellyfin: %v", err)
+		}
+		if p != nil {
+			if e := s.providers.Add(p); e != nil {
+				log.Printf("jellyfin: %v", e)
+			}
+		}
+		for _, l := range libs {
+			linear.AddLibrary(l)
+		}
+		if res != nil {
+			resolvers = append(resolvers, res)
+		}
+	}
+	if u := os.Getenv("PLEX_URL"); u != "" {
+		p, libs, res, err := newPlexLinear(lctx, plexConfig{
+			ID: "plex", Name: "Plex", BaseURL: u, Token: os.Getenv("PLEX_TOKEN"),
+		})
+		if err != nil {
+			log.Printf("plex: %v", err)
+		}
+		if p != nil {
+			if e := s.providers.Add(p); e != nil {
+				log.Printf("plex: %v", e)
+			}
+		}
+		for _, l := range libs {
+			linear.AddLibrary(l)
+		}
+		if res != nil {
+			resolvers = append(resolvers, res)
+		}
+	}
+	lcancel()
+	if len(resolvers) > 0 {
+		// One engine, every configured server: a channel may schedule from
+		// Jellyfin and Plex at once, and the chain finds whichever owns an item.
+		linear.SetResolver(newLinearResolverChain(resolvers...))
+	}
 	// Read-only and CORS-open: a Roku or a Tizen set is a different origin and
 	// has to be able to read the guide before it can show anything.
 	mux.HandleFunc("/api/v1/linear/guide", publicCORS(linear.handleGuide))
