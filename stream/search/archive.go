@@ -216,7 +216,28 @@ func ejsCoreFor(emulator string) string {
 	if emulator == "intv2" || emulator == "intv" || emulator == "intvsrs" {
 		return ""
 	}
-	return ejsCores[emulator]
+	// Answered from the one table that was checked against EmulatorJS's own
+	// getCores() and against ROM Hub's plugin, rather than from the list below.
+	//
+	// The list below was written from names that looked right and contains five
+	// ids archive.org does not use -- famicom, superfamicom, segaMD, gg, vb,
+	// zero items each -- while missing six real ones worth about 195 games. The
+	// difference never showed up as an error: browsing worked, and the failure
+	// arrived later as a Play button that did nothing.
+	p, ok := archivePlaySystems[emulator]
+	if !ok || p.Core == "" {
+		return ""
+	}
+	// A core existing is not the same as it being runnable here. MS-DOS and PSP
+	// map to real cores that EmulatorJS publishes only as threaded builds, and
+	// threads need a cross-origin-isolated page this site is not; ColecoVision,
+	// PlayStation and Amiga need firmware that is not ours to ship. Each of
+	// those starts, draws its own error screen and never boots the game -- which
+	// looks exactly like it is working.
+	if _, blocked := blockedSystems[p.Core]; blocked {
+		return ""
+	}
+	return p.Core
 }
 
 // sourcesFor builds the play options for an item.

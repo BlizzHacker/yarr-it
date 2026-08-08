@@ -60,19 +60,24 @@ func TestArchiveCardsAreInstantAndCarryTheirOwnArt(t *testing.T) {
 	if c.Seeders != 0 {
 		t.Error("an archive.org item has no swarm; seeders must not be invented")
 	}
-	// Colecovision has an EmulatorJS core, so both players are offered and the
-	// one with touch controls leads.
-	if len(c.Sources) != 2 {
-		t.Fatalf("want both play options, got %d", len(c.Sources))
+	// ColecoVision gets the Archive's own player and NOT ours, and this test
+	// used to assert the opposite.
+	//
+	// EmulatorJS does have a core for it -- gearcoleco -- which is why the old
+	// assertion looked right. But gearcoleco's own core info marks
+	// colecovision.rom as required firmware, and console BIOS is not ours to
+	// ship. Without it the emulator loads, initialises, draws its own error
+	// screen and never boots the game: a Play button that reports every sign of
+	// success and plays nothing. Offering the Archive's player instead is the
+	// honest answer, because that one actually runs.
+	if len(c.Sources) != 1 {
+		t.Fatalf("want only the Archive's player, got %d sources", len(c.Sources))
 	}
-	if c.Sources[0].Indexer != "EmulatorJS" {
-		t.Errorf("source[0] = %q, want the touch-capable player first", c.Sources[0].Indexer)
-	}
-	if got := c.Sources[0].Magnet; got != "https://archive.org/details/dk_coleco#ejs" {
-		t.Errorf("emulatorjs target = %q", got)
-	}
-	if got := c.Sources[1].Magnet; got != "https://archive.org/details/dk_coleco" {
+	if got := c.Sources[0].Magnet; got != "https://archive.org/details/dk_coleco" {
 		t.Errorf("archive.org target = %q", got)
+	}
+	if strings.HasSuffix(c.Sources[0].Magnet, "#ejs") {
+		t.Error("our player was offered for a machine that needs a BIOS we cannot ship")
 	}
 	if !strings.HasPrefix(c.Art.Poster, "https://archive.org/services/img/") {
 		t.Errorf("art should come from archive.org, got %q", c.Art.Poster)
