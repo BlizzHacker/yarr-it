@@ -16,6 +16,13 @@ import {
 import { attachSubtitles } from './subtitles.js';
 import { PlaybackError } from './failures.js';
 import { apiFetch, getServer, setServer, probeServer } from './server.js';
+import { renderHome, itemFromCard, tileAction, domainSentence } from './home.js';
+import { openReader } from './reader.js';
+import {
+  SERVICE_TYPES, allServiceTypes, createServiceStore, probeService,
+  routeAdvice, describeService, healthLabel, normaliseServiceURL,
+} from './services.js';
+import { TRANSPORT, extensionAvailable } from './transport.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -38,6 +45,9 @@ const state = {
   // clicked" from "lost the race".
   resolveGen: 0,
   active: null,
+  // The open page reader, if any. Held so a second open closes the first
+  // rather than leaving its keydown listener on the document.
+  reader: null,
   filters: {
     seeders: 1, minSize: '', maxSize: '',
     quality: new Set(), codec: new Set(), groups: new Set(),
@@ -263,14 +273,18 @@ function tile(card) {
   t.type = 'button';
 
   const p = el('div', 'poster');
+  // The placeholder is drawn whether or not there is a poster to try, and the
+  // image is laid over it. Half these results are archive.org items whose
+  // thumbnail service answers with an error rather than a picture, and a
+  // broken-image glyph in a 2:3 box is the worst way to say "no cover".
+  p.append(el('div', 'noart', card.title));
   if (card.art?.poster) {
     const img = el('img');
     img.loading = 'lazy';
-    img.alt = card.title;
+    img.alt = '';
+    img.addEventListener('error', () => { img.remove(); });
     img.src = card.art.poster;
     p.append(img);
-  } else {
-    p.append(el('div', 'noart', card.title));
   }
 
   // A seeder count is a guess at whether something will play. For a result
@@ -285,6 +299,10 @@ function tile(card) {
   if (card.art?.rating) p.append(el('span', 'rating', card.art.rating.toFixed(1)));
   const bq = card.platform || card.sources[card.best]?.quality;
   if (bq) p.append(el('span', 'best-q', bq));
+  // What this card is for, in its own domain's word. A search for "batman"
+  // returns films, comics and games together, and until now every one of them
+  // was offered with the same silent "click me".
+  p.append(el('span', `verb verb-${card.kind || 'other'}`, tileAction(itemFromCard(card, card.kind)).label));
   t.append(p);
 
   t.append(el('div', 'tname', card.title));
@@ -298,8 +316,25 @@ function tile(card) {
   }
   t.append(el('div', 'tmeta', bits.join(' · ')));
 
-  t.addEventListener('click', () => openDetail(card));
+  t.addEventListener('click', () => openCard(card));
   return t;
+}
+
+/**
+ * Open a search result the way its own domain says it should open.
+ *
+ * A comic and a film both arrive here as a card, and both used to land in the
+ * detail sheet, whose only offer is a source to stream. For anything you read
+ * or look at there is nothing to stream: the source is a details page on
+ * archive.org, and streaming it meant an iframe of somebody else's website.
+ */
+function openCard(card) {
+  const action = tileAction(itemFromCard(card, card.kind));
+  if (action.kind === 'reader') {
+    openReaderFor(action.id, card.title, action.verb);
+    return;
+  }
+  openDetail(card);
 }
 
 // ---------------------------------------------------------------- discover --
@@ -331,33 +366,82 @@ function restoreLanding() {
   renderFilters();
 }
 
-async function loadDiscover() {
+/**
+ * Ask for everything one domain has, with no query.
+ *
+ * This is the fallback for a domain /api/discover has no curated row for --
+ * today Music and Images. It is not the first choice because a cold browse is
+ * a full indexer fan-out: measured against the live server, 20-45s cold and
+ * about 0.3s once the 45-minute cache has it. Discover, by contrast, is
+ * cached for three hours and answers immediately.
+ */
+async function browseDomain(domain) {
+  // minSeeders=0 because a hosted archive.org result has no swarm at all, and
+  // the default of 1 would drop the only results these rows have.
+  const res = await apiFetch(`/api/search?kind=${encodeURIComponent(domain)}&minSeeders=0`);
+  if (!res.ok) throw new Error(`browse ${domain}: ${res.status}`);
+  const data = await res.json();
+  // A rail is a rail, not a result set; the rest is a search away.
+  return (data.cards || []).slice(0, 24);
+}
+
+/**
+ * The landing page: one section per domain in schema.json, in that order.
+ *
+ * Everything about which sections exist, what they are called and what verb
+ * their cards carry comes from the vocabulary — see home.js. This function
+ * only supplies the two things a module of pure structure cannot have: where
+ * the data comes from, and what a click does.
+ */
+async function loadHome() {
   const host = $('#discover');
+  let rows = [];
   try {
     const res = await apiFetch('/api/discover');
-    if (!res.ok) return;
-    const { rows } = await res.json();
-    if (!rows?.length) return;
+    if (res.ok) rows = (await res.json()).rows || [];
+  } catch {
+    // No curated rows is survivable: every domain simply falls back to a
+    // browse, which is slower but is still a landing page.
+  }
 
-    host.replaceChildren();
+  // What you already started comes first. Anyone signed out gets an empty
+  // list and no row, which is the correct amount of nagging.
+  let resume = null;
+  try {
+    const started = await getContinueWatching();
+    if (started.length) resume = resumeShelf(started);
+  } catch {
+    /* the resume row is a bonus; the catalogue still renders without it */
+  }
 
-    // What you already started comes first. Anyone signed out gets an empty
-    // list and no row, which is the correct amount of nagging.
-    try {
-      const resume = await getContinueWatching();
-      if (resume.length) host.append(resumeShelf(resume));
-    } catch {
-      /* the resume row is a bonus; the catalogue still renders without it */
-    }
-
-    for (const row of rows) {
-      const shelf = el('section', 'shelf');
-      shelf.append(el('h3', null, row.title));
-      const rail = el('div', 'rail');
-      for (const item of row.items) rail.append(discoverTile(item));
-      shelf.append(rail);
-      host.append(shelf);
-    }
+  try {
+    await renderHome(host, {
+      discoverRows: rows,
+      browse: browseDomain,
+      resume,
+      handlers: {
+        onActivate(item, action) {
+          if (action.kind === 'reader') {
+            openReaderFor(action.id, item.title, action.verb);
+            return;
+          }
+          if (action.kind === 'open') {
+            // A card came from a search and has sources to choose between; a
+            // discover item with a play target IS the thing and opens directly.
+            if (item.card) openCard(item.card);
+            else play({ title: item.title, year: item.year || 0 },
+              { uri: item.uri, title: item.title });
+            return;
+          }
+          // A catalogue entry is a name to go looking for.
+          const q = item.year ? `${item.title} ${item.year}` : item.title;
+          $('#q').value = q;
+          state.query = q;
+          history.replaceState(null, '', `?q=${encodeURIComponent(q)}`);
+          search();
+        },
+      },
+    });
   } catch {
     /* discovery is a nicety; a failure just leaves the intro copy in place */
   }
@@ -412,47 +496,49 @@ function resumeTile(p) {
   return t;
 }
 
-function discoverTile(item) {
-  const t = el('button', 'tile');
-  t.type = 'button';
-  t.title = item.overview || item.title;
+// ------------------------------------------------------------------ reader --
 
-  const p = el('div', 'poster');
-  if (item.poster) {
-    const img = el('img');
-    img.loading = 'lazy';
-    img.alt = item.title;
-    img.src = item.poster;
-    p.append(img);
-  } else {
-    p.append(el('div', 'noart', item.title));
-  }
-  if (item.rating) p.append(el('span', 'rating', item.rating.toFixed(1)));
-  if (item.mediaType === 'tv') p.append(el('span', 'best-q', 'TV'));
-  // An item with a play target IS the thing rather than a name to go looking
-  // for, so it is marked as opening immediately.
-  if (item.play) p.append(el('span', 'badge instant', 'OPEN'));
-  t.append(p);
+/**
+ * The overlay that shows a comic, a book or a picture set as pages.
+ *
+ * Kept beside the player rather than inside it: they share nothing but a
+ * z-index. The player streams bytes into a media element; this one steps
+ * through JPEGs from /api/pages and never touches the torrent engine.
+ */
+function readerElements() {
+  return {
+    root: $('#reader'),
+    title: $('#reader-title'),
+    count: $('#reader-count'),
+    stage: $('#reader-stage'),
+    img: $('#reader-page'),
+    embed: $('#reader-embed'),
+    prev: $('#reader-prev'),
+    next: $('#reader-next'),
+    status: $('#reader-status'),
+  };
+}
 
-  t.append(el('div', 'tname', item.title));
-  t.append(el('div', 'tmeta', item.year ? String(item.year) : ''));
-
-  t.addEventListener('click', () => {
-    // A film row holds catalogue metadata, so clicking searches for sources.
-    // A row from the archive holds the item itself -- searching for its name
-    // would be a strange detour past the copy we already have.
-    if (item.play) {
-      play({ title: item.title, year: item.year || 0 },
-        { uri: item.play, title: item.title });
-      return;
-    }
-    const q = item.year ? `${item.title} ${item.year}` : item.title;
-    $('#q').value = q;
-    state.query = q;
-    history.replaceState(null, '', `?q=${encodeURIComponent(q)}`);
-    search();
+function openReaderFor(id, title, verb) {
+  state.reader?.close();
+  document.body.style.overflow = 'hidden';
+  state.reader = openReader({
+    id,
+    title,
+    verb,
+    els: readerElements(),
+    apiFetch,
+    onClose: () => {
+      state.reader = null;
+      // A detail sheet left open underneath still wants the page frozen.
+      if ($('#detail').hidden) document.body.style.overflow = '';
+    },
   });
-  return t;
+}
+
+function closeReader() {
+  state.reader?.close();
+  state.reader = null;
 }
 
 // ------------------------------------------------------------------ detail --
@@ -933,15 +1019,23 @@ async function streamPasted() {
 // ---------------------------------------------------------------- settings --
 
 /**
- * Point this client at a different Yarr.It.
+ * Point this client at a different Yarr.It, and connect your own services.
  *
- * The address is the whole of it. Nothing else here is worth a settings panel,
- * and the panel exists so that a self-hoster who wants their own instance is
- * not reduced to editing localStorage in a console.
+ * The panel exists so that someone who runs their own stack is not reduced to
+ * editing localStorage in a console -- and, since the services section landed,
+ * so that a guest with no account has somewhere to put the address of their own
+ * home server.
  */
 function openSettings() {
   $('#set-server').value = getServer();
   showServerResult('', null);
+  closeServiceEditor();
+  renderServices();
+  // Probed on open rather than only on demand. A settings screen that shows
+  // stale state is a settings screen that gets believed, and the states worth
+  // showing here (a rejected key, a blocked address) are the ones nobody would
+  // think to press a button to discover.
+  testAllServices();
   $('#settings').hidden = false;
   document.body.style.overflow = 'hidden';
   // select(), not focus(). Focus alone leaves a cursor sitting in the existing
@@ -990,6 +1084,279 @@ function saveServer() {
   // shelves already on the page came from the old one. A reload is the honest
   // way to leave nothing behind from the previous server.
   location.reload();
+}
+
+// ----------------------------------------------------------- your services --
+
+/**
+ * Somebody else's home server, configured by somebody with no account.
+ *
+ * This section is what separates a demo from a product. A guest opens it, types
+ * in the address of the Radarr on their own shelf, and it works -- or it says,
+ * in one sentence, exactly which wall stopped it and what gets past. Nothing
+ * here asks who they are, because nothing here needs to: the config lives in
+ * this browser and the requests go straight from this browser to their box.
+ */
+
+const svcStore = createServiceStore();
+
+// id -> { status: 'testing' | 'done', route, health }. Kept out of the store on
+// purpose: a probe result is about right now, and persisting it would let a
+// stale "healthy" outlive the service it described.
+const svcProbes = new Map();
+// The id being edited, '' for a new one, null when the editor is closed.
+let svcEditing = null;
+
+function renderServices() {
+  const list = $('#svc-list');
+  list.textContent = '';
+  const rows = svcStore.list();
+
+  if (!rows.length) {
+    list.append(el('p', 'svc-empty',
+      'Nothing connected yet. Add the Radarr, Sonarr, Jellyfin, Plex, Komga or RomM you '
+      + 'already run and it will show up here.'));
+  }
+
+  for (const svc of rows) list.append(serviceRow(svc));
+  renderServiceAdvice(rows);
+}
+
+function serviceRow(svc) {
+  const spec = SERVICE_TYPES[svc.type];
+  const node = el('div', 'svc' + (svc.enabled ? '' : ' off'));
+  node.dataset.id = svc.id;
+
+  const top = el('div', 'svc-top');
+  top.append(el('b', 'svc-name', svc.name));
+  top.append(el('span', 'svc-kind', spec.label));
+
+  const probe = svcProbes.get(svc.id);
+  if (!svc.enabled) top.append(el('span', 'hp hp-not_configured', 'Not in use'));
+  else if (!probe) top.append(el('span', 'hp hp-untested', 'Not tested yet'));
+  else if (probe.status === 'testing') top.append(el('span', 'hp hp-testing', 'Testing…'));
+  else top.append(el('span', `hp hp-${probe.health.state}`, healthLabel(probe.health.state)));
+
+  const actions = el('div', 'svc-actions');
+  for (const [act, label, cls] of [
+    ['test', 'Test', ''],
+    ['edit', 'Edit', ''],
+    ['toggle', svc.enabled ? 'Disable' : 'Enable', ''],
+    ['remove', 'Remove', 'danger'],
+  ]) {
+    const b = el('button', cls, label);
+    b.type = 'button';
+    b.dataset.act = act;
+    actions.append(b);
+  }
+  top.append(actions);
+  node.append(top);
+
+  // The address, never the key. Whether a key exists is worth saying; what it
+  // is, is not, and putting it on screen is how it ends up in a screenshot.
+  const meta = el('p', 'svc-meta');
+  meta.append(document.createTextNode(svc.url));
+  meta.append(el('span', '', ` · ${describeService(svc)} · `));
+  meta.append(el('span', '', svc.key ? `${spec.credential} saved` : `no ${spec.credential.toLowerCase()} yet`));
+  node.append(meta);
+
+  if (svc.enabled && probe && probe.status === 'done') {
+    node.append(el('p', 'svc-route', routeLine(probe.route)));
+    // transport.js and the probe already wrote a sentence aimed at whoever is
+    // reading this screen. It is repeated as written: paraphrasing it here
+    // would put two explanations of one problem in front of the same person.
+    if (probe.health.detail) node.append(el('p', 'svc-detail', probe.health.detail));
+  }
+  return node;
+}
+
+/** Which of the three doors this service came through, in plain words. */
+function routeLine(route) {
+  if (route.transport === TRANSPORT.DIRECT) return 'Route: reachable directly from this page.';
+  if (route.transport === TRANSPORT.EXTENSION) return 'Route: reached through the Yarr.It extension.';
+  if (route.transport === TRANSPORT.SERVER) return 'Route: proxied by your own Yarr.It instance.';
+  return 'Route: nothing here can reach it — you would need your own instance.';
+}
+
+function renderServiceAdvice(rows) {
+  const box = $('#svc-advice');
+  box.textContent = '';
+  const advice = routeAdvice(rows, {
+    hasExtension: extensionAvailable(),
+    pageProtocol: location.protocol,
+  });
+  box.hidden = !advice;
+  if (!advice) return;
+
+  box.append(el('p', 'adv-why', advice.reason));
+  for (const r of advice.routes) {
+    const a = el('a', '', r.title);
+    a.href = r.href;
+    a.rel = 'noopener';
+    a.append(el('em', '', r.detail));
+    box.append(a);
+  }
+}
+
+async function testService(id) {
+  const svc = svcStore.get(id);
+  if (!svc) return;
+  svcProbes.set(id, { status: 'testing' });
+  renderServices();
+  const result = await probeService(svc);
+  svcProbes.set(id, { status: 'done', ...result });
+  renderServices();
+}
+
+async function testAllServices() {
+  // In parallel, and each one already bounded by transport.js. Serially, ten
+  // services behind a dead VPN would take ten timeouts to paint one panel --
+  // the panel someone opened in order to fix them.
+  await Promise.all(svcStore.list().filter((s) => s.enabled).map((s) => testService(s.id)));
+}
+
+// --- the editor ------------------------------------------------------------
+
+function fillServiceTypes() {
+  const sel = $('#svc-type');
+  if (sel.options.length) return;
+  // Built from the table rather than typed into the markup, so the picker can
+  // never drift from the set of things this client can actually talk to.
+  for (const id of allServiceTypes()) {
+    const o = document.createElement('option');
+    o.value = id;
+    o.textContent = SERVICE_TYPES[id].label;
+    sel.append(o);
+  }
+}
+
+function syncKeyLabels() {
+  const spec = SERVICE_TYPES[$('#svc-type').value];
+  if (!spec) return;
+  $('#svc-key-label').textContent = spec.credential;
+  const where = `Where to find it: ${spec.credentialHint}.`;
+  // Two of these have no header scheme and take the key in the query string.
+  // Said out loud, because it changes where that key can end up.
+  $('#svc-key-hint').textContent = spec.keyInURL
+    ? `${where} ${spec.label} has no header for this, so the key travels in the query `
+      + 'string of the request to your own server — it may appear in that server\'s logs.'
+    : where;
+}
+
+function openServiceEditor(id) {
+  fillServiceTypes();
+  svcEditing = id ?? '';
+  const svc = id ? svcStore.get(id) : null;
+
+  $('#svc-type').value = svc ? svc.type : 'radarr';
+  $('#svc-name').value = svc ? svc.name : '';
+  $('#svc-url').value = svc ? svc.url : '';
+  $('#svc-key').value = svc ? svc.key : '';
+  $('#svc-enabled').checked = svc ? svc.enabled : true;
+  syncKeyLabels();
+  showServiceResult('', null);
+
+  $('#svc-editor').hidden = false;
+  $('#svc-buttons').hidden = true;
+  $('#svc-name').focus();
+}
+
+function closeServiceEditor() {
+  svcEditing = null;
+  $('#svc-editor').hidden = true;
+  $('#svc-buttons').hidden = false;
+  // The key must not sit in a DOM node after the box is closed.
+  $('#svc-key').value = '';
+}
+
+function showServiceResult(text, ok) {
+  const r = $('#svc-result');
+  r.textContent = text;
+  r.classList.toggle('ok', ok === true);
+  r.classList.toggle('bad', ok === false);
+  r.hidden = !text;
+}
+
+/** What the boxes currently say, as a service that may not be saved yet. */
+function draftService() {
+  return {
+    id: svcEditing || 'draft',
+    type: $('#svc-type').value,
+    name: $('#svc-name').value.trim() || SERVICE_TYPES[$('#svc-type').value].label,
+    url: normaliseServiceURL($('#svc-url').value),
+    key: $('#svc-key').value.trim(),
+    enabled: true,
+  };
+}
+
+/**
+ * Probe what is in the boxes, before it is saved.
+ *
+ * Testing the draft rather than the stored copy is the whole value of the
+ * button: it answers "is this key right" while the key is still in front of
+ * you, instead of after you have saved it and have to guess which field to
+ * change.
+ */
+async function testDraftService() {
+  const draft = draftService();
+  if (!draft.url) {
+    showServiceResult('That does not look like an address.', false);
+    return;
+  }
+  showServiceResult('Checking…', null);
+  const { route, health } = await probeService(draft);
+  showServiceResult(
+    `${healthLabel(health.state)} — ${health.detail} (${routeLine(route).replace(/^Route: /, '')})`,
+    health.state === 'healthy',
+  );
+}
+
+function saveServiceEditor() {
+  const input = {
+    type: $('#svc-type').value,
+    name: $('#svc-name').value,
+    url: $('#svc-url').value,
+    key: $('#svc-key').value,
+    enabled: $('#svc-enabled').checked,
+  };
+  const res = svcEditing ? svcStore.update(svcEditing, input) : svcStore.add(input);
+  // Refusing to save beats saving nothing quietly: an address that appears to
+  // save is a row that looks configured, answers nothing, and gives no clue
+  // which half of it is wrong.
+  if (!res.ok) {
+    showServiceResult(res.error, false);
+    return;
+  }
+  const id = res.service.id;
+  svcProbes.delete(id);
+  closeServiceEditor();
+  renderServices();
+  if (res.service.enabled) testService(id);
+}
+
+function onServiceListClick(e) {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.closest('.svc')?.dataset.id;
+  if (!id) return;
+
+  if (btn.dataset.act === 'test') { testService(id); return; }
+  if (btn.dataset.act === 'edit') { openServiceEditor(id); return; }
+  if (btn.dataset.act === 'toggle') {
+    const svc = svcStore.get(id);
+    svcStore.update(id, { enabled: !svc.enabled });
+    svcProbes.delete(id);
+    renderServices();
+    if (!svc.enabled) testService(id);
+    return;
+  }
+  if (btn.dataset.act === 'remove') {
+    const svc = svcStore.get(id);
+    if (!confirm(`Remove ${svc.name}? The key stored for it is deleted from this browser too.`)) return;
+    svcStore.remove(id);
+    svcProbes.delete(id);
+    renderServices();
+  }
 }
 
 // -------------------------------------------------------------------- init --
@@ -1069,13 +1436,29 @@ function init() {
     location.reload();
   });
 
+  $('#svc-add').addEventListener('click', () => openServiceEditor(null));
+  $('#svc-test-all').addEventListener('click', testAllServices);
+  $('#svc-list').addEventListener('click', onServiceListClick);
+  $('#svc-type').addEventListener('change', syncKeyLabels);
+  $('#svc-test-one').addEventListener('click', testDraftService);
+  $('#svc-cancel').addEventListener('click', closeServiceEditor);
+  $('#svc-editor').addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveServiceEditor();
+  });
+
   $('#detail-close').addEventListener('click', closeDetail);
   $('#detail').addEventListener('click', (e) => { if (e.target.id === 'detail') closeDetail(); });
   $('#player-close').addEventListener('click', closePlayer);
+  $('#reader-close').addEventListener('click', closeReader);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    // Innermost first: settings can be opened over a detail sheet.
-    if (!$('#settings').hidden) closeSettings();
+    // Innermost first: settings can be opened over a detail sheet, and the
+    // service editor sits inside settings. Escaping out of a half-typed key
+    // straight past the panel would lose the whole entry.
+    if (!$('#svc-editor').hidden) closeServiceEditor();
+    else if (!$('#settings').hidden) closeSettings();
+    else if (!$('#reader').hidden) closeReader();
     else if (!$('#player').hidden) closePlayer();
     else if (!$('#detail').hidden) closeDetail();
   });
@@ -1085,9 +1468,19 @@ function init() {
   // use them to choose what to search for.
   renderFilters();
 
+  // The intro promises whatever the vocabulary actually covers. Hand-written,
+  // it said "films, TV, music and images" long after books, comics and games
+  // had been added — and the copy is the first thing that tells a visitor a
+  // domain exists at all.
+  const covers = domainSentence();
+  if (covers) {
+    $('#intro-covers').textContent = covers;
+    $('#q').placeholder = `Search ${covers.toLowerCase()}…`;
+  }
+
   const params = new URLSearchParams(location.search);
   const initial = params.get('q');
-  if (!initial) loadDiscover();
+  if (!initial) loadHome();
   if (initial) {
     $('#q').value = initial;
     state.query = initial;
