@@ -41,7 +41,7 @@ type musicRef struct {
 	URL      string
 }
 
-type musicTrack struct {
+type linkMusicTrack struct {
 	Title    string  `json:"title"`
 	Artist   string  `json:"artist,omitempty"`
 	Duration float64 `json:"duration,omitempty"`
@@ -57,7 +57,7 @@ type musicResult struct {
 	Artist   string       `json:"artist,omitempty"`
 	Artwork  string       `json:"artwork,omitempty"`
 	Source   string       `json:"source"`
-	Tracks   []musicTrack `json:"tracks"`
+	Tracks   []linkMusicTrack `json:"tracks"`
 	Query    string       `json:"query"` // a whole-album search
 	// Disclaimer is served with the data rather than left to the front end, so
 	// there is no build of the UI in which this claim goes missing.
@@ -241,13 +241,13 @@ func fetchSpotifyMeta(ctx context.Context, ref *musicRef, proxyURL string) (*mus
 		// A track's own credit wins; the album artist is the fallback, which
 		// is what makes a compilation resolve to the right performer.
 		a := linkFirstNonEmpty(t.artist(), artist)
-		res.Tracks = append(res.Tracks, musicTrack{
+		res.Tracks = append(res.Tracks, linkMusicTrack{
 			Title: name, Artist: a, Duration: t.Duration / 1000,
 			Query: searchQueryFor(a, name),
 		})
 	}
 	if len(res.Tracks) == 0 {
-		res.Tracks = append(res.Tracks, musicTrack{
+		res.Tracks = append(res.Tracks, linkMusicTrack{
 			Title: title, Artist: artist, Duration: e.Duration / 1000,
 			Query: searchQueryFor(artist, title),
 		})
@@ -314,13 +314,13 @@ func fetchAppleMeta(ctx context.Context, ref *musicRef, proxyURL string) (*music
 		if len(t.ByArtist) > 0 && t.ByArtist[0].Name != "" {
 			a = t.ByArtist[0].Name
 		}
-		res.Tracks = append(res.Tracks, musicTrack{
+		res.Tracks = append(res.Tracks, linkMusicTrack{
 			Title: t.Name, Artist: a, Duration: parseISODuration(t.Duration),
 			Query: searchQueryFor(a, t.Name),
 		})
 	}
 	if len(res.Tracks) == 0 {
-		res.Tracks = append(res.Tracks, musicTrack{
+		res.Tracks = append(res.Tracks, linkMusicTrack{
 			Title: doc.Name, Artist: artist, Query: searchQueryFor(artist, doc.Name)})
 	}
 	return res, nil
