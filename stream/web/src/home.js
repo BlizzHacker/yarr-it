@@ -366,7 +366,12 @@ function poster(item, action) {
   return p;
 }
 
-function tile(item, handlers) {
+/**
+ * One tile. Exported so a category page draws the same thing the rails do --
+ * the verb, the placeholder behaviour and the `hidden`/lazy-loading trap above
+ * are all decided here, and a second copy would get one of them wrong.
+ */
+export function tile(item, handlers) {
   const action = tileAction(item);
   const t = el('button', 'tile');
   t.type = 'button';

@@ -90,6 +90,11 @@ type card struct {
 	Popular int `json:"popular,omitempty"`
 	// Platform is the console or system, for game results.
 	Platform string `json:"platform,omitempty"`
+	// System is the same machine as a stable slug ("snes", "genesis", "c64"),
+	// in the platform vocabulary play_archive.go and ROM Hub already use.
+	// Platform is for eyes and can be reworded; this is what the system filter,
+	// the facet and a /browse URL are keyed on, so it must not.
+	System string `json:"system,omitempty"`
 
 	// Music is the part of a result that only means anything for music: the
 	// artist, the venue, the date of the show. One optional object rather than
@@ -155,6 +160,11 @@ type server struct {
 	discover discoverCache
 	warm     *warmer
 
+	// The category tree, its per-category counts and the rows behind them.
+	// Separate from `discover` on purpose: the landing page must keep making
+	// exactly the calls it made before, so nothing here can be on its path.
+	browse *browseCache
+
 	// Configured backends -- Radarr, Sonarr, ROMarr, Jellyfin, a linear-TV
 	// engine. Nil is a valid state and means none are configured yet, which is
 	// how a fresh self-host starts; every reader must handle it rather than
@@ -217,7 +227,8 @@ func main() {
 		// Reuses the RomM installation's IGDB credentials. That is the part of
 		// RomM that describes games in general; its own API is library-bound
 		// and would only describe this installation's shelf.
-		igdb: newIGDB(os.Getenv("IGDB_CLIENT_ID"), os.Getenv("IGDB_CLIENT_SECRET")),
+		igdb:   newIGDB(os.Getenv("IGDB_CLIENT_ID"), os.Getenv("IGDB_CLIENT_SECRET")),
+		browse: newBrowseCache(),
 	}
 	lib, err := newLibraryStore(os.Getenv("LIBRARY_PATH"))
 	if err != nil {
@@ -239,6 +250,10 @@ func main() {
 	// Pre-search the titles on the landing rails so the common path --
 	// browse trending, click a poster -- hits cache instead of a 14s fan-out.
 	go s.warm.run()
+	// Category sizes, gathered in the background and never on a request path,
+	// so opening a domain page costs one static payload rather than eighty
+	// upstream calls.
+	go s.countLoop()
 
 	mux := http.NewServeMux()
 	auth := loadAuthConfig()
@@ -286,6 +301,11 @@ func main() {
 	// render a PDF or follow a details page, so this is what makes comics and
 	// photo sets work there at all.
 	mux.HandleFunc("/api/pages", publicCORS(auth.requireAuth(s.handlePages)))
+	// The category tree and the rows behind it. Separate from /api/discover on
+	// purpose: the landing page keeps making exactly the calls it made before,
+	// so nothing here can slow its first paint.
+	mux.HandleFunc("/api/categories", publicCORS(auth.requireAuth(s.handleCategories)))
+	mux.HandleFunc("/api/rows", publicCORS(auth.requireAuth(s.handleRows)))
 	// The same thing for music: an archive.org item turned into the tracks it
 	// actually contains. A concert is one item and twenty recordings, and until
 	// this existed the only target a music card could offer was a details page
@@ -794,7 +814,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// A complete answer already in memory. Nothing else can beat this, and it
 	// is the state the warmer and every previous search are working towards.
 	if cards, ok := s.getCached(cacheKey); ok {
-		respondSearch(w, q, f, dev, cards, searchState{cache: "HIT"}, ownerView)
+		respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, kind, f, cards), searchState{cache: "HIT"}, ownerView)
 		return
 	}
 
@@ -806,7 +826,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// retry that can only fail again.
 	if s.apiKey == "" && !wantArchive {
 		if stale, ok := s.getAny(cacheKey); ok {
-			respondSearch(w, q, f, dev, stale, searchState{cache: "STALE", stale: true}, ownerView)
+			respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, kind, f, stale), searchState{cache: "STALE", stale: true}, ownerView)
 			return
 		}
 		writeJSON(w, 503, map[string]string{
@@ -853,7 +873,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if snap.complete {
 		st.cache = "MISS"
 	}
-	respondSearch(w, q, f, dev, cards, st, ownerView)
+	respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, kind, f, cards), st, ownerView)
 }
 
 // handleSearchCollect answers a poll: everything the job has found so far.
@@ -885,7 +905,7 @@ func (s *server) handleSearchCollect(w http.ResponseWriter, r *http.Request, id 
 	// A job id is a bearer of nothing: it names a query, not a person, and the
 	// person collecting is often not the one who started it. So the audience is
 	// decided from THIS request's credentials, never carried on the job.
-	respondSearch(w, q, f, dev, cards, searchState{
+	respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, job.kind, f, cards), searchState{
 		cache:   "JOB",
 		job:     job.id,
 		pending: !snap.complete,

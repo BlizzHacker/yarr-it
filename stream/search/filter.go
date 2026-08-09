@@ -43,6 +43,17 @@ type filters struct {
 	// it costs no upstream traffic -- which is what this file already does for
 	// every other filter, and says so at the top.
 	Lang string
+
+	// Systems narrows game results to particular machines -- snes, genesis,
+	// c64. Accepts a slug, a full name, a short name or any alias, so
+	// "megadrive" and "genesis" reach the same shelf; see systems.go.
+	//
+	// Unlike every other filter here this one ALSO deepens the result set,
+	// because narrowing 60 rows out of a 272,000-item catalogue to one machine
+	// leaves almost nothing. The cached set still stays unnarrowed -- see
+	// deepenBySystem in main.go, which is careful about exactly the trap the
+	// `Lang` comment above describes.
+	Systems []string
 }
 
 func parseFilters(q url.Values) filters {
@@ -59,6 +70,7 @@ func parseFilters(q url.Values) filters {
 		Source:     strings.ToLower(strings.TrimSpace(q.Get("source"))),
 		Query:      q.Get("q"),
 		Groups:     splitCSV(q.Get("groups")),
+		Systems:    splitCSV(q.Get("system")),
 		// Adult results are hidden unless explicitly asked for.
 		ShowAdult: q.Get("adult") == "1" || q.Get("adult") == "true",
 	}
@@ -67,6 +79,20 @@ func parseFilters(q url.Values) filters {
 	}
 	f.Lang = languageFor(q, f.Kind)
 	return f
+}
+
+// systems resolves the requested machines -- slug, full name, short name or any
+// alias -- to catalogue entries. Anything unrecognised is dropped, so nothing a
+// caller supplies ever reaches a query.
+func (f filters) systems() []*gameSystem { return resolveSystems(f.Systems) }
+
+// systemIDs is the resolved set as slugs, for matching against a card.
+func (f filters) systemIDs() map[string]bool {
+	out := map[string]bool{}
+	for _, s := range f.systems() {
+		out[s.ID] = true
+	}
+	return out
 }
 
 // languageFor decides what language constraint a request carries.
@@ -130,12 +156,20 @@ func containsFold(list []string, v string) bool {
 // with nothing. A card whose only remaining sources are dead is not useful.
 func (f filters) apply(cards []card) []card {
 	out := make([]card, 0, len(cards))
+	wantSystems := f.systemIDs()
 
 	for _, c := range cards {
 		if c.Adult && !f.ShowAdult {
 			continue
 		}
 		if len(f.Groups) > 0 && !anyGroupMatches(c.Groups, f.Groups) {
+			continue
+		}
+		// Narrowing to a machine is narrowing to games, so a torrent with no
+		// machine is excluded rather than passed through as "unconstrained".
+		// Keeping everything without a system would make the SNES filter return
+		// every film that happens to share the query.
+		if len(wantSystems) > 0 && !wantSystems[c.System] {
 			continue
 		}
 		// Kind was parsed, used for the cache key, and then never applied --
@@ -491,7 +525,23 @@ type facets struct {
 	// and the person on the other side has no way to find out what they are no
 	// longer being shown. `unstated` is a value like any other and is the
 	// largest one on most music searches; see musicLanguageAllows.
-	Languages  []facetCount `json:"languages,omitempty"`
+	Languages []facetCount `json:"languages,omitempty"`
+	// Systems is which machines this result set actually contains, counted the
+	// same way and for the same reason as Languages: publishing the whole
+	// catalogue instead would offer fifty-odd chips of which two do anything,
+	// and the other forty-eight would each empty the page. Omitted entirely
+	// when nothing in the results is a game -- and an empty array means exactly
+	// that, never "show them all".
+	//
+	// One asymmetry worth knowing about, because it looks like a bug and is
+	// not: a chip's number GROWS when you press it. Unlike every other filter
+	// here, choosing a machine also fetches more of that machine (see
+	// deepenBySystem), and these counts are built after that -- so "Master
+	// System 1" becomes "Master System 13" once selected, and delivers 13. The
+	// number always describes the set the chip would give you, which is the
+	// property worth keeping; counting before the deepening would promise 1 and
+	// hand over 13, which is the same asymmetry pointing the wrong way.
+	Systems    []facetCount `json:"systems,omitempty"`
 	AdultCount int          `json:"adultCount"`
 	// How many results arrive each way, so the source toggle can say so
 	// rather than making you click to find out one of them is empty.
@@ -504,16 +554,25 @@ type facets struct {
 type facetCount struct {
 	Value string `json:"value"`
 	Count int    `json:"count"`
+	// Label is the name a person reads, where the value is a slug they would
+	// not. archive.org's field says "wonderswan-color"; the chip has to say
+	// "WonderSwan Color". Only the system facet carries one -- a quality is
+	// already "1080p" and a language already has a menu of its own.
+	Label string `json:"label,omitempty"`
 }
 
 func buildFacets(cards []card) facets {
 	q, cd, ix := map[string]int{}, map[string]int{}, map[string]int{}
 	grp := map[string]int{}
 	lang := map[string]int{}
+	sys := map[string]int{}
 	f := facets{}
 	for _, c := range cards {
 		for _, g := range c.Groups {
 			grp[g]++
+		}
+		if c.System != "" {
+			sys[c.System]++
 		}
 		if c.Music != nil {
 			lang[languageFacet(c.Music.Language)]++
@@ -551,7 +610,21 @@ func buildFacets(cards []card) facets {
 	if len(lang) > 0 {
 		f.Languages = sortedFacets(lang, false)
 	}
+	if len(sys) > 0 {
+		f.Systems = namedSystems(sortedFacets(sys, false))
+	}
 	return f
+}
+
+// namedSystems attaches the machine's name to each slug, so a chip can read
+// "Super Nintendo" while the request it sends says `system=snes`.
+func namedSystems(in []facetCount) []facetCount {
+	for i := range in {
+		if s := systemByID[in[i].Value]; s != nil {
+			in[i].Label = s.Name
+		}
+	}
+	return in
 }
 
 // languageFacet buckets what an item said about itself.
