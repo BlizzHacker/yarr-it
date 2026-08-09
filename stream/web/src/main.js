@@ -7,6 +7,9 @@ import { playlistResolver } from './resolvers/playlist.js';
 import { flashResolver } from './resolvers/flash.js';
 import { gameResolver } from './resolvers/game.js';
 import { archiveResolver } from './resolvers/archive.js';
+import { createLinkResolver, resolveLink, shouldResolveAsLink } from './resolvers/link.js';
+import { renderLink, renderLinkError } from './link-ui.js';
+import { fetchMusicLink, isMusicLink, renderMusicLink } from './music-links.js';
 import { renderPlayable, detachAll } from './player.js';
 import { renderLibrary } from './library.js';
 import { whoAmI, displayName, signInURL, signOutURL, vpnGuidance, egressStatus } from './account.js';
@@ -152,6 +155,10 @@ async function search({ showSpinner = true } = {}) {
   // player closes -- then the old channel list resurfaces underneath a
   // brand new, unrelated search. Every fresh search must start clean.
   $('#library').hidden = true;
+  // The paste-a-link panel is shown, never hidden, by renderLink -- so a search
+  // started after pasting a link would otherwise leave the old format list
+  // sitting above the new results.
+  $('#linkpanel').hidden = true;
   if (showSpinner) {
     $('#status').hidden = true;
     showSkeletons();
@@ -1337,6 +1344,12 @@ function buildRegistry() {
   window.__engine = state.engine; // diagnostics
   const registry = createRegistry()
     .register(createTorrentResolver({ engine: state.engine, classify }))
+    // Claims only the signed /api/link/media URLs the paste-a-link resolver
+    // mints, so a chosen format plays through this same path instead of a
+    // parallel one. Before url, which would otherwise HEAD the media URL to
+    // sniff a type we already know -- and for a format the server has to
+    // repack, that HEAD would start an ffmpeg run for nothing.
+    .register(createLinkResolver())
     .register(embedResolver)      // before url: a YouTube link is also an http URL
     .register(archiveResolver)    // before url/game: archive.org runs its own player
     .register(flashResolver)      // before url: a .swf is also an http URL
@@ -1441,7 +1454,12 @@ async function play(card, src) {
       if (handled) return;
     }
 
-    const out = await state.registry.resolve(makeSource({ kind: 'auto', uri }));
+    // meta carries the already-resolved format through to the link resolver,
+    // which is how a chosen quality plays without a second round trip to
+    // re-learn what it is.
+    const out = await state.registry.resolve(
+      makeSource({ kind: 'auto', uri, meta: src.meta ?? {} }),
+    );
 
     if (gen !== state.resolveGen) {
       // A newer play() call has since taken over. Never touch the DOM or
@@ -1564,8 +1582,10 @@ function closePlayer() {
 // ------------------------------------------------------------------ magnet --
 
 const PASTE_HINT =
-  'That is not something this can play. Paste a magnet link, an info hash, ' +
-  'a direct media URL, an .m3u/.m3u8 playlist, or a YouTube/Vimeo link.';
+  'That is not a link this can read. Paste a post or video link from Facebook, ' +
+  'Instagram, TikTok, YouTube, X, Reddit, Vimeo, Dailymotion or Twitch — or a ' +
+  'magnet link, an info hash, a direct media URL, or an .m3u/.m3u8 playlist. ' +
+  'On a phone: tap Share, then "Copy link".';
 
 /**
  * Best-effort human title for a non-magnet paste: the URL's last path
@@ -1790,12 +1810,91 @@ function wireTypeAhead() {
   });
 }
 
+/**
+ * Show the paste-a-link panel for a URL from any network.
+ *
+ * One box, any link, no network picker -- which is the whole reason people use
+ * fdown.net and snap-insta.to instead of a real tool. Detection happens here
+ * and on the server; the visitor never says which site it is.
+ */
+async function resolvePastedLink(uri) {
+  const mount = $('#linkpanel');
+  $('#intro').hidden = true;
+  $('#discover').hidden = true;
+  $('#get').hidden = true;
+  $('#library').hidden = true;
+  showStatus('Reading that link…');
+
+  const retry = () => resolvePastedLink(uri);
+  try {
+    const resolved = await resolveLink(uri);
+    $('#status').hidden = true;
+    renderLink(resolved, {
+      mount,
+      onRetry: retry,
+      onPlay: (format) => play(
+        { title: resolved.title, year: 0 },
+        {
+          uri: format.media,
+          title: `${format.label} · ${format.sizeHuman}`,
+          meta: { format, kind: resolved.kind },
+        },
+      ),
+      // A collection entry is just another link, so it goes back through the
+      // same door rather than getting its own half-implemented path.
+      onOpenCollection: (item) => resolvePastedLink(item.url),
+    });
+  } catch (err) {
+    if (err?.name === 'AbortError') return;
+    $('#status').hidden = true;
+    renderLinkError(err, { mount, onRetry: retry });
+  }
+}
+
+/**
+ * Spotify/Apple Music: read the public track list, then search for it here.
+ *
+ * The searches are the real ones -- the same /api/search every other query
+ * uses, narrowed to the music domain -- so a track row finds actual releases
+ * rather than being a button that looks like it does something.
+ */
+async function resolveMusicLink(uri) {
+  const mount = $('#linkpanel');
+  $('#intro').hidden = true;
+  $('#discover').hidden = true;
+  $('#get').hidden = true;
+  showStatus('Reading that track list…');
+  try {
+    const result = await fetchMusicLink(uri);
+    $('#status').hidden = true;
+    renderMusicLink(result, {
+      mount,
+      onSearch: (query) => {
+        mount.hidden = true;
+        $('#q').value = query;
+        state.query = query;
+        // Narrow to music. A track title on its own drags in film and TV rips
+        // that happen to share a word, and the domain filter is what makes the
+        // result list look like the album somebody just pasted.
+        state.filters.groups = new Set(['music']);
+        renderFilters();
+        history.replaceState(null, '', `?q=${encodeURIComponent(query)}&groups=music`);
+        search();
+      },
+    });
+  } catch (err) {
+    $('#status').hidden = true;
+    renderLinkError({ code: err.code, error: err.message }, { mount });
+  }
+}
+
 async function streamPasted() {
   const raw = $('#magnet').value.trim();
   if (!raw) {
     showRetry(PASTE_HINT, () => {});
     return;
   }
+  $('#linkpanel').hidden = true;
 
   // normalizeMagnet's real job: turn a bare 40-hex info hash into a magnet
   // with trackers. If it doesn't recognize the input as a magnet/info hash,
@@ -1805,6 +1904,24 @@ async function streamPasted() {
   const uri = magnet ?? raw;
 
   if (!state.registry) state.registry = buildRegistry();
+
+  // Spotify and Apple Music are metadata-only: their audio is DRM-protected
+  // and nothing here will pretend otherwise. Checked before everything else so
+  // one of their links can never fall through to a video extractor.
+  if (!magnet && isMusicLink(uri)) {
+    resolveMusicLink(uri);
+    return;
+  }
+
+  // Any ordinary page link -- Facebook, Instagram, TikTok, YouTube, X, Reddit,
+  // Vimeo, Twitch and whatever else the engine covers -- gets the format list.
+  // The specific resolvers (playlist, flash, ROM, archive.org) keep their own
+  // behaviour; only the two generic ones hand over.
+  if (!magnet && shouldResolveAsLink(uri, state.registry)) {
+    resolvePastedLink(uri);
+    return;
+  }
+
   if (!state.registry.find(uri)) {
     // Nothing here can play a web page, but a torrent site's page is a
     // perfectly reasonable thing to paste -- it is where the magnet lives.

@@ -1,12 +1,45 @@
 [Unit]
 Description=mw-search — search and metadata API for yarrit.com
 Documentation=https://github.com/BlizzHacker/yarr-it
-After=network-online.target
+After=network-online.target yarrit-egress-proxy.service
 Wants=network-online.target
+# Not merely ordering: without the confined proxy this endpoint would fall back
+# to fetching from the host, which is the machine with the tunnel.
+Requires=yarrit-egress-proxy.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/mw-search -addr 127.0.0.1:8802 -prowlarr http://192.168.0.115:9696
+# -link-egress points every /api/link fetch at the guarded proxy running inside
+# the confined namespace (yarrit-egress-proxy.service), which has no route to
+# 192.168.0.0/16. Dropping the flag leaves the SSRF guard in link_guard.go as
+# the only barrier between an anonymous paste box and the LAN behind the
+# tunnel -- workable for a laptop, not for this host. mw-search refuses to
+# start if the proxy is not answering, and the startup log says which mode is
+# in force.
+ExecStart=/usr/local/bin/mw-search -addr 127.0.0.1:8802 -prowlarr http://192.168.0.115:9696 -link-egress 10.201.0.2:8899
+
+# /api/link/* shells out to yt-dlp, and yt-dlp needs two things that are easy
+# to get wrong and fail confusingly:
+#
+#   1. Install it WITH the impersonation extra, at a pinned version:
+#        pip install 'yt-dlp[default,curl-cffi]==2026.7.4'
+#      A plain `pip install yt-dlp` produces a working binary that fails on
+#      Dailymotion (and anything else behind Cloudflare) with "attempting
+#      impersonation, but none of these impersonate targets are available".
+#      Watch the pin: curl_cffi 0.16 is OUTSIDE yt-dlp 2026.7.4's supported
+#      range and is reported as "(unsupported)" in `yt-dlp --list-impersonate-
+#      targets` rather than as an error, so it looks installed and does nothing.
+#
+#   2. ffmpeg must be present. Vimeo, Reddit and YouTube serve picture and
+#      sound as separate tracks (measured: 0 of 22, 0 of 20, and 1 of 33
+#      formats respectively carry audio), so without ffmpeg to join them those
+#      networks offer nothing downloadable with sound. The resolver degrades
+#      honestly rather than silently -- it says there is no safe default -- but
+#      the feature is barely worth having in that state.
+#
+# Keeping yt-dlp current is not optional maintenance: these sites change and a
+# stale binary looks exactly like a dozen simultaneously broken networks.
+# /api/link/health reports the running version for precisely that reason.
 
 # API keys live here, not in the unit and not in the repo. Marked required on
 # purpose: without them the service starts but silently answers with empty
