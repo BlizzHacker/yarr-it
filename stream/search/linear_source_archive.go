@@ -64,6 +64,30 @@ const (
 	// a background refresh nobody is waiting on; there is no reason to be
 	// expensive about it.
 	archiveLinearConcurrency = 6
+
+	// How long one detached refresh may take before it is abandoned.
+	//
+	// Sized from the real thing rather than from the developer machine: the VPS
+	// took 6m51s and 7m46s for the two collections, so anything under ten
+	// minutes would cut off a refresh that was about to succeed. Nobody waits
+	// on this, so a generous budget costs only a goroutine.
+	archiveLinearRefreshBudget = 20 * time.Minute
+
+	// Backoff between failed refreshes. See archiveLinearBackoff.
+	archiveLinearRetryBase = time.Minute
+	archiveLinearRetryMax  = 30 * time.Minute
+
+	// How many finished programmes are enough to put the channel on air.
+	//
+	// A refresh takes minutes; a viewer will not wait minutes to find out
+	// whether a channel exists. Publishing the pool as it fills means the
+	// channel starts playing within seconds of a cold start and simply gets
+	// deeper, rather than being invisible until the last of two hundred
+	// metadata requests comes back.
+	archiveLinearFirstLight = 12
+
+	// How often to republish after that, in completed candidates.
+	archiveLinearPublishEvery = 40
 )
 
 // Endpoints as vars so a test can point the whole source at a stub. There is a
@@ -355,19 +379,69 @@ func (m *archiveLinearMeta) streamOnly() bool {
 
 // archiveLinearLibrary is one curated collection, presented as a source of
 // programmes.
+//
+// THE RULE THIS TYPE EXISTS TO KEEP: reading the pool never waits on
+// archive.org, and a refresh never belongs to whoever happened to ask.
+//
+// The first version of this file broke both halves, and it took a production
+// deploy to show it. LinearItems ran the refresh on its CALLER's context and
+// blocked other callers on the result. On the VPS a full refresh takes 6m51s
+// for Cartoons and 7m46s for Classic TV -- measured there, against three to
+// four minutes on a developer machine in another country -- so what actually
+// happened was:
+//
+//	a request arrives and starts a seven-minute refresh on its request context;
+//	every other request blocks behind it;
+//	the client gives up at ninety seconds and the request context is cancelled;
+//	the refresh dies with "context canceled" and caches nothing;
+//	the next request starts the whole thing over, forever.
+//
+// The startup warm hid half of it, because that one does hold a background
+// context and did eventually land. The half it hid is the worse half: once the
+// six-hour TTL expires there is no warm goroutine left, so the only thing that
+// can trigger a refresh is a request -- and a request can never live long
+// enough to finish one. The channels would have gone dark six hours after every
+// deploy and stayed dark until somebody restarted the service.
+//
+// Hence the shape below. Refreshes run detached, on a background context with
+// their own budget. Readers take whatever is in hand and leave.
 type archiveLinearLibrary struct {
 	coll   archiveLinearCollection
 	client *http.Client
 
-	mu      sync.Mutex
-	cached  []LinearItem
+	mu     sync.Mutex
+	cached []LinearItem
+	// fetched is when the last SUCCESSFUL refresh landed. A failure does not
+	// move it, so a stale-but-good pool keeps being served.
 	fetched time.Time
-	// inflight collapses concurrent refreshes. The engine asks every channel's
-	// pool independently, so two channels on one collection would otherwise
-	// each start their own few-hundred-request refresh.
-	refreshing bool
-	done       chan struct{}
+	// building collapses concurrent refreshes to one. The engine asks every
+	// channel's pool independently, so two channels on one collection would
+	// otherwise each start their own few-hundred-request crawl.
+	building bool
+	// failures and nextTry are the backoff. Retrying a failing collection on
+	// every request is how one bad Solr query became a log line every thirty
+	// seconds, indefinitely, in production.
+	failures int
+	nextTry  time.Time
+	lastErr  error
+	// settled is closed each time a refresh finishes, so the startup warm can
+	// report what it got. Only the warm ever waits on it; no request does.
+	settled chan struct{}
 }
+
+// archiveLinearBuilding is the state a channel is in while its first pool is
+// still being fetched.
+//
+// Distinguished from "empty" on purpose. Empty means the rules matched nothing
+// and is a thing the operator has to fix; building means wait a few minutes and
+// is a thing that fixes itself. Reporting the second as the first sends
+// somebody into the rule editor to debug a channel that was about to work.
+//
+// It wraps the engine's own ErrLinearSourceWarming rather than being a private
+// sentinel, so the engine can recognise the state without knowing that
+// archive.org exists.
+var archiveLinearBuilding = fmt.Errorf(
+	"%w from archive.org; the channel will fill in shortly", ErrLinearSourceWarming)
 
 func (l *archiveLinearLibrary) LinearProviderID() string { return archiveLinearProviderID }
 func (l *archiveLinearLibrary) LinearLibraryID() string  { return l.coll.ID }
@@ -384,57 +458,136 @@ func (l *archiveLinearLibrary) LinearLibraryID() string  { return l.coll.ID }
 //
 // Nothing without a duration is ever scheduled. That is the guarantee that
 // matters and it is enforced in the scheduler, not by hiding the evidence.
-func (l *archiveLinearLibrary) LinearItems(ctx context.Context) ([]LinearItem, error) {
+// The ctx argument is deliberately unused for anything but courtesy. Reading
+// the pool is a map lookup; there is nothing here to cancel, and wiring a
+// caller's deadline into it is precisely the mistake described on the type.
+func (l *archiveLinearLibrary) LinearItems(context.Context) ([]LinearItem, error) {
 	l.mu.Lock()
-	if l.cached != nil && time.Since(l.fetched) < archiveLinearTTL {
-		out := append([]LinearItem(nil), l.cached...)
-		l.mu.Unlock()
+	defer l.mu.Unlock()
+
+	l.startRefreshLocked()
+
+	// Whatever is in hand, immediately. On the very first call that is nothing,
+	// and nothing is the right answer to give in a few microseconds rather than
+	// the right answer to make somebody wait seven minutes for.
+	out := make([]LinearItem, len(l.cached))
+	copy(out, l.cached)
+
+	// Non-nil even when empty, so the engine's own pool cache treats this as a
+	// real answer and holds it for its TTL. A nil slice reads as "never
+	// fetched" there and would put us back to asking on every single request.
+	if len(out) > 0 {
 		return out, nil
 	}
-	if l.refreshing {
-		wait := l.done
-		stale := append([]LinearItem(nil), l.cached...)
-		l.mu.Unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			// A caller giving up must not take the refresh with it. The last
-			// good copy is a better answer than an error, and is what the
-			// engine would have fallen back to anyway.
-			if len(stale) > 0 {
-				return stale, nil
-			}
-			return nil, ctx.Err()
-		}
-		l.mu.Lock()
-		out := append([]LinearItem(nil), l.cached...)
-		l.mu.Unlock()
-		return out, nil
+	if l.building {
+		return out, fmt.Errorf("archive.org %s: %w", l.coll.ID, archiveLinearBuilding)
 	}
-	l.refreshing = true
-	l.done = make(chan struct{})
-	stale := append([]LinearItem(nil), l.cached...)
-	l.mu.Unlock()
-
-	items, err := l.refresh(ctx)
-
-	l.mu.Lock()
-	if err == nil {
-		l.cached, l.fetched = items, time.Now()
-	}
-	l.refreshing = false
-	close(l.done)
-	out := append([]LinearItem(nil), l.cached...)
-	l.mu.Unlock()
-
-	if err != nil {
-		if len(stale) > 0 {
-			// One bad refresh must not blank a channel that was working.
-			return stale, fmt.Errorf("archive.org %s: serving the last good copy: %w", l.coll.ID, err)
-		}
-		return nil, fmt.Errorf("archive.org %s: %w", l.coll.ID, err)
+	if l.lastErr != nil {
+		return out, fmt.Errorf("archive.org %s: %w", l.coll.ID, l.lastErr)
 	}
 	return out, nil
+}
+
+// startRefreshLocked kicks off a background refresh if one is due. Caller holds
+// l.mu.
+func (l *archiveLinearLibrary) startRefreshLocked() {
+	if l.building {
+		return
+	}
+	now := time.Now()
+	if now.Before(l.nextTry) {
+		return // backing off after a failure
+	}
+	if l.cached != nil && now.Sub(l.fetched) < archiveLinearTTL {
+		return // still fresh
+	}
+
+	l.building = true
+	l.settled = make(chan struct{})
+	settled := l.settled
+
+	go func() {
+		// Detached from every caller. This is the whole fix: the crawl outlives
+		// the request that noticed it was needed, so a client giving up at
+		// ninety seconds no longer destroys seven minutes of work.
+		ctx, cancel := context.WithTimeout(context.Background(), archiveLinearRefreshBudget)
+		defer cancel()
+
+		started := time.Now()
+		items, err := l.refresh(ctx)
+
+		l.mu.Lock()
+		if err == nil {
+			l.cached, l.fetched = items, time.Now()
+			l.failures, l.nextTry, l.lastErr = 0, time.Time{}, nil
+			log.Printf("archive.org %s: %d programmes (%s)",
+				l.coll.ID, len(linearSchedulable(items)), time.Since(started).Round(time.Second))
+		} else {
+			l.failures++
+			l.lastErr = err
+			wait := archiveLinearBackoff(l.failures)
+			l.nextTry = time.Now().Add(wait)
+			// Logged once per failed attempt rather than once per request. The
+			// backoff is in the message because "it is retrying" and "it will
+			// retry in eight minutes" are different things to an operator
+			// watching a log.
+			log.Printf("archive.org %s: refresh failed after %s (attempt %d), retrying in %s: %v",
+				l.coll.ID, time.Since(started).Round(time.Second), l.failures, wait, err)
+		}
+		l.building = false
+		close(settled)
+		l.mu.Unlock()
+	}()
+}
+
+// archiveLinearBackoff doubles from a minute up to half an hour.
+//
+// The cap matters as much as the growth. A collection that has been renamed or
+// withdrawn will fail forever, and forever at thirty-minute intervals is a
+// service that has given up politely; forever at thirty-SECOND intervals is a
+// service hammering a charity's search index and filling a disk with the same
+// line.
+func archiveLinearBackoff(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	d := archiveLinearRetryBase
+	for i := 1; i < failures && d < archiveLinearRetryMax; i++ {
+		d *= 2
+	}
+	if d > archiveLinearRetryMax {
+		d = archiveLinearRetryMax
+	}
+	return d
+}
+
+// Warm blocks until the current refresh settles, and is the ONLY thing in this
+// file that blocks on one.
+//
+// It exists for the startup goroutine, which wants to log what it got. Nothing
+// serving a request may call it -- that is the mistake this file was rewritten
+// to remove -- so it is deliberately not part of LinearLibrary.
+func (l *archiveLinearLibrary) Warm(ctx context.Context) error {
+	l.mu.Lock()
+	l.startRefreshLocked()
+	settled, building := l.settled, l.building
+	l.mu.Unlock()
+
+	if building && settled != nil {
+		select {
+		case <-settled:
+		case <-ctx.Done():
+			// The refresh carries on regardless; only this observer gave up.
+			return ctx.Err()
+		}
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lastErr != nil && len(l.cached) == 0 {
+		return fmt.Errorf("archive.org %s: %w", l.coll.ID, l.lastErr)
+	}
+	return nil
 }
 
 func (l *archiveLinearLibrary) refresh(ctx context.Context) ([]LinearItem, error) {
@@ -448,6 +601,9 @@ func (l *archiveLinearLibrary) refresh(ctx context.Context) ([]LinearItem, error
 
 	out := make([]LinearItem, len(docs))
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	completed := 0
+
 	sem := make(chan struct{}, archiveLinearConcurrency)
 	for i, d := range docs {
 		wg.Add(1)
@@ -455,24 +611,61 @@ func (l *archiveLinearLibrary) refresh(ctx context.Context) ([]LinearItem, error
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			out[i] = l.itemFor(ctx, d)
+			item := l.itemFor(ctx, d)
+
+			mu.Lock()
+			out[i] = item
+			completed++
+			// Put the channel on air as soon as there is enough to schedule,
+			// then deepen it. Without this the pool is all-or-nothing and a
+			// cold start means seven minutes of a channel that does not appear
+			// to exist -- which on a VPS is most of what a visitor would see
+			// after any deploy.
+			ready := completed == archiveLinearFirstLight ||
+				(completed > archiveLinearFirstLight && completed%archiveLinearPublishEvery == 0)
+			var partial []LinearItem
+			if ready {
+				partial = items0(out)
+			}
+			mu.Unlock()
+
+			if len(partial) > 0 {
+				l.publishPartial(partial)
+			}
 		}(i, d)
 	}
 	wg.Wait()
 
-	items := make([]LinearItem, 0, len(out))
+	items := items0(out)
 	skipped := 0
-	for _, it := range items0(out) {
+	for _, it := range items {
 		if it.DurationSeconds <= 0 {
 			skipped++
 		}
-		items = append(items, it)
 	}
 	if skipped > 0 {
 		log.Printf("archive.org %s: %d of %d candidates have no usable duration "+
 			"and will not be scheduled", l.coll.ID, skipped, len(items))
 	}
 	return items, nil
+}
+
+// publishPartial makes a half-built pool readable without ending the refresh.
+//
+// It deliberately does NOT touch `fetched`. That field means "the last complete
+// refresh landed at", and moving it here would start the six-hour TTL from a
+// partial pool -- so a channel would spend six hours playing the first dozen
+// cartoons it happened to resolve.
+func (l *archiveLinearLibrary) publishPartial(items []LinearItem) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// Never shrink what is already being served. Late results arrive out of
+	// order, and a snapshot taken by a slower goroutine must not replace a
+	// fuller one taken by a faster one.
+	if len(items) <= len(l.cached) {
+		return
+	}
+	l.cached = items
 }
 
 // items0 drops the zero values left by candidates that were rejected outright
