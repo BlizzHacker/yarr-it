@@ -1,0 +1,52 @@
+[Unit]
+# The guarded egress proxy, running INSIDE the confined namespace.
+#
+# This is the process that actually opens every outbound connection for
+# /api/link/*. mw-search, yt-dlp and ffmpeg all only ever connect to it across
+# the veth; none of them originates a connection to the wider network. Since
+# this process lives where 192.168.0.0/16 has no route, the LAN is unreachable
+# from the whole feature even with link_guard.go removed.
+#
+# NetworkNamespacePath is what puts it there. Doing it this way, rather than
+# having mw-search call `ip netns exec`, means nothing needs CAP_SYS_ADMIN --
+# granting mw-search that capability in order to confine it would have been a
+# strange trade.
+Description=Yarr.It guarded egress proxy (confined namespace)
+Documentation=https://github.com/BlizzHacker/yarr-it
+After=yarrit-egress-netns.service
+Requires=yarrit-egress-netns.service
+Before=mw-search.service
+
+[Service]
+Type=simple
+# Same binary as the API, so the SSRF guard inside the namespace is byte-for-byte
+# the guard outside it. Two layers that share an implementation cannot drift.
+ExecStart=/usr/local/bin/mw-search -egress-proxy 10.201.0.2:8899
+NetworkNamespacePath=/run/netns/yarrit-egress
+
+Restart=always
+RestartSec=2
+
+User=mw-search
+Group=mw-search
+
+# This process holds no secrets and reads no state: it takes bytes on one side
+# and bytes on the other. Locked down accordingly.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+# It never needs the environment file: no Prowlarr key, no TMDB key, nothing.
+# That is deliberate -- this is the process parsing hostile HTML.
+
+[Install]
+WantedBy=multi-user.target

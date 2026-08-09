@@ -172,7 +172,25 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8802", "listen address")
 	prowlarr := flag.String("prowlarr", "http://192.168.0.115:9696", "Prowlarr base URL (over the tunnel)")
 	ttl := flag.Duration("ttl", defaultTTL, "cache TTL for search results")
+	ytdlp := flag.String("ytdlp", "yt-dlp", "path to the yt-dlp binary backing /api/link")
+	linkTimeout := flag.Duration("link-timeout", 45*time.Second, "per-link resolve timeout")
+	linkStreams := flag.Int("link-streams", 24, "max concurrent /api/link/media streams")
+	// Address of the guarded egress proxy running inside the confined network
+	// namespace. Empty runs it in-process on loopback, which is right for a
+	// laptop and wrong for the public VPS -- see link_netns.go and
+	// deploy/yarrit-egress-netns.sh.
+	linkEgress := flag.String("link-egress", os.Getenv("LINK_EGRESS"),
+		"address of the confined egress proxy (empty = run one in-process, unconfined)")
+	// Child mode. Started by this binary inside the namespace; serves the SSRF
+	// guard's proxy and nothing else -- no Prowlarr, no library, no routes.
+	egressOnly := flag.String("egress-proxy", "",
+		"internal: run only the guarded egress proxy on this address")
 	flag.Parse()
+
+	if *egressOnly != "" {
+		runEgressProxyOnly(*egressOnly)
+		return
+	}
 
 	// Deliberately not fatal. Torrent search needs Prowlarr, but the catalogue,
 	// archive.org, the watchlist and resume points do not -- and refusing to
@@ -295,6 +313,30 @@ func main() {
 	// of titles this household is acquiring, which is as personal as the
 	// library itself.
 	mux.HandleFunc("/api/activity", auth.requireOwnerUser(s.handleActivity))
+
+	// Paste-a-link. Deliberately open -- not requireAuth, not requireOwner --
+	// because an anonymous visitor pasting a link they already have is the
+	// entire feature. It reads nothing of this household: no Prowlarr call, no
+	// library, no provider. The owner boundary exists to keep a stranger away
+	// from what is here, and there is nothing of ours behind this route.
+	//
+	// It is also the one route that fetches a URL a stranger chose, which is
+	// why link_guard.go and link_netns.go exist -- this process holds the
+	// WireGuard tunnel to 192.168.0.115, so an unguarded fetcher here is a door
+	// onto the home LAN.
+	link, err := newLinkService(*ytdlp, *linkTimeout, *linkStreams, *linkEgress)
+	if err != nil {
+		log.Fatalf("link resolver: %v", err)
+	}
+	logLinkPolicy(link)
+	mux.HandleFunc("/api/link/resolve", publicCORS(link.handleResolve))
+	mux.HandleFunc("/api/link/music", publicCORS(link.handleMusic))
+	mux.HandleFunc("/api/link/health", publicCORS(link.handleHealth))
+	// Not wrapped in publicCORS: a media response has to advertise `Range` in
+	// Access-Control-Allow-Headers, and publicCORS answers the preflight itself
+	// with a fixed list that does not include it. A TV client on another origin
+	// would then be refused the ranged request it needs to seek.
+	mux.HandleFunc("/api/link/media", link.handleMedia)
 
 	// Radarr / Sonarr / Lidarr, one entry per configured instance. A missing
 	// instance is not an error: a self-hoster who runs none of these still gets

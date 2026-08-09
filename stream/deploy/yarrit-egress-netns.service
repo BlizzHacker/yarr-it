@@ -1,0 +1,23 @@
+[Unit]
+# Builds the network namespace /api/link/* fetches from, before mw-search
+# starts. mw-search refuses to start when -link-netns names a namespace that
+# does not exist, so ordering here is not advisory -- a failure of this unit
+# stops the API rather than quietly downgrading it to unconfined.
+Description=Yarr.It egress namespace — confines /api/link fetching away from the LAN
+Documentation=https://github.com/BlizzHacker/yarr-it
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+Before=mw-search.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/yarrit/yarrit-egress-netns.sh up
+# Refuse to come up unless the isolation actually holds. Verifying at boot is
+# what stops a rule silently failing to apply after a kernel or iptables
+# upgrade and nobody noticing until it matters.
+ExecStartPost=/usr/local/lib/yarrit/yarrit-egress-verify.sh
+ExecStop=/usr/local/lib/yarrit/yarrit-egress-netns.sh down
+
+[Install]
+WantedBy=multi-user.target
