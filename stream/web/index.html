@@ -472,6 +472,81 @@
   .dl em { display:block; font-style:normal; font-size:12px; color:var(--dim); line-height:1.4; }
   .dl.ghost { background:transparent; border-style:dashed; }
 
+  /* ---------- nostalgia TV ---------- */
+  /* The first thing on the page, and the only thing on it that is already
+     running. Wide cards rather than 2:3 posters on purpose: a channel is not a
+     title you might pick, it is a picture of what is on, and the words beside
+     it -- programme, position, what is next -- are the point. */
+  .tv { margin:22px 0 6px; padding-bottom:22px; border-bottom:1px solid var(--line); }
+  .tv-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin:0 0 4px; }
+  .tv-head h2 { font-size:22px; margin:0; letter-spacing:-.02em; }
+  .tv-flag {
+    font-size:10.5px; font-weight:700; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--accent-ink); background:var(--accent); border-radius:999px; padding:3px 10px;
+  }
+  .tv-lede { flex-basis:100%; margin:2px 0 0; font-size:13px; color:var(--muted); max-width:70ch; }
+  .tv-rail {
+    display:grid; grid-auto-flow:column; grid-auto-columns:minmax(330px,1fr); gap:14px;
+    margin-top:16px; overflow-x:auto; overflow-y:hidden; padding-bottom:6px;
+    scroll-snap-type:x proximity; scrollbar-width:thin; scrollbar-color:var(--line) transparent;
+  }
+  .tv-rail::-webkit-scrollbar { height:7px; }
+  .tv-rail::-webkit-scrollbar-thumb { background:var(--line); border-radius:4px; }
+  .tv-card {
+    display:flex; gap:14px; align-items:stretch; text-align:left; scroll-snap-align:start;
+    padding:12px; border-radius:var(--r); border:1px solid var(--line);
+    background:var(--panel); color:inherit; font:inherit; cursor:pointer;
+    transition:border-color .16s ease, transform .16s ease;
+  }
+  .tv-card.live:hover, .tv-card.live:focus-visible { border-color:var(--accent-dim); transform:translateY(-2px); }
+  .tv-card:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  /* A channel that is still finding its programmes is drawn, explained, and
+     cannot be pressed. Showing it greyed with the server's own sentence beats
+     both an empty box and a button that would fail. */
+  .tv-card:disabled { cursor:default; opacity:.72; }
+  .tv-art {
+    position:relative; flex:0 0 116px; align-self:flex-start; aspect-ratio:4/3;
+    border-radius:9px; overflow:hidden; background:var(--panel-2); border:1px solid var(--line);
+  }
+  .tv-art img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; }
+  .tv-noart {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    padding:8px; text-align:center; font-size:11px; color:var(--dim);
+  }
+  .tv-live {
+    position:absolute; top:6px; left:6px; font-size:9.5px; font-weight:800; letter-spacing:.09em;
+    padding:2px 6px; border-radius:5px; background:var(--danger); color:#1b0505;
+  }
+  .tv-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .tv-chan { display:flex; align-items:baseline; gap:8px; font-size:11px; }
+  /* The kicker never wraps and the channel name gives way instead. Without the
+     min-width:0 the name refuses to shrink inside the flex row, and on a phone
+     that pushed "ON NOW" onto two lines. */
+  .tv-kicker { flex:none; white-space:nowrap; font-weight:800; letter-spacing:.08em;
+               text-transform:uppercase; color:var(--accent); }
+  .tv-name { min-width:0; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tv-now {
+    margin-top:2px; font-size:15px; font-weight:650; line-height:1.28;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  /* The bar is what makes this a channel rather than a poster: it is already
+     moving when you arrive, and it keeps moving between polls. */
+  .tv-bar { height:4px; margin:8px 0 5px; border-radius:3px; background:var(--panel-2); overflow:hidden; }
+  .tv-fill { height:100%; width:0; background:var(--accent); transition:width .9s linear; }
+  .tv-time { font-size:11.5px; color:var(--muted); }
+  .tv-next { margin-top:auto; padding-top:6px; font-size:11.5px; color:var(--dim);
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tv-detail { margin-top:6px; font-size:11.5px; line-height:1.45; color:var(--muted); }
+
+  @media (max-width:640px) {
+    .tv { margin-top:14px; padding-bottom:16px; }
+    .tv-head h2 { font-size:18px; }
+    .tv-lede { display:none; }
+    .tv-rail { grid-auto-columns:minmax(270px,1fr); gap:10px; }
+    .tv-art { flex-basis:88px; }
+    .tv-now { font-size:14px; }
+  }
+
   /* ---------- discover ---------- */
   #discover { margin-top:34px; }
   .shelf { margin-bottom:30px; }
@@ -749,6 +824,13 @@
 
 <main class="wrap">
   <p id="status" hidden></p>
+
+  <!-- Nostalgia TV, above the intro copy and above the catalogue. It is the
+       only thing here that needs no account, no indexer and no swarm, and it
+       is already running, so it is what a stranger should meet first. Empty
+       and hidden until the channel service answers: a strip that cannot say
+       what is on says nothing at all rather than reserving a blank box. -->
+  <section id="tv" class="tv" hidden></section>
 
   <section id="intro">
     <h2>View before you download.</h2>
