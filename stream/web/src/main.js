@@ -43,6 +43,11 @@ import {
 import { TRANSPORT, extensionAvailable } from './transport.js';
 import { runSearch, sleeper, describeProgress } from './progressive.js';
 import { createSuggester, suggestKey, suggestionHint } from './suggest.js';
+import {
+  createPrefs, domainKeyFor, activeFilterCount, describeStored, forgetStored,
+  formatBytes, LANGUAGES, DOMAIN_DEFAULTS,
+} from './prefs.js';
+import { keepVideoFitted } from './videofit.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -90,8 +95,19 @@ const state = {
     // '' means both. A hosted backup always plays; a torrent depends on who
     // is seeding, so which you want is a real question.
     source: '',
+    // '' means "say nothing and let the server decide", which is not the same
+    // as "no filter": the server defaults MUSIC to English and leaves every
+    // other domain alone. See src/prefs.js.
+    lang: '',
   },
+  // The stop function for the running video fit, so a closed player leaves no
+  // ResizeObserver and no inline width behind for the next source.
+  stopVideoFit: null,
 };
+
+// Everything this browser remembers. Read once, written on every change --
+// see applyStoredFilters / persistFilters below.
+const prefs = createPrefs();
 
 // ------------------------------------------------------------------ search --
 
@@ -108,6 +124,12 @@ function filterParams() {
   if (f.groups.size) p.set('groups', [...f.groups].join(','));
   // Adult results are excluded server-side unless explicitly requested.
   if (f.adult) p.set('adult', '1');
+  // Sent only when something was actually chosen. Sending `lang=en` for a
+  // caller who never said anything would look identical from here and be a
+  // different request: the server's default is per-domain (English for music,
+  // nothing anywhere else), and an explicit `lang` is honoured for every
+  // domain. Blank means "you decide", which is the truth.
+  if (f.lang) p.set('lang', f.lang);
   return p;
 }
 
@@ -227,6 +249,169 @@ function debounce(fn, ms) {
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
+// -------------------------------------------------- remembering the filters --
+
+/**
+ * Which per-domain slice the current selection belongs to.
+ *
+ * The rule is the server's, not ours: exactly one ticked category is that
+ * domain, none or several is "all". See src/prefs.js.
+ */
+function currentDomainKey() {
+  return domainKeyFor(state.filters.groups);
+}
+
+/** Put everything this browser remembers back into state and onto the page. */
+function applyStoredFilters() {
+  const shared = prefs.shared();
+  state.filters.groups = new Set(shared.groups);
+  state.filters.adult = shared.adult;
+  state.filters.webSafe = shared.webSafe;
+  state.filters.lang = shared.lang;
+  loadDomainFilters();
+}
+
+/** The slice for whichever domain is selected now, into state and the inputs. */
+function loadDomainFilters() {
+  const d = prefs.domain(currentDomainKey());
+  state.filters.sort = d.sort;
+  state.filters.seeders = d.seeders;
+  state.filters.minSize = d.minSize;
+  state.filters.maxSize = d.maxSize;
+  state.filters.quality = new Set(d.quality);
+  state.filters.codec = new Set(d.codec);
+  state.filters.source = d.source;
+  syncFilterInputs();
+}
+
+/**
+ * Write the current filters back.
+ *
+ * Called after every change, including the ones that only move a chip. There is
+ * no "save" here and there must not be: a preference somebody has to confirm is
+ * a preference most people lose.
+ */
+function persistFilters() {
+  const f = state.filters;
+  prefs.setShared({
+    groups: [...f.groups],
+    adult: f.adult,
+    webSafe: f.webSafe,
+    lang: f.lang,
+  });
+  prefs.setDomain(currentDomainKey(), {
+    sort: f.sort,
+    seeders: f.seeders,
+    minSize: f.minSize,
+    maxSize: f.maxSize,
+    quality: [...f.quality],
+    codec: [...f.codec],
+    source: f.source,
+  });
+  renderFilterReset();
+}
+
+/**
+ * Change which categories are ticked, keeping each domain's own numbers.
+ *
+ * The order matters and is the whole reason this is a function rather than two
+ * lines at the call site: the outgoing domain's slice has to be written under
+ * the OLD key before the selection moves, or "40 seeders, sorted by size" set
+ * for films is saved against music the instant somebody ticks Music.
+ */
+function changeGroups(mutate) {
+  persistFilters();          // under the key that is about to stop being current
+  mutate(state.filters.groups);
+  prefs.setShared({ groups: [...state.filters.groups] });
+  loadDomainFilters();       // and the new domain's own numbers come back
+  renderFilters();
+}
+
+/** Push state into the controls that hold a value rather than a class. */
+function syncFilterInputs() {
+  const f = state.filters;
+  const set = (sel, value) => { const n = $(sel); if (n) n.value = value; };
+  set('#f-seeders', f.seeders);
+  set('#f-minsize', f.minSize);
+  set('#f-maxsize', f.maxSize);
+  set('#f-sort', f.sort);
+  set('#f-lang', f.lang);
+  renderFilterReset();
+}
+
+/**
+ * The clear button, saying whether there is anything to clear.
+ *
+ * Filters survive a reload now, which makes this the difference between a
+ * catalogue that looks small and a catalogue somebody narrowed last week and
+ * forgot about.
+ */
+function renderFilterReset() {
+  const b = $('#filter-reset');
+  if (!b) return;
+  const n = activeFilterCount(state.filters);
+  b.classList.toggle('armed', n > 0);
+  b.textContent = n ? `Clear ${n} filter${n === 1 ? '' : 's'}` : 'Reset';
+  b.title = n
+    ? 'These are remembered between visits. This puts them all back.'
+    : 'Nothing is filtered right now.';
+}
+
+/**
+ * Set the language everywhere it is shown, and remember it.
+ *
+ * Two controls point at one value -- the one on the filter bar, where you meet
+ * it, and the one in Settings, where you would go looking for it -- so the
+ * write goes through here rather than through either of them.
+ */
+function setLanguage(value) {
+  state.filters.lang = String(value ?? '');
+  persistFilters();
+  const bar = $('#f-lang');
+  if (bar) bar.value = state.filters.lang;
+  const panel = $('#set-lang');
+  if (panel) panel.value = state.filters.lang;
+}
+
+/**
+ * Put every filter back, everywhere, and say so by re-running the search.
+ *
+ * Both the bar's Clear button and the one in Settings land here. It clears the
+ * STORED filters as well as the live ones -- a reset that a reload undoes is
+ * not a reset -- and leaves appearance and playback alone, because "clear my
+ * filters" is a sentence about a search.
+ */
+function clearAllFilters({ research = true } = {}) {
+  prefs.clearFilters();
+  state.filters.groups = new Set();
+  state.filters.quality = new Set();
+  state.filters.codec = new Set();
+  state.filters.adult = false;
+  state.filters.webSafe = false;
+  state.filters.lang = '';
+  loadDomainFilters();
+  renderFilters();
+  // The panel's copies of adult, web-safe and language are separate controls
+  // pointed at the same values, so clearing from the bar has to repaint them.
+  // Without this the panel went on offering "French" after the bar had gone
+  // back to the default -- two surfaces disagreeing about one setting, which is
+  // the failure that makes a settings panel worse than no settings panel.
+  syncSettingsControls();
+  renderSavedFilters();
+  if (research) search({ showSpinner: false });
+}
+
+/** The language menu, built from the vocabulary rather than written by hand. */
+function fillLanguageMenu(node) {
+  if (!node || node.options.length) return;
+  for (const [value, label] of LANGUAGES) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    node.append(o);
+  }
+}
+
 // ----------------------------------------------------------------- filters --
 
 function renderFilters() {
@@ -242,18 +427,68 @@ function renderFilters() {
   // not exist until after a search had already run, so a category could only
   // ever narrow results you had -- never ask for a category in the first
   // place, which is the first thing anyone tries.
-  groupRow($('#f-groups'), f?.groups ?? ALL_GROUPS.map((value) => ({ value })),
-    state.filters.groups);
-  if (!f) return;
+  groupRow($('#f-groups'), categoryChips(f), state.filters.groups);
+  renderLanguageFilter(f);
+  renderFilterReset();
+
+  // WHICH CHIPS ARE LIT depends only on what is set, so it is painted whether
+  // or not a search has run. It used to sit below the `if (!f) return` with the
+  // COUNTS, and the consequence only showed once these settings became things
+  // you could change from somewhere else: ticking "Show adult results" in the
+  // panel, or arriving with one remembered from last week, left the 18+ chip
+  // dark on the landing page while the filter was on. A control that lies about
+  // its own state is worse than one that is missing.
   $('#f-adult').classList.toggle('on', state.filters.adult);
-  $('#f-adult').textContent = f.adultCount ? `18+ ${f.adultCount}` : '18+';
-  chipRow($('#f-quality'), f.qualities, state.filters.quality);
-  chipRow($('#f-codec'), f.codecs, state.filters.codec);
   $('#f-websafe').classList.toggle('on', state.filters.webSafe);
   $('#f-instant').classList.toggle('on', state.filters.source === 'instant');
   $('#f-swarm').classList.toggle('on', state.filters.source === 'swarm');
+
+  // The COUNTS are facts about a result set, so they wait for one.
+  if (!f) return;
+  $('#f-adult').textContent = f.adultCount ? `18+ ${f.adultCount}` : '18+';
+  chipRow($('#f-quality'), f.qualities, state.filters.quality);
+  chipRow($('#f-codec'), f.codecs, state.filters.codec);
   $('#f-instant').textContent = f.instantCount ? `Backups ${f.instantCount}` : 'Backups';
   $('#f-swarm').textContent = f.swarmCount ? `Torrents ${f.swarmCount}` : 'Torrents';
+}
+
+/**
+ * The language control, drawn where and when it can do something.
+ *
+ * The server publishes a `languages` facet only when the results carry language
+ * facts, which today means music -- and it counts them BEFORE applying the
+ * filter, so the numbers say what the default is costing rather than what
+ * survived it. Ticking Music also brings the control up before any search has
+ * run, because that is the moment somebody would want it.
+ *
+ * A language chosen and then left set is still shown, whatever the results are.
+ * Hiding the control that is doing the filtering is exactly how a default
+ * nobody can see ends up looking like an empty catalogue.
+ */
+function renderLanguageFilter(facets) {
+  const group = $('#f-lang-group');
+  const sel = $('#f-lang');
+  if (!group || !sel) return;
+  fillLanguageMenu(sel);
+
+  const counts = facets?.languages || [];
+  const relevant = counts.length > 0
+    || state.filters.lang !== ''
+    || state.filters.groups.has('music');
+  group.hidden = !relevant;
+  if (!relevant) return;
+
+  sel.value = state.filters.lang;
+  // The option that is the default gets the number it is hiding, when there is
+  // one to give: "Any language 214" is the whole argument for pressing it.
+  const any = [...sel.options].find((o) => o.value === 'any');
+  if (any) {
+    const total = counts.reduce((n, c) => n + (Number(c.count) || 0), 0);
+    any.textContent = total ? `Any language · ${total}` : 'Any language';
+  }
+  sel.title = counts.length
+    ? `In these results: ${counts.slice(0, 6).map((c) => `${c.value} ${c.count}`).join(', ')}`
+    : '';
 }
 
 // Human labels for the Newznab buckets the API reports.
@@ -266,6 +501,44 @@ const GROUP_LABELS = {
   movies: 'Movies', tv: 'TV', anime: 'Anime', music: 'Music',
   games: 'Games', comics: 'Comics', apps: 'Apps', books: 'Books', other: 'Other',
 };
+
+/**
+ * Every category, always, with whatever counts the last search produced.
+ *
+ * The row used to BE the facets, falling back to the full list only when there
+ * were no facets at all. Two failures came out of that, and the second one is
+ * severe:
+ *
+ *   - A search that matched some categories drew only those, so the only way
+ *     back to TV from a films-only result set was to clear the search.
+ *   - A search that matched NOTHING sent back `groups: []` -- an empty array,
+ *     not a missing field -- which is truthy, so the fallback never fired and
+ *     every category chip disappeared. Measured on this build: tick Movies, set
+ *     minimum seeders to 40, and the SHOW row empties. The controls you would
+ *     use to get out of an over-narrow filter are the ones the over-narrow
+ *     filter removes.
+ *
+ * Now filters are remembered between visits, that state is reachable on a cold
+ * load rather than only after a sequence of clicks, which turns an awkward
+ * moment into a page that looks broken on arrival.
+ *
+ * A count of 0 is drawn as 0 rather than left blank: "TV 0" is a fact about
+ * this search, and it is the fact that explains an empty grid.
+ */
+function categoryChips(facets) {
+  const counts = new Map();
+  for (const g of facets?.groups || []) counts.set(g.value, g.count);
+  // Anything the server reports that this build has never heard of still gets a
+  // chip, at the end -- a category added server-side should appear here without
+  // a client release.
+  const names = [...ALL_GROUPS, ...counts.keys()].filter(
+    (v, i, all) => all.indexOf(v) === i,
+  );
+  return names.map((value) => ({
+    value,
+    count: facets ? (counts.get(value) ?? 0) : null,
+  }));
+}
 
 /**
  * Category checkboxes, in the spirit of a torrent site's category bar.
@@ -281,8 +554,13 @@ function groupRow(host, values, selected) {
     if (count != null) c.append(el('span', 'cnt', String(count)));
     if (selected.has(value)) c.classList.add('on');
     c.addEventListener('click', () => {
-      selected.has(value) ? selected.delete(value) : selected.add(value);
-      c.classList.toggle('on');
+      // Through changeGroups so the outgoing domain's own numbers are written
+      // under its own name before the selection moves, and the incoming
+      // domain's come back. This also redraws every chip, so nothing here
+      // toggles a class by hand any more.
+      changeGroups((groups) => {
+        groups.has(value) ? groups.delete(value) : groups.add(value);
+      });
       // With no words typed, picking a category IS the search -- "show me
       // games" -- so it runs one rather than re-filtering an empty result set.
       // A chip is a choice, not a command. Firing a search the instant one is
@@ -310,6 +588,7 @@ function chipRow(host, values, selected) {
       const k = value.toLowerCase();
       selected.has(k) ? selected.delete(k) : selected.add(k);
       c.classList.toggle('on');
+      persistFilters();
       refilter();
     });
     host.append(c);
@@ -905,6 +1184,37 @@ function closeDetail() {
  * The picture inside it is still theirs to place. That is the honest ceiling on
  * what can be done from out here, and it is why our own player is the default.
  */
+/**
+ * Give a small picture the screen it is being shown on.
+ *
+ * Nostalgia TV is the first thing on the home page and the only thing on the
+ * site that is already running when a stranger arrives. Its files are 320x240
+ * to 496x368 -- old television, at the size it was broadcast -- and the only
+ * rule that ever applied to them was `max-width:100%; max-height:100%`, which
+ * caps a picture and never lifts one. So the headline feature played at 320x240
+ * in the middle of a 1920x1080 screen, using about 3% of the frame, and so did
+ * every other archive.org video on the site.
+ *
+ * The arithmetic and the reasoning are in src/videofit.js. This is the seam:
+ * called for every <video>, a no-op for everything else, and stopped on the way
+ * out so the next source does not inherit the last one's inline width.
+ */
+function fitVideoToStage(playable, el) {
+  state.stopVideoFit?.();
+  state.stopVideoFit = null;
+  if (!playable || playable.render !== 'video' || !el) return;
+  const stage = document.querySelector('#play-body .stage') || document.querySelector('.stage');
+  if (!stage) return;
+  state.stopVideoFit = keepVideoFitted(el, stage, { mode: prefs.playback().upscale });
+}
+
+/** Re-fit what is playing right now, for the moment the preference changes. */
+function refitVideo() {
+  const el = $('#video');
+  if (!el || el.hidden) return;
+  fitVideoToStage({ render: 'video' }, el);
+}
+
 function fitEmbedToStage(playable, el) {
   state.stopFit?.();
   state.stopFit = null;
@@ -1082,6 +1392,7 @@ async function startInPlayer(verdict, route, card) {
   const el = renderPlayable(out, els);
   state.playable = out;
   fitEmbedToStage(out, el);
+  fitVideoToStage(out, el);
   // The swarm HUD means nothing over an iframe, an image or an emulator, and
   // permanent zeros read as a stalled stream.
   { const st = document.querySelector('.stats');
@@ -1541,6 +1852,7 @@ async function play(card, src) {
     const el = renderPlayable(out, els);
     state.playable = out;
     fitEmbedToStage(out, el);
+    fitVideoToStage(out, el);
 
     // Remember where this viewer gets to, so the same title resumes on any
     // other device. Only real media has a position; an image or an emulator
@@ -1562,10 +1874,12 @@ async function play(card, src) {
     if (out.subtitles?.length) {
       attachSubtitles(el, out.subtitles, (t) => t.load())
         .then((tracks) => {
-          if (tracks.length) {
-            setPlayerStatus(`${tracks.length} subtitle track${tracks.length === 1 ? '' : 's'} available — use the player's captions menu`);
-            setTimeout(() => setPlayerStatus(''), 6000);
-          }
+          if (!tracks.length) return;
+          const shown = showPreferredSubtitle(el, tracks);
+          setPlayerStatus(shown
+            ? `Subtitles on: ${shown}`
+            : `${tracks.length} subtitle track${tracks.length === 1 ? '' : 's'} available — use the player's captions menu`);
+          setTimeout(() => setPlayerStatus(''), 6000);
         })
         .catch(() => {});
     }
@@ -1579,6 +1893,34 @@ async function play(card, src) {
     const why = err instanceof PlaybackError ? err.message : `Could not start: ${err.message}`;
     setPlayerStatus(why);
   }
+}
+
+/**
+ * Turn a subtitle track on, if that is what this viewer asked for.
+ *
+ * attachSubtitles deliberately shows nothing by default -- a track that
+ * switches itself on is an annoyance for the majority who did not ask for one.
+ * This is the minority who did, and they said so in Settings; the language they
+ * chose there decides WHICH track, falling back to the first one attached
+ * rather than to nothing, because "on" with the wrong language still beats
+ * silence for somebody who turned it on deliberately.
+ *
+ * Returns the label of whatever was shown, or '' for nothing.
+ */
+function showPreferredSubtitle(video, tracks) {
+  if (prefs.playback().subtitles !== 'on' || !tracks?.length) return '';
+  const want = state.filters.lang;
+  const pick = (want && want !== 'any'
+    && tracks.find((t) => (t.srclang || '').toLowerCase() === want.slice(0, 2)))
+    || tracks[0];
+  if (!pick) return '';
+  // The <track> element's `mode`, not the `default` attribute: default only
+  // does anything before the element is attached, and by here it is attached.
+  const list = video.textTracks || [];
+  for (const t of list) t.mode = 'disabled';
+  const i = tracks.indexOf(pick);
+  if (list[i]) list[i].mode = 'showing';
+  return pick.label || 'subtitles';
 }
 
 function setPlayerStatus(t) {
@@ -1611,6 +1953,11 @@ function closePlayer() {
   releaseBios();
   state.game = null;
   clearGamePanels();
+  // Disconnects the ResizeObserver AND clears the inline width, so the next
+  // source -- which may be a 4K film needing no help at all -- does not open
+  // wearing the last one's 960px.
+  state.stopVideoFit?.();
+  state.stopVideoFit = null;
   $('#player').hidden = true;
   $('#library').hidden = true;
   if ($('#detail').hidden) document.body.style.overflow = '';
@@ -1931,8 +2278,12 @@ async function resolveMusicLink(uri) {
         // Narrow to music. A track title on its own drags in film and TV rips
         // that happen to share a word, and the domain filter is what makes the
         // result list look like the album somebody just pasted.
-        state.filters.groups = new Set(['music']);
-        renderFilters();
+        //
+        // Through changeGroups like every other route into the category chips:
+        // it saves the numbers belonging to whatever was selected before and
+        // brings music's own back, so this arrives with music's sort rather
+        // than with a film's.
+        changeGroups((groups) => { groups.clear(); groups.add('music'); });
         history.replaceState(null, '', `?q=${encodeURIComponent(query)}&groups=music`);
         search();
       },
@@ -2024,6 +2375,12 @@ function openSettings() {
   showServerResult('', null);
   closeServiceEditor();
   renderServices();
+  // Re-read on every open rather than only at startup. Another tab may have
+  // changed a preference, a game may have written a save since, and a panel
+  // that shows what WAS true is a panel that gets believed.
+  syncSettingsControls();
+  renderSavedFilters();
+  renderStorage();
   // Probed on open rather than only on demand. A settings screen that shows
   // stale state is a settings screen that gets believed, and the states worth
   // showing here (a rejected key, a blocked address) are the ones nobody would
@@ -2043,6 +2400,297 @@ function closeSettings() {
   $('#settings').hidden = true;
   // A detail sheet left open underneath still wants the page behind it frozen.
   if ($('#detail').hidden) document.body.style.overflow = '';
+}
+
+// ------------------------------------------------------- settings: the panes --
+
+/**
+ * Six sections, one press apart.
+ *
+ * Nine stacked sections in a modal is a page somebody scrolls past looking for
+ * the one thing they came for. The tab strip is the site's own chips, and the
+ * panes are plain elements toggled with `hidden` -- no framework, no state to
+ * get out of step with the strip.
+ */
+function wireSettingsTabs() {
+  const strip = document.querySelector('.set-tabs');
+  if (!strip) return;
+  const tabs = [...strip.querySelectorAll('[data-pane]')];
+  const show = (name) => {
+    for (const t of tabs) {
+      const on = t.dataset.pane === name;
+      t.classList.toggle('on', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      const pane = document.querySelector(`#pane-${t.dataset.pane}`);
+      if (pane) pane.hidden = !on;
+    }
+    // A pane opened after a scroll down another one starts halfway down.
+    const sheet = document.querySelector('.set-sheet');
+    if (sheet) sheet.scrollIntoView({ block: 'start' });
+  };
+  for (const t of tabs) t.addEventListener('click', () => show(t.dataset.pane));
+  show(tabs[0]?.dataset.pane || 'look');
+}
+
+/**
+ * A row of chips where exactly one is chosen.
+ *
+ * Buttons rather than a <select> because three short words side by side can be
+ * compared at a glance, which is the entire question a theme picker asks; a
+ * closed dropdown shows you one of the three answers.
+ */
+function wireChoice(sel, current, onPick) {
+  const host = $(sel);
+  if (!host) return () => {};
+  const buttons = [...host.querySelectorAll('[data-value]')];
+  const paint = (value) => {
+    for (const b of buttons) {
+      const on = b.dataset.value === value;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+      b.setAttribute('role', 'radio');
+    }
+  };
+  for (const b of buttons) {
+    b.addEventListener('click', () => { paint(b.dataset.value); onPick(b.dataset.value); });
+  }
+  paint(current);
+  return paint;
+}
+
+/**
+ * The three attributes the stylesheet reads, set on <html>.
+ *
+ * The same three the inline script in <head> sets before the first paint. This
+ * is what makes a change take effect without a reload; that one is what stops a
+ * light-theme visitor seeing a dark page flash past on every navigation.
+ */
+function applyAppearance(a = prefs.appearance()) {
+  const r = document.documentElement;
+  r.setAttribute('data-theme', a.theme);
+  r.setAttribute('data-covers', a.covers);
+  r.setAttribute('data-motion', a.motion);
+  // The address bar and the Android task switcher take their colour from this,
+  // so a light theme with a near-black meta tag looks like two different apps.
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    meta.content = a.theme === 'light' ? '#f5f7fa' : (a.theme === 'midnight' ? '#000000' : '#0b0d11');
+  }
+}
+
+/** Every settings control, set from what is stored. */
+function syncSettingsControls() {
+  const a = prefs.appearance();
+  const p = prefs.playback();
+  paintTheme?.(a.theme);
+  paintCovers?.(a.covers);
+  paintUpscale?.(p.upscale);
+  paintGamePlayer?.(readPlayerPreference() || ROUTE.EMULATORJS);
+  const check = (sel, on) => { const n = $(sel); if (n) n.checked = Boolean(on); };
+  check('#set-motion', a.motion === 'reduced');
+  check('#set-autoplay', p.autoplay);
+  check('#set-subtitles', p.subtitles === 'on');
+  check('#set-adult', state.filters.adult);
+  check('#set-websafe', state.filters.webSafe);
+  const lang = $('#set-lang');
+  if (lang) { fillLanguageMenu(lang); lang.value = state.filters.lang; }
+}
+
+let paintTheme = null;
+let paintCovers = null;
+let paintUpscale = null;
+let paintGamePlayer = null;
+
+function wireSettingsPrefs() {
+  wireSettingsTabs();
+
+  paintTheme = wireChoice('#set-theme', prefs.appearance().theme, (v) => {
+    applyAppearance(prefs.setAppearance({ theme: v }));
+  });
+  paintCovers = wireChoice('#set-covers', prefs.appearance().covers, (v) => {
+    applyAppearance(prefs.setAppearance({ covers: v }));
+  });
+  paintUpscale = wireChoice('#set-upscale', prefs.playback().upscale, (v) => {
+    prefs.setPlayback({ upscale: v });
+    // Re-fit whatever is on screen now rather than at the next play: a picture
+    // setting you have to close and reopen the player to judge is a setting
+    // nobody can judge.
+    refitVideo();
+  });
+  paintGamePlayer = wireChoice('#set-gameplayer', readPlayerPreference() || ROUTE.EMULATORJS,
+    (v) => writePlayerPreference(v));
+
+  const onCheck = (sel, fn) => {
+    const n = $(sel);
+    if (n) n.addEventListener('change', () => fn(n.checked));
+  };
+  onCheck('#set-motion', (on) => {
+    applyAppearance(prefs.setAppearance({ motion: on ? 'reduced' : 'full' }));
+  });
+  onCheck('#set-autoplay', (on) => {
+    prefs.setPlayback({ autoplay: on });
+    const v = $('#video');
+    if (v) v.autoplay = on;
+  });
+  onCheck('#set-subtitles', (on) => prefs.setPlayback({ subtitles: on ? 'on' : 'off' }));
+
+  // The two that are also chips on the filter bar. Both surfaces write the one
+  // value and both are repainted, so they can never disagree -- which is the
+  // failure that makes a settings panel worse than no settings panel.
+  onCheck('#set-adult', (on) => {
+    state.filters.adult = on;
+    persistFilters();
+    renderFilters();
+    refilter();
+  });
+  onCheck('#set-websafe', (on) => {
+    state.filters.webSafe = on;
+    persistFilters();
+    renderFilters();
+    refilter();
+  });
+
+  const lang = $('#set-lang');
+  if (lang) {
+    fillLanguageMenu(lang);
+    lang.addEventListener('change', () => {
+      setLanguage(lang.value);
+      renderFilters();
+      refilter();
+    });
+  }
+
+  applyAppearance();
+}
+
+// ------------------------------------------------- settings: what is stored --
+
+const DOMAIN_FILTER_LABELS = {
+  sort: 'sort', seeders: 'min seeders', minSize: 'min size',
+  maxSize: 'max size', quality: 'quality', codec: 'codec', source: 'source',
+};
+
+/** "Most seeders, min seeders 40, quality 1080p" -- or nothing, for a default. */
+function describeDomainFilters(d) {
+  const bits = [];
+  for (const [key, label] of Object.entries(DOMAIN_FILTER_LABELS)) {
+    const v = d[key];
+    if (Array.isArray(v)) { if (v.length) bits.push(`${label} ${v.join('/')}`); continue; }
+    if (v === '' || v == null) continue;
+    if (v === DOMAIN_DEFAULTS[key]) continue;
+    bits.push(`${label} ${v}`);
+  }
+  return bits.join(' · ');
+}
+
+/**
+ * Everything the filter bar is holding, per category, with a way to drop it.
+ *
+ * The point is not the list, it is that the list can be READ. A filter set once
+ * and remembered forever is only an improvement if there is somewhere that says
+ * what is currently set -- otherwise the first time somebody notices is when
+ * the catalogue looks half its size and nothing explains why.
+ */
+function renderSavedFilters() {
+  const host = $('#set-filters');
+  if (!host) return;
+  host.replaceChildren();
+
+  const snap = prefs.snapshot();
+  const rows = [];
+
+  const shared = [];
+  if (snap.shared.groups.length) {
+    shared.push(snap.shared.groups.map((g) => GROUP_LABELS[g] || g).join(' + '));
+  }
+  if (snap.shared.adult) shared.push('adult results shown');
+  if (snap.shared.webSafe) shared.push('browser-playable only');
+  if (snap.shared.lang) shared.push(`language ${snap.shared.lang}`);
+  if (shared.length) rows.push({ name: 'Everywhere', sub: shared.join(' · ') });
+
+  for (const [key, d] of Object.entries(snap.domains)) {
+    const sub = describeDomainFilters(d);
+    if (!sub) continue;
+    rows.push({ name: GROUP_LABELS[key] || (key === 'all' ? 'Any category' : key), sub });
+  }
+
+  if (!rows.length) {
+    host.append(el('p', 'set-none', 'Nothing saved — the filter bar is at its defaults.'));
+    return;
+  }
+
+  for (const row of rows) {
+    const item = el('div', 'set-item');
+    const txt = el('div', 'set-item-txt');
+    txt.append(el('div', 'set-item-name', row.name));
+    txt.append(el('div', 'set-item-sub', row.sub));
+    item.append(txt);
+    host.append(item);
+  }
+
+  const clear = el('button', 'btn btn-ghost', 'Clear all saved filters');
+  clear.type = 'button';
+  clear.addEventListener('click', () => clearAllFilters());
+  host.append(clear);
+}
+
+/**
+ * What is in this browser, and the way to remove it.
+ *
+ * Grouped and measured rather than listed as raw keys: "yarrit_services" is not
+ * a thing anybody recognises, and 41 KB next to "Game saves" is the difference
+ * between a list and a warning.
+ */
+function renderStorage() {
+  const host = $('#set-storage');
+  if (!host) return;
+  host.replaceChildren();
+
+  const kinds = describeStored();
+  if (!kinds.length) {
+    host.append(el('p', 'set-none', 'Nothing at all. This browser has never saved anything here.'));
+    return;
+  }
+
+  for (const kind of kinds) {
+    const item = el('div', 'set-item');
+    const txt = el('div', 'set-item-txt');
+    txt.append(el('div', 'set-item-name', kind.label));
+    txt.append(el('div', 'set-item-sub',
+      `${kind.detail} · ${formatBytes(kind.bytes)}${kind.count > 1 ? ` · ${kind.count} entries` : ''}`));
+    item.append(txt);
+
+    const drop = el('button', null, 'Forget');
+    drop.type = 'button';
+    drop.addEventListener('click', () => {
+      // Named, and never a single button that takes the lot. A "clear
+      // everything" that quietly ate somebody's emulator save states would be
+      // the worst control on this site.
+      const n = forgetStored([kind.id]);
+      showStorageResult(n ? `Removed ${kind.label.toLowerCase()}.` : 'Nothing to remove.', true);
+      if (kind.id === 'prefs') {
+        // The store still holds the old values in memory; put both back to
+        // defaults so the panel is not describing a record that is gone.
+        prefs.clearAll();
+        applyAppearance();
+        clearAllFilters({ research: false });
+        syncSettingsControls();
+      }
+      renderStorage();
+      renderSavedFilters();
+    });
+    item.append(drop);
+    host.append(item);
+  }
+}
+
+function showStorageResult(text, ok) {
+  const r = $('#set-storage-result');
+  if (!r) return;
+  r.textContent = text;
+  r.classList.toggle('ok', ok === true);
+  r.classList.toggle('bad', ok === false);
+  r.hidden = !text;
 }
 
 function showServerResult(text, ok) {
@@ -2510,21 +3158,37 @@ function init() {
     if (e.key === 'Enter') { e.preventDefault(); streamPasted(); }
   });
 
+  // Every one of these ends in persistFilters(). There is no Save button on
+  // this bar and there must not be: eleven controls that all had to be re-set
+  // after every reload is the defect this replaces, and a preference somebody
+  // has to confirm is a preference most people lose.
   $('#f-seeders').addEventListener('input', (e) => {
-    state.filters.seeders = Number(e.target.value) || 0; refilter();
+    state.filters.seeders = Number(e.target.value) || 0; persistFilters(); refilter();
   });
-  $('#f-minsize').addEventListener('input', (e) => { state.filters.minSize = e.target.value; refilter(); });
-  $('#f-maxsize').addEventListener('input', (e) => { state.filters.maxSize = e.target.value; refilter(); });
-  $('#f-sort').addEventListener('change', (e) => { state.filters.sort = e.target.value; refilter(); });
+  $('#f-minsize').addEventListener('input', (e) => {
+    state.filters.minSize = e.target.value; persistFilters(); refilter();
+  });
+  $('#f-maxsize').addEventListener('input', (e) => {
+    state.filters.maxSize = e.target.value; persistFilters(); refilter();
+  });
+  $('#f-sort').addEventListener('change', (e) => {
+    state.filters.sort = e.target.value; persistFilters(); refilter();
+  });
+  $('#f-lang').addEventListener('change', (e) => {
+    setLanguage(e.target.value);
+    refilter();
+  });
   $('#f-adult').addEventListener('click', () => {
     state.filters.adult = !state.filters.adult;
     $('#f-adult').classList.toggle('on', state.filters.adult);
+    persistFilters();
     refilter();
   });
 
   $('#f-websafe').addEventListener('click', () => {
     state.filters.webSafe = !state.filters.webSafe;
     $('#f-websafe').classList.toggle('on', state.filters.webSafe);
+    persistFilters();
     refilter();
   });
   for (const [id, value] of [['#f-instant', 'instant'], ['#f-swarm', 'swarm']]) {
@@ -2534,26 +3198,19 @@ function init() {
       state.filters.source = state.filters.source === value ? '' : value;
       $('#f-instant').classList.toggle('on', state.filters.source === 'instant');
       $('#f-swarm').classList.toggle('on', state.filters.source === 'swarm');
+      persistFilters();
       if (state.cards.length) refilter();
     });
   }
 
-  $('#filter-reset').addEventListener('click', () => {
-    state.filters = {
-      seeders: 1, minSize: '', maxSize: '',
-      quality: new Set(), codec: new Set(), groups: new Set(),
-      webSafe: false, adult: false, sort: 'seeders', source: '',
-    };
-    $('#f-seeders').value = 1; $('#f-minsize').value = ''; $('#f-maxsize').value = '';
-    $('#f-sort').value = 'seeders';
-    renderFilters();
-    search({ showSpinner: false });
-  });
+  $('#filter-reset').addEventListener('click', clearAllFilters);
 
   $('#settings-open').addEventListener('click', openSettings);
   wireAccount();
   wireAddons();
+  wireSettingsPrefs();
   $('#settings-close').addEventListener('click', closeSettings);
+  $('#settings-x').addEventListener('click', closeSettings);
   $('#settings').addEventListener('click', (e) => { if (e.target.id === 'settings') closeSettings(); });
   $('#set-test').addEventListener('click', testServer);
   $('#set-save').addEventListener('click', saveServer);
@@ -2592,6 +3249,14 @@ function init() {
     else if (!$('#player').hidden) closePlayer();
     else if (!$('#detail').hidden) closeDetail();
   });
+
+  // Everything this browser remembers, back onto the page BEFORE the chips are
+  // drawn and before any search runs -- the restored filters have to be in
+  // state by the time a `?q=` in the URL triggers one, or the first search of
+  // the session is the only one that ignores them.
+  applyStoredFilters();
+  const video = $('#video');
+  if (video) video.autoplay = prefs.playback().autoplay;
 
   // Draw the category chips immediately. Without this they appear only once a
   // search has returned facets, which is exactly the state where you cannot

@@ -64,6 +64,55 @@ test('the self-host installer starts every component it builds', () => {
     'the gateway must bind the LAN, not loopback');
 });
 
+// Eleven filter controls shipped and not one of them survived a reload. The
+// controls are wired one by one in init(), so the way this comes back is
+// somebody adding a twelfth and wiring it like the other eleven were.
+test('every control on the filter bar writes what it changed to storage', () => {
+  const main = read('main.js');
+  const html = read('../index.html');
+
+  const ids = [...html.matchAll(/id="(f-[a-z]+)"/g)].map((m) => m[1])
+    .filter((id) => id !== 'f-groups' && id !== 'f-quality' && id !== 'f-codec'
+                 && id !== 'f-lang-group' && id !== 'f-reset');
+  assert.ok(ids.length >= 8, `expected the filter bar's controls, found ${ids.length}`);
+
+  for (const id of ids) {
+    // Most are wired one per line; the two source chips share a loop, so the
+    // fallback is "wherever this id is mentioned in init".
+    let at = main.indexOf(`$('#${id}').addEventListener`);
+    if (at === -1) at = main.indexOf(`['#${id}'`);
+    assert.notEqual(at, -1, `#${id} has no handler in main.js`);
+    const body = main.slice(at, at + 700);
+    assert.match(body, /persistFilters\(\)|setLanguage\(/,
+      `#${id} changes a filter without saving it — that is the reload bug`);
+  }
+
+  // The two chip rows are drawn rather than declared, so they are checked where
+  // they are built instead of by id.
+  const groupRow = main.slice(main.indexOf('function groupRow'), main.indexOf('function chipRow'));
+  assert.match(groupRow, /changeGroups\(/, 'category chips must go through changeGroups');
+  const chipRow = main.slice(main.indexOf('function chipRow'), main.indexOf('function showSkeletons'));
+  assert.match(chipRow, /persistFilters\(\)/, 'quality/codec chips must be saved');
+
+  // A reset that a reload undoes is not a reset.
+  const clear = main.slice(main.indexOf('function clearAllFilters'), main.indexOf('function fillLanguageMenu'));
+  assert.match(clear, /prefs\.clearFilters\(\)/,
+    'clearing the filters must clear the STORED filters too');
+});
+
+// `video { max-width:100% }` caps a picture and never lifts one, which is how
+// 320x240 Nostalgia TV files played at 320x240 on a 1080p screen. The fix is a
+// seam in main.js, so it comes back by someone adding a third render path that
+// fits the embed and forgets the video.
+test('every path that fits a player also fits the video in it', () => {
+  const main = read('main.js');
+  const embed = (main.match(/fitEmbedToStage\(out, el\)/g) || []).length;
+  const video = (main.match(/fitVideoToStage\(out, el\)/g) || []).length;
+  assert.ok(embed > 0, 'no player render path found');
+  assert.equal(video, embed,
+    'a render path fits the embed but not the video: small sources will play small');
+});
+
 // Both copies are published; if they drift, the one users curl is the stale one.
 test('both copies of the installer are identical', () => {
   const published = read('../selfhost.sh');
