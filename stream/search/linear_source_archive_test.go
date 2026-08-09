@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -221,6 +222,43 @@ func archiveTestLibrary(t *testing.T) *archiveLinearLibrary {
 	return lib
 }
 
+// archiveWarmedItems is how a test gets a populated pool.
+//
+// LinearItems deliberately never waits for archive.org -- see the comment on
+// archiveLinearLibrary -- so a test that wants the pool has to warm it first,
+// exactly as main.go does at startup. The two steps are separate here for the
+// same reason they are separate in production: reading is a request path and
+// must be instant, warming is a background job and may take minutes.
+func archiveWarmedItems(t *testing.T, lib *archiveLinearLibrary) []LinearItem {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := lib.Warm(ctx); err != nil {
+		t.Fatalf("warming %s: %v", lib.LinearLibraryID(), err)
+	}
+	items, err := lib.LinearItems(context.Background())
+	if err != nil {
+		t.Fatalf("reading %s after a warm: %v", lib.LinearLibraryID(), err)
+	}
+	return items
+}
+
+// archiveWarmAll warms every library a construction returned.
+func archiveWarmAll(t *testing.T, libs []LinearLibrary) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, l := range libs {
+		w, ok := l.(*archiveLinearLibrary)
+		if !ok {
+			continue
+		}
+		if err := w.Warm(ctx); err != nil {
+			t.Fatalf("warming %s: %v", w.LinearLibraryID(), err)
+		}
+	}
+}
+
 // --- licences ---------------------------------------------------------------
 
 func TestArchiveLinearPublicDomainLicences(t *testing.T) {
@@ -341,10 +379,7 @@ func TestArchiveLinearLibraryAdmitsOnlyWhatItCanProve(t *testing.T) {
 	newLinearFakeIA(t, linearFakeIAPool())
 	lib := archiveTestLibrary(t)
 
-	items, err := lib.LinearItems(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := archiveWarmedItems(t, lib)
 
 	byID := map[string]LinearItem{}
 	for _, it := range items {
@@ -406,10 +441,7 @@ func TestArchiveLinearLibraryAdmitsOnlyWhatItCanProve(t *testing.T) {
 func TestArchiveLinearNothingWithoutADurationIsScheduled(t *testing.T) {
 	newLinearFakeIA(t, linearFakeIAPool())
 	lib := archiveTestLibrary(t)
-	items, err := lib.LinearItems(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := archiveWarmedItems(t, lib)
 
 	ch := LinearChannel{
 		ID: "cartoons", Number: 901, Name: "Cartoons", Enabled: true,
@@ -452,10 +484,7 @@ func TestArchiveLinearNothingWithoutADurationIsScheduled(t *testing.T) {
 func TestArchiveLinearPreviewCountsWhatCannotBeScheduled(t *testing.T) {
 	newLinearFakeIA(t, linearFakeIAPool())
 	lib := archiveTestLibrary(t)
-	items, err := lib.LinearItems(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := archiveWarmedItems(t, lib)
 	p := linearPreviewRules(items, LinearRuleGroup{Match: LinearMatchAll})
 	if p.Skipped == 0 {
 		t.Fatal("the preview reported nothing skipped despite two items having no duration")
@@ -474,18 +503,218 @@ func TestArchiveLinearLibraryCachesItsPool(t *testing.T) {
 	f := newLinearFakeIA(t, linearFakeIAPool())
 	lib := archiveTestLibrary(t)
 
-	if _, err := lib.LinearItems(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	archiveWarmedItems(t, lib)
 	first := atomic.LoadInt64(&f.metadataHits)
 	if first == 0 {
 		t.Fatal("the first load asked for no metadata at all")
 	}
-	if _, err := lib.LinearItems(context.Background()); err != nil {
-		t.Fatal(err)
+	// Many reads, and a second warm on top, must all be served from memory.
+	for i := 0; i < 20; i++ {
+		if _, err := lib.LinearItems(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
+	archiveWarmedItems(t, lib)
 	if got := atomic.LoadInt64(&f.metadataHits); got != first {
-		t.Errorf("a second load cost %d more metadata requests, want none", got-first)
+		t.Errorf("re-reading a warm pool cost %d more metadata requests, want none", got-first)
+	}
+}
+
+// Reading the pool must never wait on archive.org, and must never be cancelled
+// by whoever happened to be reading.
+//
+// This is the production failure written down. LinearItems used to run the
+// refresh on its caller's context and block every other caller on it, so a
+// client that gave up at ninety seconds killed a seven-minute crawl and the
+// cache never populated -- forever, once the startup warm was out of the
+// picture. Both halves are asserted here because fixing either one alone still
+// leaves the channels dark.
+func TestArchiveLinearItemsNeverBlocksOrInheritsACallerDeadline(t *testing.T) {
+	// A stub that never answers, so any waiting at all shows up as a hang.
+	stalled := make(chan struct{})
+	t.Cleanup(func() { close(stalled) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-stalled
+	}))
+	t.Cleanup(srv.Close)
+
+	oldSearch, oldMeta := archiveLinearSearchAPI, archiveLinearMetadataAPI
+	archiveLinearSearchAPI = srv.URL + "/advancedsearch.php"
+	archiveLinearMetadataAPI = srv.URL + "/metadata/"
+	t.Cleanup(func() { archiveLinearSearchAPI, archiveLinearMetadataAPI = oldSearch, oldMeta })
+
+	lib := archiveTestLibrary(t)
+
+	// An already-cancelled context, which is what a request whose client has
+	// hung up looks like. It must neither block nor be reported as the reason
+	// the pool is empty.
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan time.Duration, 1)
+	go func() {
+		started := time.Now()
+		_, _ = lib.LinearItems(dead)
+		done <- time.Since(started)
+	}()
+
+	select {
+	case took := <-done:
+		if took > 2*time.Second {
+			t.Fatalf("reading the pool took %s; it must not wait on archive.org", took)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reading the pool blocked on a stalled archive.org; " +
+			"this is the production hang, where /api/v1/linear/channels never answered")
+	}
+
+	// And the refresh the read kicked off is still running, rather than having
+	// been cancelled along with the caller.
+	lib.mu.Lock()
+	building := lib.building
+	lib.mu.Unlock()
+	if !building {
+		t.Error("the background refresh did not survive its caller; " +
+			"a cancelled request must not destroy the crawl it started")
+	}
+}
+
+// A failing collection backs off instead of retrying on every read.
+func TestArchiveLinearBacksOffAfterAFailure(t *testing.T) {
+	var hits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	oldSearch := archiveLinearSearchAPI
+	archiveLinearSearchAPI = srv.URL + "/advancedsearch.php"
+	t.Cleanup(func() { archiveLinearSearchAPI = oldSearch })
+
+	lib := archiveTestLibrary(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := lib.Warm(ctx); err == nil {
+		t.Fatal("a collection whose search returns 500 reported success")
+	}
+	after := atomic.LoadInt64(&hits)
+
+	// Fifty reads must not produce fifty more attempts. This is the log line
+	// that repeated every thirty seconds in production.
+	for i := 0; i < 50; i++ {
+		if _, err := lib.LinearItems(context.Background()); err == nil {
+			t.Fatal("an empty, failed pool reported no error")
+		}
+	}
+	if got := atomic.LoadInt64(&hits); got != after {
+		t.Errorf("%d reads triggered %d extra upstream attempts, want 0 while backing off", 50, got-after)
+	}
+
+	lib.mu.Lock()
+	failures, next := lib.failures, lib.nextTry
+	lib.mu.Unlock()
+	if failures == 0 || next.IsZero() {
+		t.Errorf("no backoff was recorded (failures=%d nextTry=%v)", failures, next)
+	}
+}
+
+// A source that is still loading must be reported as such, and must be
+// distinguishable from one whose rules match nothing.
+//
+// The engine keys off ErrLinearSourceWarming for both the wording it shows an
+// operator and the decision not to log per request, so the archive library's
+// own error has to carry it. A private sentinel here would compile, pass every
+// test in this file, and quietly restore both defects.
+func TestArchiveLinearWarmingIsRecognisedByTheEngine(t *testing.T) {
+	if !errors.Is(archiveLinearBuilding, ErrLinearSourceWarming) {
+		t.Fatal("the archive library's building state does not wrap ErrLinearSourceWarming, " +
+			"so the engine cannot tell it from a genuine failure")
+	}
+
+	warming := linearEmptyDetail(0, fmt.Errorf("archive-org/Cartoons: %w", archiveLinearBuilding))
+	if !strings.Contains(warming, "still loading") {
+		t.Errorf("a warming source is described as %q", warming)
+	}
+	if strings.Contains(warming, "match") {
+		t.Errorf("a warming source was described as a rule-matching problem: %q", warming)
+	}
+
+	// A real emptiness must still read as one.
+	empty := linearEmptyDetail(0, nil)
+	if !strings.Contains(empty, "match") {
+		t.Errorf("an genuinely empty channel is described as %q", empty)
+	}
+}
+
+// While a source is warming, reading it reports the warming state rather than
+// an error that reads like a fault.
+func TestArchiveLinearReportsWarmingWhileTheFirstPoolBuilds(t *testing.T) {
+	stalled := make(chan struct{})
+	t.Cleanup(func() { close(stalled) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-stalled
+	}))
+	t.Cleanup(srv.Close)
+	oldSearch := archiveLinearSearchAPI
+	archiveLinearSearchAPI = srv.URL + "/advancedsearch.php"
+	t.Cleanup(func() { archiveLinearSearchAPI = oldSearch })
+
+	lib := archiveTestLibrary(t)
+	items, err := lib.LinearItems(context.Background())
+	if len(items) != 0 {
+		t.Fatalf("a cold pool returned %d items", len(items))
+	}
+	if !errors.Is(err, ErrLinearSourceWarming) {
+		t.Fatalf("a cold pool reported %v, want a warming state", err)
+	}
+}
+
+func TestArchiveLinearBackoffGrowsAndIsCapped(t *testing.T) {
+	if got := archiveLinearBackoff(1); got != archiveLinearRetryBase {
+		t.Errorf("first retry waits %s, want %s", got, archiveLinearRetryBase)
+	}
+	if got := archiveLinearBackoff(2); got != 2*archiveLinearRetryBase {
+		t.Errorf("second retry waits %s", got)
+	}
+	if got := archiveLinearBackoff(50); got != archiveLinearRetryMax {
+		t.Errorf("a permanently failing collection waits %s, want the %s cap", got, archiveLinearRetryMax)
+	}
+	if got := archiveLinearBackoff(0); got != archiveLinearRetryBase {
+		t.Errorf("a zero failure count waits %s", got)
+	}
+}
+
+// A refresh that fails must not blank a pool that was working.
+func TestArchiveLinearKeepsTheLastGoodPoolWhenARefreshFails(t *testing.T) {
+	f := newLinearFakeIA(t, linearFakeIAPool())
+	lib := archiveTestLibrary(t)
+	good := archiveWarmedItems(t, lib)
+	if len(good) == 0 {
+		t.Fatal("the first warm produced nothing")
+	}
+	_ = f
+
+	// Break the upstream, expire the cache, and read again.
+	oldSearch := archiveLinearSearchAPI
+	archiveLinearSearchAPI = "http://127.0.0.1:1/advancedsearch.php"
+	t.Cleanup(func() { archiveLinearSearchAPI = oldSearch })
+
+	lib.mu.Lock()
+	lib.fetched = time.Now().Add(-2 * archiveLinearTTL)
+	lib.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = lib.Warm(ctx)
+
+	after, err := lib.LinearItems(context.Background())
+	if err != nil {
+		t.Fatalf("a failed refresh reported an error over a good pool: %v", err)
+	}
+	if len(after) != len(good) {
+		t.Errorf("a failed refresh changed the pool from %d to %d programmes; "+
+			"the last good copy must survive", len(good), len(after))
 	}
 }
 
@@ -494,10 +723,7 @@ func TestArchiveLinearLibraryCachesItsPool(t *testing.T) {
 func TestArchiveLinearItemsCarryTheirFacets(t *testing.T) {
 	newLinearFakeIA(t, linearFakeIAPool())
 	lib := archiveTestLibrary(t)
-	items, err := lib.LinearItems(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	items := archiveWarmedItems(t, lib)
 	var it LinearItem
 	for _, candidate := range items {
 		if candidate.ProviderItemID == "popeye_patriotic_popeye" {
@@ -746,6 +972,10 @@ func TestNostalgiaChannelPlaysForAStranger(t *testing.T) {
 		e.AddPublicLibrary(l)
 	}
 	e.SetResolver(res)
+	// Warm before asserting, exactly as main.go does at startup. Reading the
+	// pool never waits for archive.org, so without this the channels would
+	// correctly report themselves as still loading.
+	archiveWarmAll(t, libs)
 	if added := SeedNostalgiaChannels(e); len(added) == 0 {
 		t.Fatal("no channels were created")
 	}

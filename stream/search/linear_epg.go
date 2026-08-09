@@ -398,7 +398,12 @@ func (e *LinearEngine) ensureWindow(ctx context.Context, id string) (*linearSche
 	}
 
 	pool, poolErr := e.pool(ctx, &def)
-	if poolErr != nil {
+	// A source that is still loading is not logged. It is a transient state that
+	// resolves itself, it is already reported on the channel where somebody can
+	// see it, and the source logs its own start and finish once each -- whereas
+	// this line runs per request per channel, which on a channel meant to be the
+	// first thing on the site is thousands of copies of "wait a moment".
+	if poolErr != nil && !errors.Is(poolErr, ErrLinearSourceWarming) {
 		log.Printf("linear: channel %s pool: %v", id, poolErr)
 	}
 	usable := linearSchedulable(pool)
@@ -496,6 +501,12 @@ func linearGenesis(ch *LinearChannel, now time.Time) time.Time {
 
 func linearEmptyDetail(matched int, err error) string {
 	switch {
+	case matched == 0 && errors.Is(err, ErrLinearSourceWarming):
+		// Distinct from "nothing matched". A pool that is still being fetched
+		// fixes itself in a few minutes; rules that match nothing do not, and
+		// telling an operator the second when it is the first sends them into
+		// the rule editor to debug a channel that was about to work.
+		return "this channel is still loading its programmes from archive.org; it will start playing shortly"
 	case err != nil && matched == 0:
 		return "this channel has nothing to play: " + err.Error()
 	case matched == 0:

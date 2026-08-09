@@ -484,20 +484,27 @@ func main() {
 	// deadline means the second reliably runs out of time and its channel stays
 	// dark -- which is exactly what happened the first time this was run for
 	// real.
+	// Warm reports what the first refresh got; it does not own it. The refresh
+	// itself is detached inside the library and survives this goroutine, so a
+	// slow archive.org delays the log line rather than the channel -- and the
+	// channel is readable from the moment the first dozen programmes resolve,
+	// not when the last one does.
 	for _, lib := range archiveLibs {
-		go func(l LinearLibrary) {
-			wctx, wcancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			defer wcancel()
-			started := time.Now()
-			items, err := l.LinearItems(wctx)
-			if err != nil {
-				log.Printf("nostalgia TV: %s: %v", l.LinearLibraryID(), err)
-				return
-			}
-			log.Printf("nostalgia TV: %s has %d programmes (%s)",
-				l.LinearLibraryID(), len(linearSchedulable(items)),
-				time.Since(started).Round(time.Second))
-		}(lib)
+		if w, ok := lib.(interface {
+			Warm(context.Context) error
+			LinearLibraryID() string
+		}); ok {
+			go func(l interface {
+				Warm(context.Context) error
+				LinearLibraryID() string
+			}) {
+				wctx, wcancel := context.WithTimeout(context.Background(), archiveLinearRefreshBudget)
+				defer wcancel()
+				if err := l.Warm(wctx); err != nil {
+					log.Printf("nostalgia TV: %s: %v", l.LinearLibraryID(), err)
+				}
+			}(w)
+		}
 	}
 
 	// One registration path, and every handler on it carries the per-channel

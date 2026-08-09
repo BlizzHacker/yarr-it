@@ -40,6 +40,17 @@ var (
 	ErrLinearSourceUnavailable = errors.New("the source for this programme is unavailable")
 	// ErrLinearNoResolver means nothing was configured to serve bytes.
 	ErrLinearNoResolver = errors.New("no stream resolver is configured for linear channels")
+	// ErrLinearSourceWarming means a source has not finished loading its
+	// catalogue yet. It is not a failure and it is not "nothing matched": it
+	// resolves itself in minutes without anybody doing anything.
+	//
+	// It exists so the engine can tell those three apart generically. A source
+	// that is warming must not be logged on every request -- that is a line per
+	// viewer per channel for as long as it takes, which on a channel meant to be
+	// the first thing on the site is a lot of lines saying the same thing -- and
+	// must not be described to the operator as a rule set that matches nothing,
+	// which sends them to fix a channel that was about to work.
+	ErrLinearSourceWarming = errors.New("this source is still loading its catalogue")
 )
 
 // Channel states, reported rather than thrown. Each is a thing a client can
