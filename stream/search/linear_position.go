@@ -246,12 +246,28 @@ func (e *LinearEngine) TuneIn(ctx context.Context, channelID, tz string) LinearT
 	return out
 }
 
+// linearUnavailableDetail is shown to a viewer verbatim, so it says when the
+// next programme starts in the way a person reads a clock rather than as the
+// epoch seconds the schedule happens to store. A viewer was being told a
+// programme was "next at 1786236610".
 func linearUnavailableDetail(p Program, next *Program, err error) string {
 	base := fmt.Sprintf("%q cannot be played right now: %v", p.Title, err)
-	if next != nil {
-		return base + fmt.Sprintf("; %q is next at %d", next.Title, next.StartTime)
+	if next == nil {
+		return base
 	}
-	return base
+	// Relative, because the viewer's clock and this server's timezone are not
+	// the same clock, and "in 4 minutes" needs neither to be right.
+	wait := time.Until(time.Unix(next.StartTime, 0)).Round(time.Minute)
+	switch {
+	case wait <= 0:
+		return base + fmt.Sprintf("; %q is starting now", next.Title)
+	case wait < time.Minute:
+		return base + fmt.Sprintf("; %q starts in under a minute", next.Title)
+	case wait < 2*time.Minute:
+		return base + fmt.Sprintf("; %q starts in a minute", next.Title)
+	default:
+		return base + fmt.Sprintf("; %q starts in %d minutes", next.Title, int(wait.Minutes()))
+	}
 }
 
 // linearResolveWithRetry retries transient failures with a linear backoff and

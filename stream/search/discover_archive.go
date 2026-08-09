@@ -228,6 +228,14 @@ func playTargetFor(d iaSearchDoc, mediaType string) string {
 	if mediaType == "game" && ejsCoreFor(d.Emulator.String()) != "" {
 		return details + "#ejs"
 	}
+	// Music opens as its own track list rather than as an iframe of somebody
+	// else's player. Without this a shelf tile and a search result for the same
+	// concert behave differently -- the search result lists 21 playable tracks,
+	// the tile hands the whole show to the Archive's audio player. Same
+	// convention as `#ejs`; see music_item.go.
+	if canonicalDomain(mediaType) == domainMusic {
+		return details + "#music"
+	}
 	return details
 }
 
