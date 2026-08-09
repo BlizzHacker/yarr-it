@@ -27,6 +27,7 @@ import { attachSubtitles } from './subtitles.js';
 import { PlaybackError } from './failures.js';
 import { api, apiFetch, getServer, setServer, probeServer } from './server.js';
 import { renderHome, itemFromCard, tileAction, domainSentence } from './home.js';
+import { mountLinear, linearResolver, linearURI } from './linear.js';
 import { openReader } from './reader.js';
 import {
   SERVICE_TYPES, allServiceTypes, createServiceStore, probeService,
@@ -146,6 +147,9 @@ async function search({ showSpinner = true } = {}) {
   $('#intro').hidden = true;
   $('#discover').hidden = true;
   $('#get').hidden = true;
+  // Puts the channel strip away AND stops its clock, so a page showing search
+  // results is not still polling two channels nobody can see.
+  tvStrip?.hide();
   // A playlist Collection browsed earlier leaves #library visible (it's
   // only ever shown, never hidden, by renderLibrary). #player is a
   // full-viewport overlay, so that stays invisible right up until the
@@ -498,6 +502,9 @@ function restoreLanding() {
   $('#intro').hidden = false;
   $('#discover').hidden = false;
   $('#get').hidden = false;
+  // show() catches the channels up on whatever has been on in the meantime,
+  // and stays away entirely if there were never any channels to draw.
+  tvStrip?.show();
   renderFilters();
 }
 
@@ -538,6 +545,38 @@ async function browseDomain(domain, signal) {
 // starts: the rails are about to be hidden, and their requests would otherwise
 // go on competing with the search for the same connections.
 let homeAbort = null;
+
+/**
+ * Nostalgia TV, above everything else.
+ *
+ * Mounted separately from loadHome and never awaited by it. The channel calls
+ * and /api/discover are independent, so a slow channel service costs the strip
+ * and nothing below it -- the eighteen discover rows paint on their own clock,
+ * which is the standard this page was measured against.
+ */
+let tvStrip = null;
+
+function mountChannels() {
+  const host = $('#tv');
+  if (!host) return;
+  tvStrip = mountLinear(host, {
+    fetchImpl: apiFetch,
+    // The channel goes through the ordinary player by the ordinary route: the
+    // registry resolves `yarrit-linear:<id>` into a positioned Playable. Live
+    // is declared on the card so nothing downstream records a resume point for
+    // something that cannot be resumed.
+    onWatch: (channel, model) => {
+      play({ title: channel.name, year: 0, live: true },
+        { uri: linearURI(channel.id), title: model.title });
+      // play() has already put "Resolving…" up by the time it hands back its
+      // promise -- everything before its first await is synchronous. This says
+      // the same thing in the vocabulary of the thing being pressed, and the
+      // wait it covers is real: the first join to a new programme makes the
+      // server prove the file can be ranged before it will promise an offset.
+      setPlayerStatus(`Tuning in to ${channel.name}…`);
+    },
+  });
+}
 
 async function loadHome() {
   if (homeAbort) homeAbort.abort();
@@ -1336,6 +1375,7 @@ function buildRegistry() {
   if (!state.engine) state.engine = new StreamEngine({ onStats: renderStats });
   window.__engine = state.engine; // diagnostics
   const registry = createRegistry()
+    .register(linearResolver)     // yarrit-linear:<channel>, claimed by nothing else
     .register(createTorrentResolver({ engine: state.engine, classify }))
     .register(embedResolver)      // before url: a YouTube link is also an http URL
     .register(archiveResolver)    // before url/game: archive.org runs its own player
@@ -1478,8 +1518,14 @@ async function play(card, src) {
     // Remember where this viewer gets to, so the same title resumes on any
     // other device. Only real media has a position; an image or an emulator
     // has nothing to record.
+    //
+    // A live channel is excluded, and that is not an optimisation. There is no
+    // resume point on a channel -- that is what makes it a channel -- so a
+    // position saved here would put "Nostalgia Classic TV, 18 minutes in" in
+    // Continue Watching, offering to return somebody to a moment that no
+    // longer exists.
     state.stopTracking?.();
-    state.stopTracking = (out.render === 'video' || out.render === 'audio')
+    state.stopTracking = (!card.live && (out.render === 'video' || out.render === 'audio'))
       ? trackProgress(el, card)
       : null;
 
@@ -2438,7 +2484,7 @@ function init() {
 
   const params = new URLSearchParams(location.search);
   const initial = params.get('q');
-  if (!initial) loadHome();
+  if (!initial) { mountChannels(); loadHome(); }
   if (initial) {
     $('#q').value = initial;
     state.query = initial;
