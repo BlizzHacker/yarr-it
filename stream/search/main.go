@@ -91,6 +91,14 @@ type card struct {
 	// Platform is the console or system, for game results.
 	Platform string `json:"platform,omitempty"`
 
+	// Music is the part of a result that only means anything for music: the
+	// artist, the venue, the date of the show. One optional object rather than
+	// six optional fields, so a film or a ROM card is byte-for-byte what it was
+	// and a client that has never heard of this domain sees no change at all.
+	// See music.go; the track list is deliberately NOT in here and
+	// music_item.go says why.
+	Music *musicFacts `json:"music,omitempty"`
+
 	// owner marks a card that came from the household's own media servers
 	// rather than from a public source, and so must never be shown to anybody
 	// but the owner.
@@ -260,6 +268,14 @@ func main() {
 	// render a PDF or follow a details page, so this is what makes comics and
 	// photo sets work there at all.
 	mux.HandleFunc("/api/pages", publicCORS(auth.requireAuth(s.handlePages)))
+	// The same thing for music: an archive.org item turned into the tracks it
+	// actually contains. A concert is one item and twenty recordings, and until
+	// this existed the only target a music card could offer was a details page
+	// -- HTML, which every client turned into an iframe and none could seek
+	// inside. Registered beside /api/pages because it is the same job for the
+	// same reason, and gated the same way. See music_item.go.
+	mux.HandleFunc("/api/music/item",
+		publicCORS(auth.requireAuth(newMusicReader(nil).handleMusicItem)))
 	// Health stays open so a monitor does not need a session to see the
 	// service is alive.
 	// Health is how a client confirms an address is a Yarr.It server at all,

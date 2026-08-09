@@ -53,6 +53,12 @@ func TestHealthSeparatesUnconfiguredFromUnreachable(t *testing.T) {
 // The advice matters. "Try again in a moment" is false for a server that has no
 // indexer at all -- waiting never fixes it, so the user retries forever.
 func TestUnconfiguredSearchSaysSoRatherThanBlamingTiming(t *testing.T) {
+	// The state under test is "this kind has no archive.org scope, so nothing
+	// can rescue the response". It used to be reached with kind=audio because
+	// music genuinely had no source; it now has one, so the state is produced
+	// deliberately. See the note on TestAnUnanswerableSearchSaysWhyRatherThanPending.
+	withoutArchiveScope(t, "music")
+
 	s := &server{
 		cache:    map[string]cacheEntry{},
 		inflight: map[string]chan struct{}{},
@@ -61,8 +67,6 @@ func TestUnconfiguredSearchSaysSoRatherThanBlamingTiming(t *testing.T) {
 	s.igdb = newIGDB("", "")
 
 	rec := httptest.NewRecorder()
-	// kind=music has no archive.org scope, so nothing can rescue the response
-	// and the error path is the one under test.
 	s.handleSearch(rec, httptest.NewRequest("GET", "/api/search?q=dune&kind=audio", nil))
 
 	if rec.Code != http.StatusServiceUnavailable {

@@ -30,6 +30,19 @@ type filters struct {
 	// differently -- one always plays, one might not -- that mixing them with
 	// no way to choose makes the result list harder to reason about.
 	Source string // "" (both) | instant | swarm
+
+	// Lang is the language a result must be in, as a two-letter code, or "" for
+	// no constraint. Music defaults it to English; see music.go, which holds the
+	// rule, the table and the measurements it turns on.
+	//
+	// It is applied HERE rather than in the upstream query on purpose, and that
+	// is the whole reason the filter is switchable at all: the result cache is
+	// keyed on the query and the kind, so narrowing upstream would mean the
+	// first person to search with the filter on decides what everybody else
+	// gets. Filtering cards means one fetch serves every setting and changing
+	// it costs no upstream traffic -- which is what this file already does for
+	// every other filter, and says so at the top.
+	Lang string
 }
 
 func parseFilters(q url.Values) filters {
@@ -52,7 +65,27 @@ func parseFilters(q url.Values) filters {
 	if f.Sort == "" {
 		f.Sort = "relevance"
 	}
+	f.Lang = languageFor(q, f.Kind)
 	return f
+}
+
+// languageFor decides what language constraint a request carries.
+//
+// The default is per-domain and not global, because "English please" is a
+// sensible default for music and a nonsense one everywhere else: an archive.org
+// GAME has no language, a comic scan's language field is empty on almost every
+// item, and defaulting those to English would delete most of two catalogues to
+// enforce a preference nobody expressed about them. So a `lang=` given
+// explicitly is honoured for any domain, and only music supplies one when the
+// caller says nothing.
+func languageFor(q url.Values, kind string) string {
+	if raw := strings.TrimSpace(q.Get("lang")); raw != "" {
+		return normaliseLanguage(raw)
+	}
+	if canonicalDomain(kind) == domainMusic {
+		return musicLanguageDefault
+	}
+	return ""
 }
 
 func atoiDefault(s string, d int) int {
@@ -122,6 +155,14 @@ func (f filters) apply(cards []card) []card {
 		if f.Source == "swarm" && c.Instant {
 			continue
 		}
+		// The language the item states about itself. A card that states nothing
+		// is kept -- see musicLanguageAllows, where the measurement that forces
+		// that is written down: ninety-five per cent of the Live Music Archive
+		// never filled the field in, so treating silence as "not English" would
+		// delete the catalogue rather than narrow it.
+		if !f.languageAllows(c) {
+			continue
+		}
 		kept := make([]source, 0, len(c.Sources))
 		for _, s := range c.Sources {
 			// Seeders and size are swarm properties. A hosted result has
@@ -170,6 +211,22 @@ func (f filters) apply(cards []card) []card {
 
 	f.sortCards(out)
 	return out
+}
+
+// languageAllows reports whether a card survives the language filter.
+//
+// A card with nothing to say about its language is always kept, and a card
+// carrying no music facts at all has nothing to say -- so this is a no-op for
+// every domain that does not populate them, which is all of them but one.
+func (f filters) languageAllows(c card) bool {
+	if f.Lang == "" {
+		return true
+	}
+	stated := ""
+	if c.Music != nil {
+		stated = c.Music.Language
+	}
+	return musicLanguageAllows(f.Lang, stated)
 }
 
 // health puts hosted results and torrents on one scale.
@@ -286,6 +343,19 @@ func relevance(c card, queryTerms []string) int {
 	n := 0
 
 	matched := titleOverlap(c.Title, queryTerms)
+	// A recording is filed under the name of the WORK, and the person who made
+	// it lives in a different field. "Tears" by King Oliver's Jazz Band is the
+	// Louis Armstrong record somebody was looking for, and scoring it on its
+	// title alone gives an overlap of zero for "louis armstrong" -- which is the
+	// -2000 band below, so the correct answer sinks beneath everything that
+	// merely shares a word. The artist is part of what the title MEANS here, so
+	// it is part of what the query is compared against. See music_match.go,
+	// which makes the same move for the same reason at the archive.org end.
+	if c.Music != nil && c.Music.Artist != "" {
+		if m := titleOverlap(c.Title+" "+c.Music.Artist, queryTerms); m > matched {
+			matched = m
+		}
+	}
 	switch {
 	case len(queryTerms) == 0:
 		// No query (discover/browse): nothing to match against.
@@ -408,10 +478,20 @@ func newest(c card) string {
 // facets reports what values actually exist in a result set, so the UI can show
 // only filters that would do something rather than a fixed list of dead options.
 type facets struct {
-	Qualities  []facetCount `json:"qualities"`
-	Codecs     []facetCount `json:"codecs"`
-	Indexers   []facetCount `json:"indexers"`
-	Groups     []facetCount `json:"groups"`
+	Qualities []facetCount `json:"qualities"`
+	Codecs    []facetCount `json:"codecs"`
+	Indexers  []facetCount `json:"indexers"`
+	Groups    []facetCount `json:"groups"`
+	// Languages is what the results say they are in, counted BEFORE the language
+	// filter runs -- these are built from the unfiltered set, which is what makes
+	// the number mean anything.
+	//
+	// It is here so that a default filter is visible rather than implied. A
+	// filter somebody cannot see does not narrow a catalogue, it replaces it,
+	// and the person on the other side has no way to find out what they are no
+	// longer being shown. `unstated` is a value like any other and is the
+	// largest one on most music searches; see musicLanguageAllows.
+	Languages  []facetCount `json:"languages,omitempty"`
 	AdultCount int          `json:"adultCount"`
 	// How many results arrive each way, so the source toggle can say so
 	// rather than making you click to find out one of them is empty.
@@ -429,10 +509,14 @@ type facetCount struct {
 func buildFacets(cards []card) facets {
 	q, cd, ix := map[string]int{}, map[string]int{}, map[string]int{}
 	grp := map[string]int{}
+	lang := map[string]int{}
 	f := facets{}
 	for _, c := range cards {
 		for _, g := range c.Groups {
 			grp[g]++
+		}
+		if c.Music != nil {
+			lang[languageFacet(c.Music.Language)]++
 		}
 		if c.Adult {
 			f.AdultCount++
@@ -464,7 +548,29 @@ func buildFacets(cards []card) facets {
 	f.Codecs = sortedFacets(cd, false)
 	f.Indexers = sortedFacets(ix, false)
 	f.Groups = sortedFacets(grp, false)
+	if len(lang) > 0 {
+		f.Languages = sortedFacets(lang, false)
+	}
 	return f
+}
+
+// languageFacet buckets what an item said about itself.
+//
+// The two-letter code where the spelling is one we know, the item's own words
+// where it is not -- so an unrecognised language is reported as itself rather
+// than swept into "unstated", which would be this service claiming the item
+// said nothing when it did.
+const languageUnstated = "unstated"
+
+func languageFacet(stated string) string {
+	stated = strings.TrimSpace(stated)
+	if stated == "" {
+		return languageUnstated
+	}
+	if code := normaliseLanguage(stated); code != "" {
+		return code
+	}
+	return strings.ToLower(stated)
 }
 
 func sortedFacets(m map[string]int, byQuality bool) []facetCount {

@@ -331,7 +331,12 @@ func (j *searchJob) run(s *server) {
 			// first paint for the whole budget.
 			defer j.releaseFirstWave()
 
-			cards, err := s.searchArchiveCached(ctx, j.query, j.kind)
+			// searchArchiveDomain rather than searchArchiveCached: music asks
+			// the Archive a different question -- titles AND creators, see
+			// music.go -- and this and type-ahead must not end up on different
+			// sides of that branch, or a search and the keystroke before it
+			// would fill the same cache with two different answers.
+			cards, err := s.searchArchiveDomain(ctx, j.query, j.kind)
 			if err != nil {
 				log.Printf("job %s archive.org %q: %v", j.id, j.query, err)
 				j.mark("archive", stageFailed)
