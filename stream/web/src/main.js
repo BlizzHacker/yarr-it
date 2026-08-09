@@ -33,7 +33,10 @@ import { attachSubtitles } from './subtitles.js';
 import { musicBits } from './music.js';
 import { PlaybackError } from './failures.js';
 import { api, apiFetch, getServer, setServer, probeServer } from './server.js';
-import { renderHome, itemFromCard, tileAction, domainSentence } from './home.js';
+import {
+  renderHome, itemFromCard, itemFromDiscover, tileAction, tile as homeTile, domainSentence,
+} from './home.js';
+import { mountBrowse, systemChips, systemFilterHost, routeOf } from './browse.js';
 import { mountLinear, linearResolver, linearURI } from './linear.js';
 import { openReader } from './reader.js';
 import {
@@ -91,6 +94,9 @@ const state = {
   filters: {
     seeders: 1, minSize: '', maxSize: '',
     quality: new Set(), codec: new Set(), groups: new Set(),
+    // Game systems -- snes, genesis, c64. Per-domain, because a machine means
+    // nothing outside games; see src/prefs.js.
+    systems: new Set(),
     webSafe: false, adult: false, sort: 'seeders',
     // '' means both. A hosted backup always plays; a torrent depends on who
     // is seeding, so which you want is a real question.
@@ -122,6 +128,7 @@ function filterParams() {
   if (f.webSafe) p.set('webSafe', '1');
   if (f.source) p.set('source', f.source);
   if (f.groups.size) p.set('groups', [...f.groups].join(','));
+  if (f.systems.size) p.set('system', [...f.systems].join(','));
   // Adult results are excluded server-side unless explicitly requested.
   if (f.adult) p.set('adult', '1');
   // Sent only when something was actually chosen. Sending `lang=en` for a
@@ -280,6 +287,7 @@ function loadDomainFilters() {
   state.filters.maxSize = d.maxSize;
   state.filters.quality = new Set(d.quality);
   state.filters.codec = new Set(d.codec);
+  state.filters.systems = new Set(d.systems);
   state.filters.source = d.source;
   syncFilterInputs();
 }
@@ -306,6 +314,7 @@ function persistFilters() {
     maxSize: f.maxSize,
     quality: [...f.quality],
     codec: [...f.codec],
+    systems: [...f.systems],
     source: f.source,
   });
   renderFilterReset();
@@ -386,6 +395,7 @@ function clearAllFilters({ research = true } = {}) {
   state.filters.groups = new Set();
   state.filters.quality = new Set();
   state.filters.codec = new Set();
+  state.filters.systems = new Set();
   state.filters.adult = false;
   state.filters.webSafe = false;
   state.filters.lang = '';
@@ -448,6 +458,15 @@ function renderFilters() {
   $('#f-adult').textContent = f.adultCount ? `18+ ${f.adultCount}` : '18+';
   chipRow($('#f-quality'), f.qualities, state.filters.quality);
   chipRow($('#f-codec'), f.codecs, state.filters.codec);
+  // Deliberately inside the facet-dependent half: with no results there is no
+  // honest list of machines to offer, and the whole catalogue is the wrong
+  // answer -- see systemChips.
+  systemChips(systemFilterHost(), f.systems, state.filters.systems, () => {
+    // persist as well as re-search, exactly as every other chip row on this bar
+    // does: a filter that a reload forgets is the defect prefs.js replaced.
+    persistFilters();
+    refilter();
+  });
   $('#f-instant').textContent = f.instantCount ? `Backups ${f.instantCount}` : 'Backups';
   $('#f-swarm').textContent = f.swarmCount ? `Torrents ${f.swarmCount}` : 'Torrents';
 }
@@ -908,32 +927,41 @@ async function loadHome() {
       indexer,
       browse: (domain) => browseDomain(domain, homeSignal),
       resume,
-      handlers: {
-        onActivate(item, action) {
-          if (action.kind === 'reader') {
-            openReaderFor(action.id, item.title, action.verb);
-            return;
-          }
-          if (action.kind === 'open') {
-            // A card came from a search and has sources to choose between; a
-            // discover item with a play target IS the thing and opens directly.
-            if (item.card) openCard(item.card);
-            else play({ title: item.title, year: item.year || 0 },
-              { uri: item.uri, title: item.title });
-            return;
-          }
-          // A catalogue entry is a name to go looking for.
-          const q = item.year ? `${item.title} ${item.year}` : item.title;
-          $('#q').value = q;
-          state.query = q;
-          history.replaceState(null, '', `?q=${encodeURIComponent(q)}`);
-          search();
-        },
-      },
+      handlers: tileHandlers(),
     });
   } catch {
     /* discovery is a nicety; a failure just leaves the intro copy in place */
   }
+}
+
+/**
+ * What a click on a tile does. One object, because the landing rails and a
+ * category page must behave identically -- a SNES game opened from /browse has
+ * to reach the player the same way the same tile does from the Games shelf.
+ */
+function tileHandlers() {
+  return {
+    onActivate(item, action) {
+      if (action.kind === 'reader') {
+        openReaderFor(action.id, item.title, action.verb);
+        return;
+      }
+      if (action.kind === 'open') {
+        // A card came from a search and has sources to choose between; a
+        // discover item with a play target IS the thing and opens directly.
+        if (item.card) openCard(item.card);
+        else play({ title: item.title, year: item.year || 0 },
+          { uri: item.uri, title: item.title });
+        return;
+      }
+      // A catalogue entry is a name to go looking for.
+      const q = item.year ? `${item.title} ${item.year}` : item.title;
+      $('#q').value = q;
+      state.query = q;
+      history.replaceState(null, '', `?q=${encodeURIComponent(q)}`);
+      search();
+    },
+  };
 }
 
 /** The Continue Watching row, newest first. */
@@ -3273,9 +3301,17 @@ function init() {
     $('#q').placeholder = `Search ${covers.toLowerCase()}…`;
   }
 
+  // Category pages own the /browse/* routes and add one row of links to the
+  // landing page. Nothing is fetched for a category until one is opened, so
+  // this cannot touch the landing paint. Mounted before the route check
+  // because a cold load of /browse/games/snes carries no ?q= either.
+  mountBrowse({
+    renderTile: (it, domain) => homeTile(itemFromDiscover(it, domain), tileHandlers()),
+  });
+
   const params = new URLSearchParams(location.search);
   const initial = params.get('q');
-  if (!initial) { mountChannels(); loadHome(); }
+  if (!initial && routeOf(location.pathname).view === 'site') { mountChannels(); loadHome(); }
   if (initial) {
     $('#q').value = initial;
     state.query = initial;

@@ -291,3 +291,43 @@ test('normalisePrefs is total: anything at all produces a usable record', () => 
     assert.equal(p.appearance.theme, APPEARANCE_DEFAULTS.theme);
   }
 });
+
+// A machine is only a thing in games. Remembering "Super Nintendo" and then
+// applying it to Books would empty that catalogue for a reason nobody could
+// see, which is the same argument the seeder count makes one test above.
+test('the game system is remembered per domain, not across them', () => {
+  const p = createPrefs(fakeStorage());
+  p.setDomain('games', { systems: ['snes', 'genesis'] });
+  assert.deepEqual(p.domain('games').systems, ['snes', 'genesis']);
+  assert.deepEqual(p.domain('books').systems, DOMAIN_DEFAULTS.systems);
+  assert.deepEqual(p.domain('music').systems, []);
+});
+
+// Survives a reload, like every other filter on that bar.
+test('a chosen system comes back after a restart', () => {
+  const store = fakeStorage();
+  createPrefs(store).setDomain('games', { systems: ['c64'] });
+  assert.deepEqual(createPrefs(store).domain('games').systems, ['c64']);
+});
+
+// Not checked against a list of machines, for the same reason the language is
+// not checked against LANGUAGES: the server owns that vocabulary and knows
+// aliases this build has never heard of. Shape is bounded; meaning is not
+// second-guessed.
+test('a system slug this build does not recognise is still honoured', () => {
+  const p = createPrefs(fakeStorage());
+  p.setDomain('games', { systems: ['some-machine-added-later', 'SNES', 'snes'] });
+  const got = p.domain('games').systems;
+  assert.ok(got.includes('some-machine-added-later'));
+  // Lowercased and deduplicated by tokens(), like every other chip list.
+  assert.deepEqual(got.filter((s) => s === 'snes'), ['snes']);
+});
+
+// A filter somebody forgot they set is how a working site starts looking
+// broken, so the Clear button has to count this one too.
+test('a chosen system counts towards the number of active filters', () => {
+  const base = { ...DOMAIN_DEFAULTS, ...SHARED_DEFAULTS };
+  assert.equal(activeFilterCount(base), 0);
+  assert.equal(activeFilterCount({ ...base, systems: ['snes'] }), 1);
+  assert.equal(activeFilterCount({ ...base, systems: new Set(['snes', 'nes']) }), 1);
+});

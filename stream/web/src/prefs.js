@@ -23,15 +23,16 @@
  *               about a catalogue: somebody who does not want adult results
  *               does not want them in music either.
  *
- *   Per-domain  sort, minimum seeders, size range, quality, codec and source.
- *               "At least 40 seeders" is a sentence about a swarm and means
- *               nothing about an archive.org concert, which has no seeders at
- *               all; "1080p" is meaningless for a comic; and "Most seeders" is
- *               the right default for films and a poor one for a live-music
- *               shelf where everything is hosted. Keeping one set of numbers
- *               for all of them means every switch between categories carries
- *               over constraints from a catalogue that has nothing in common
- *               with the one now on screen.
+ *   Per-domain  sort, minimum seeders, size range, quality, codec, source and
+ *               the game system. "At least 40 seeders" is a sentence about a
+ *               swarm and means nothing about an archive.org concert, which has
+ *               no seeders at all; "1080p" is meaningless for a comic; "Most
+ *               seeders" is the right default for films and a poor one for a
+ *               live-music shelf where everything is hosted; and "Super
+ *               Nintendo" is not a statement about books. Keeping one set of
+ *               numbers for all of them means every switch between categories
+ *               carries over constraints from a catalogue that has nothing in
+ *               common with the one now on screen.
  *
  * The per-domain key follows the SERVER's own rule for what a domain is (see
  * kindFor in search/filter.go): exactly one category ticked is that domain,
@@ -61,6 +62,10 @@ export const DOMAIN_DEFAULTS = Object.freeze({
   quality: [],
   codec: [],
   source: '',
+  // Game systems -- snes, genesis, c64. Per-domain rather than shared because a
+  // machine is only a thing in games: remembering "Super Nintendo" and applying
+  // it to Books would empty that catalogue for a reason nobody could see.
+  systems: [],
 });
 
 /** Filter settings that mean the same thing in every domain. */
@@ -163,6 +168,7 @@ export function activeFilterCount(filters) {
   if (String(filters.maxSize ?? '') !== '') n++;
   if (size(filters.quality)) n++;
   if (size(filters.codec)) n++;
+  if (size(filters.systems)) n++;
   if (filters.source) n++;
   if (filters.sort && filters.sort !== DOMAIN_DEFAULTS.sort) n++;
   return n;
@@ -236,6 +242,12 @@ function readDomain(raw) {
     quality: tokens(r.quality),
     codec: tokens(r.codec),
     source: oneOf(SOURCES, r.source, DOMAIN_DEFAULTS.source),
+    // Not checked against a list of machines, for the same reason `lang` is
+    // not checked against LANGUAGES: the server owns that vocabulary and knows
+    // aliases this file has never heard of, and quietly dropping a slug merely
+    // because this build does not recognise it would be a preference thrown
+    // away rather than honoured. tokens() already bounds the length and count.
+    systems: tokens(r.systems, 12),
   };
 }
 

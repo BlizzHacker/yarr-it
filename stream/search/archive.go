@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -123,6 +124,64 @@ func (s *server) searchArchiveCached(ctx context.Context, q, kind string) ([]car
 		s.putCached(key, cards)
 	}
 	return cards, nil
+}
+
+// deepenBySystem tops a result set up with games from the machines asked for.
+//
+// Every other filter narrows the cached results, and for every other filter
+// that is right: the cache holds everything the indexers returned. A system
+// filter is different in kind, because the cache holds 60 games out of a
+// 272,000-item catalogue -- so narrowing "mario" to SNES returns whichever
+// handful of the top 60 happened to be SNES, which for a popular title is close
+// to none. The fix is to ask archive.org the narrowed question, which is a
+// sub-second metadata call and, unlike re-running the search, touches no
+// indexer.
+//
+// The narrowed answer is cached UNDER ITS OWN KEY and never written back into
+// the unnarrowed one. That is the trap filter.go's `Lang` comment describes and
+// it is not hypothetical: an earlier draft of this narrowed the main archive.org
+// fetch, which stored a SNES-only "mario" under the shared (query, kind) key --
+// so the next visitor's unfiltered search returned only SNES games and its
+// facet claimed SNES was the only machine Mario ever appeared on.
+//
+// Best effort throughout: a failure leaves the unnarrowed results in place,
+// which is the same page the site showed before this existed.
+func (s *server) deepenBySystem(ctx context.Context, q, kind string, f filters, cards []card) []card {
+	systems := f.systems()
+	if len(systems) == 0 {
+		return cards
+	}
+
+	ids := make([]string, 0, len(systems))
+	for _, sys := range systems {
+		ids = append(ids, sys.ID)
+	}
+	sort.Strings(ids)
+	key := archiveCacheKey(q, kind) + "\x00sys\x00" + strings.Join(ids, ",")
+
+	extra, ok := s.getCached(key)
+	if !ok {
+		var err error
+		extra, err = s.searchArchiveOn(ctx, q, kind, systems)
+		if err != nil {
+			log.Printf("system search %q %v: %v", q, ids, err)
+			return cards
+		}
+		if len(extra) > 0 {
+			s.putCached(key, extra)
+		}
+	}
+
+	have := make(map[string]bool, len(cards))
+	for _, c := range cards {
+		have[c.Key] = true
+	}
+	for _, c := range extra {
+		if !have[c.Key] {
+			cards = append(cards, c)
+		}
+	}
+	return cards
 }
 
 // What counts as a playable game.
@@ -309,10 +368,28 @@ type archiveResponse struct {
 // to be implied by the phrase is done properly afterwards by rankByMatch.
 func archiveQuery(q string) string { return archiveQueryFor(q, "") }
 
-func archiveQueryFor(q, kind string) string {
+func archiveQueryFor(q, kind string) string { return archiveQueryOn(q, kind, nil) }
+
+// archiveQueryOn is the same query, optionally narrowed to particular machines.
+//
+// The narrowing happens HERE rather than by filtering what came back, and that
+// is the whole reason a system filter is worth having: a search returns 60 rows
+// out of a 272,000-item catalogue, so filtering "mario" down to SNES afterwards
+// returns whichever handful of the top 60 happened to be SNES -- for a popular
+// title, close to none. Asking archive.org for SNES Marios returns SNES Marios.
+//
+// This does NOT contradict filter.go's rule that filtering happens on the
+// cached set. The cached set stays unnarrowed; see deepenBySystem in main.go,
+// which caches the narrowed answer separately for exactly the reason the `Lang`
+// comment gives -- so the first person to use a filter never decides what
+// everybody else is shown.
+func archiveQueryOn(q, kind string, systems []*gameSystem) string {
 	scope, ok := scopeFor(kind)
 	if !ok {
 		return ""
+	}
+	if clause := systemsClause(systems); clause != "" {
+		scope += " AND " + clause
 	}
 	// An empty term is a browse rather than a search: everything playable,
 	// which the caller then orders by how often it has been downloaded. Without
@@ -325,30 +402,6 @@ func archiveQueryFor(q, kind string) string {
 	return clause + " AND " + scope
 }
 
-// archiveSystems maps archive.org's emulator id to a name a person reads.
-// The ids here are the ones their catalogue actually uses, sampled from the
-// collections above rather than guessed.
-var archiveSystems = map[string]string{
-	"nes": "NES", "snes": "SNES", "gameboy": "Game Boy", "gb": "Game Boy",
-	"gbcolor": "Game Boy Color", "gbc": "Game Boy Color", "gba": "Game Boy Advance",
-	"n64": "Nintendo 64", "genesis": "Genesis", "megadriv": "Mega Drive",
-	"segaMD": "Mega Drive", "32x": "Sega 32X", "sms": "Master System",
-	"smsj": "Master System", "gamegear": "Game Gear", "gg": "Game Gear",
-	"psx": "PlayStation", "coleco": "ColecoVision",
-	"a2600": "Atari 2600", "atari2600": "Atari 2600", "a7800": "Atari 7800",
-	"a800": "Atari 800", "atari800": "Atari 800", "lynx": "Lynx",
-	"intv2": "Intellivision", "intv": "Intellivision", "intvsrs": "Intellivision",
-	"tg16": "TurboGrafx-16", "pce": "PC Engine",
-	"wswan": "WonderSwan", "wscolor": "WonderSwan Color",
-	"ngpc": "Neo Geo Pocket Color", "ngp": "Neo Geo Pocket",
-	"odyssey2": "Odyssey 2", "arcadia": "Arcadia 2001", "gamecom": "Game.com",
-	"vice_x64": "Commodore 64", "cpc6128": "Amstrad CPC", "gx4000": "Amstrad GX4000",
-	"coco3disk": "TRS-80 CoCo", "sae-a1200": "Amiga",
-	"dosbox": "MS-DOS", "dos": "MS-DOS", "sb486": "MS-DOS",
-	"ruffle-swf": "Flash", "flash": "Flash",
-	"arcade": "Arcade", "mame": "Arcade",
-}
-
 // collectionSystems is the fallback, and it exists because of a real failure
 // mode: for arcade items the `emulator` field is the MAME *driver* name, not a
 // system. "contra", "gberet" and "drgnunit" are all arcade machines, so passing
@@ -357,28 +410,57 @@ var archiveSystems = map[string]string{
 // Ordered most-specific first, because items belong to several collections at
 // once and the order they arrive in is arbitrary. An arcade cabinet also sits
 // in consolelivingroom, so matching on arrival order labelled it "Console".
-var collectionSystems = []struct{ collection, name string }{
-	{"internetarcade", "Arcade"},
-	{"softwarelibrary_msdos_games", "MS-DOS"},
-	{"softwarelibrary_msdos", "MS-DOS"},
-	{"softwarelibrary_flash_games", "Flash"},
-	{"softwarelibrary_flash", "Flash"},
-	{"consolelivingroom", "Console"},
+var collectionSystems = []struct{ collection, id, name string }{
+	{"internetarcade", "arcade", "Arcade"},
+	{"softwarelibrary_msdos_games", "dos", "MS-DOS"},
+	{"softwarelibrary_msdos", "dos", "MS-DOS"},
+	{"softwarelibrary_flash_games", "flash", "Flash"},
+	{"softwarelibrary_flash", "flash", "Flash"},
+	{"consolelivingroom", "", "Console"},
 }
 
-func friendlySystem(emulator string, collections []string) string {
-	if name, ok := archiveSystems[emulator]; ok {
-		return name
+// identifySystem resolves an item to (slug, label).
+//
+// The label comes from archivePlaySystems, which is the table checked against
+// ROM Hub's id census -- not from the hand-written map that used to live here.
+// That map had `vice_x64`, an id archive.org uses for nothing, and no id for
+// the Amiga that their catalogue actually emits, so the two largest machines in
+// the whole catalogue showed no platform at all: 99,993 Commodore 64 items and
+// 13,261 Amiga items, every one of them unlabelled.
+//
+// The slug is what a filter, a facet and a browse URL are keyed on. It is
+// stable; the label is for eyes and may be reworded.
+func identifySystem(emulator string, collections []string) (string, string) {
+	// The site's own catalogue first, because it is the one with families,
+	// aliases and a slug -- and its ids are a superset of the play table's for
+	// machines that have no core at all (Flash, Palm, Astrocade).
+	if s := systemFor(emulator); s != nil {
+		label := s.Short
+		// Where the play table names the same machine, its label wins: it is
+		// the one a playability answer will also use, and two names for one
+		// machine on one page is a bug somebody has to notice.
+		if p, ok := archivePlaySystems[emulator]; ok && p.Label != "" {
+			label = p.Label
+		}
+		return s.ID, label
+	}
+	if p, ok := archivePlaySystems[emulator]; ok {
+		return p.Platform, p.Label
 	}
 	for _, cs := range collectionSystems {
 		for _, c := range collections {
 			if c == cs.collection {
-				return cs.name
+				return cs.id, cs.name
 			}
 		}
 	}
 	// Better to say nothing than to label a game with a MAME driver name.
-	return ""
+	return "", ""
+}
+
+func friendlySystem(emulator string, collections []string) string {
+	_, name := identifySystem(emulator, collections)
+	return name
 }
 
 // ejsCores are the archive.org emulator ids EmulatorJS also has a core for.
@@ -493,7 +575,12 @@ func sourcesFor(d archiveDoc, title, system string) []source {
 
 // searchArchive queries archive.org and returns one card per game.
 func (s *server) searchArchive(ctx context.Context, q, kind string) ([]card, error) {
-	query := archiveQueryFor(q, kind)
+	return s.searchArchiveOn(ctx, q, kind, nil)
+}
+
+// searchArchiveOn is searchArchive narrowed to particular machines.
+func (s *server) searchArchiveOn(ctx context.Context, q, kind string, systems []*gameSystem) ([]card, error) {
+	query := archiveQueryOn(q, kind, systems)
 	if query == "" {
 		return nil, nil
 	}
@@ -502,7 +589,14 @@ func (s *server) searchArchive(ctx context.Context, q, kind string) ([]card, err
 	for _, f := range []string{"identifier", "title", "emulator", "downloads", "year", "collection"} {
 		params.Add("fl[]", f)
 	}
-	params.Set("rows", "60")
+	// Over-fetch when a machine was asked for. The query is a superset by
+	// construction -- archive.org tokenises the emulator field -- so some rows
+	// are dropped again below, and asking for exactly 60 would return fewer.
+	if len(systems) > 0 {
+		params.Set("rows", "120")
+	} else {
+		params.Set("rows", "60")
+	}
 	params.Set("page", "1")
 	params.Set("output", "json")
 	// Their own popularity signal. Downloads is the closest thing they have to
@@ -535,7 +629,28 @@ func (s *server) searchArchive(ctx context.Context, q, kind string) ([]card, err
 	// a search for Super Mario World whose first result was "Super Mario World
 	// DX". rankByMatch puts the thing that was asked for first and drops what
 	// merely shares a word with it -- see match.go.
-	return rankByMatch(archiveCards(out.Response.Docs, kind), q), nil
+	return rankByMatch(archiveCards(keepSystems(out.Response.Docs, systems), kind), q), nil
+}
+
+// keepSystems drops rows the query matched but the machine did not actually
+// have. Solr analyses `emulator`, so a query mentioning `pce` also matches
+// `pce-macplus`; without this, a TurboGrafx-16 shelf contains Macintosh disk
+// images. Verified against the exact id rather than by re-running the same
+// fuzzy match that let them in.
+func keepSystems(docs []archiveDoc, systems []*gameSystem) []archiveDoc {
+	if len(systems) == 0 {
+		return docs
+	}
+	out := make([]archiveDoc, 0, len(docs))
+	for _, d := range docs {
+		for _, s := range systems {
+			if belongsTo(s, d.Emulator.String(), d.Collection) {
+				out = append(out, d)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func archiveCards(docs []archiveDoc, kind string) []card {
@@ -550,7 +665,7 @@ func archiveCards(docs []archiveDoc, kind string) []card {
 		}
 		seen[d.Identifier] = true
 
-		system := friendlySystem(d.Emulator.String(), d.Collection)
+		systemID, system := identifySystem(d.Emulator.String(), d.Collection)
 		title := strings.TrimSpace(d.Title.String())
 		if title == "" {
 			title = d.Identifier
@@ -580,6 +695,7 @@ func archiveCards(docs []archiveDoc, kind string) []card {
 			Seeders:  0,
 			Popular:  d.Downloads,
 			Platform: system,
+			System:   systemID,
 			// The "Games" chip filters on this, and a card without it would be
 			// hidden the moment somebody narrowed to exactly what they wanted.
 			Groups:  []string{group},

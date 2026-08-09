@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -186,7 +187,15 @@ func (s *server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *tmdbClient) list(ctx context.Context, path string) []discoverItm {
-	u := fmt.Sprintf("%s%s?api_key=%s&language=en-US&page=1", tmdbBase, path, c.apiKey)
+	// The path may already carry a query string -- a genre row is
+	// /discover/movie?with_genres=28 -- so the separator cannot be a hardcoded
+	// "?" or the URL grows a second one and TMDB rejects the whole request.
+	// `page` is left to the caller; TMDB defaults to 1.
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	u := fmt.Sprintf("%s%s%sapi_key=%s&language=en-US", tmdbBase, path, sep, c.apiKey)
 	var out struct {
 		Results []struct {
 			tmdbHit

@@ -133,6 +133,15 @@ type iaSearchDoc struct {
 
 // fetchArchiveRow runs one row's query.
 func fetchArchiveRow(ctx context.Context, row archiveRow, limit int) (discoverRow, error) {
+	return fetchArchivePage(ctx, row, limit, 1)
+}
+
+// fetchArchivePage is the same thing with paging, for a category page where
+// "Load more" has to mean something. A landing rail only ever wants page 1.
+func fetchArchivePage(ctx context.Context, row archiveRow, limit, page int) (discoverRow, error) {
+	if page < 1 {
+		page = 1
+	}
 	params := url.Values{}
 	params.Set("q", row.query)
 	for _, f := range []string{"identifier", "title", "downloads", "year", "emulator", "collection"} {
@@ -143,6 +152,7 @@ func fetchArchiveRow(ctx context.Context, row archiveRow, limit int) (discoverRo
 	// exactly a shelf's width means a shelf ends up narrower than the ones
 	// beside it for reasons a visitor cannot see.
 	params.Set("rows", fmt.Sprint(limit+archiveRowSlack))
+	params.Set("page", fmt.Sprint(page))
 	params.Set("output", "json")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
