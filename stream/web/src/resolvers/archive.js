@@ -1,4 +1,4 @@
-import { makePlayable, RENDER } from '../source.js';
+import { makePlayable, makeCollection, makeSource, RENDER } from '../source.js';
 import { kindOf, bestFile } from '../pickfile.js';
 import { mountEmulator } from './game.js';
 import { mountRuffle } from './flash.js';
@@ -218,23 +218,109 @@ async function playFlashHere(id, wantFile, { fetchImpl }) {
   });
 }
 
+/** Where the track list comes from. See stream/search/music_item.go. */
+export const MUSIC_API = '/api/music/item';
+
+/**
+ * Open an archive.org item as music: a list of tracks, each individually
+ * playable.
+ *
+ * A CONCERT IS NOT A FILM, AND THAT IS THE WHOLE REASON THIS EXISTS.
+ *
+ * An etree item is one show and twenty-odd recordings. Before this, a music
+ * card's only target was the item's details page, which is HTML -- so the
+ * branch at the bottom of resolve() turned it into an iframe of the Archive's
+ * own player. That plays, and it is a dead end for everything this app does:
+ * no track list of ours, nothing to seek inside, no way to say "play the fourth
+ * one", and no resume point.
+ *
+ * A Collection is the type that already means this. playlist.js returns one for
+ * an .m3u -- a list of things, not a stream -- and the engine already knows how
+ * to render one and let somebody pick. Building a third shape for music would
+ * be inventing a concept the player already has.
+ *
+ * The track URLs point straight at archive.org. A media element is not subject
+ * to CORS, so no byte crosses our relay -- which is the opposite of the ROM
+ * case above, where a WASM emulator has to fetch the file itself and every byte
+ * is ours to pay for.
+ */
+async function playMusic(id, { fetchImpl, musicApi = MUSIC_API }) {
+  let item;
+  try {
+    const response = await fetchImpl(`${musicApi}?id=${encodeURIComponent(id)}`);
+    if (!response.ok) {
+      throw new PlaybackError(FAILURE.DEAD_STREAM, `HTTP ${response.status}`);
+    }
+    item = await response.json();
+  } catch (err) {
+    if (err instanceof PlaybackError) throw err;
+    throw new PlaybackError(FAILURE.DEAD_STREAM, 'the track list could not be read');
+  }
+
+  const tracks = Array.isArray(item?.tracks) ? item.tracks.filter((t) => t?.url) : [];
+  if (tracks.length === 0) {
+    // The server distinguishes "no such item" from "an item with nothing a
+    // browser can play", and says which in `reason`. Passing that through is
+    // the difference between a message somebody can act on and a spinner.
+    throw new PlaybackError(
+      FAILURE.UNSUPPORTED_CODEC,
+      item?.reason || 'this item has no playable audio',
+    );
+  }
+
+  return makeCollection({
+    title: item.album || item.title || id,
+    sources: tracks.map((t) => makeSource({
+      kind: 'url',
+      uri: t.url,
+      meta: {
+        title: t.title || t.file,
+        // The artist per track, because a compilation is a different artist
+        // every track; the item's artist stands in when the file named none.
+        artist: t.artist || item.artist || '',
+        album: t.album || item.album || '',
+        number: t.number || 0,
+        durationSeconds: t.durationSeconds || 0,
+        mime: t.mimeType || '',
+        logo: item.artwork || '',
+        // renderLibrary groups on this. Without it every track lands under
+        // "Ungrouped", which is what a twenty-track concert would be headed.
+        group: item.album || item.title || id,
+        // What a client may OFFER to do with the file. The Archive's
+        // stream-only marker means "listen, do not take a copy": it never stops
+        // the track playing and it does stop a download button appearing.
+        downloadable: item.downloadable !== false,
+        // Where the item actually lives, so "open at archive.org" needs no URL
+        // building and no second request.
+        details: item.details || '',
+        venue: item.venue || '',
+        date: item.date || '',
+      },
+    })),
+  });
+}
+
 export const archiveResolver = {
   name: 'archive',
   canHandle(input) {
     return typeof input === 'string' && identifierFrom(input) !== null;
   },
 
-  async resolve(source, { fetchImpl = fetch } = {}) {
+  async resolve(source, { fetchImpl = fetch, musicApi = MUSIC_API } = {}) {
     const id = identifierFrom(source.uri);
     const file = fileFrom(source.uri);
 
-    // `#ejs` and `#swf` are how a search result asks for our own player
-    // rather than the archive's.
+    // `#ejs`, `#swf` and `#music` are how a search result asks for our own
+    // player rather than the archive's. One convention for all three, so a
+    // reader of this file learns it once.
     if (/#ejs$/.test(source.uri)) {
       return playHere(id, file, { fetchImpl });
     }
     if (/#swf$/.test(source.uri)) {
       return playFlashHere(id, file, { fetchImpl });
+    }
+    if (/#music$/.test(source.uri)) {
+      return playMusic(id, { fetchImpl, musicApi });
     }
 
     // A direct link to plain media is worth playing natively: a video element

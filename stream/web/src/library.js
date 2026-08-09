@@ -4,6 +4,10 @@
  */
 
 import { isCollection } from './source.js';
+// The one decision in this renderer, kept where a test can reach it without a
+// DOM. See music.js: an entry that carries neither a number nor a duration is
+// labelled exactly as it was before.
+import { entryLabel } from './music.js';
 
 // This module is where untrusted third-party playlist data (an .m3u fetched
 // from wherever the user pointed it) first reaches the UI layer. A
@@ -60,7 +64,7 @@ export function renderLibrary(collection, { mount, onPick }) {
       const btn = document.createElement('button');
       btn.className = 'lib-item';
       btn.type = 'button';
-      btn.textContent = source.meta?.title || source.uri;
+      btn.textContent = entryLabel(source);
       btn.dataset.index = String(flatSources.length);
       flatSources.push(source);
       row.append(btn);

@@ -144,7 +144,12 @@ func (s *server) archiveSuggestions(ctx context.Context, q, kind string,
 	// Already answered on an earlier keystroke. Read it here rather than
 	// racing a goroutine for it, so a warm cache is a certainty and not a
 	// scheduling accident.
-	if cached, ok := s.getCached(archiveCacheKey(q, kind)); ok {
+	//
+	// The key has to match whichever path will actually be taken below: music
+	// goes through searchArchiveMusicCached, which keeps its results under its
+	// own key, and reading the generic one here would miss every warm music
+	// answer and re-ask the Archive on every keystroke.
+	if cached, ok := s.getCached(archiveSuggestKey(q, kind)); ok {
 		return archiveSuggestionsFrom(cached, showAdult)
 	}
 
@@ -155,7 +160,7 @@ func (s *server) archiveSuggestions(ctx context.Context, q, kind string,
 		// next keystroke is about to want.
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
-		cards, err := s.searchArchiveCached(bg, q, kind)
+		cards, err := s.searchArchiveDomain(bg, q, kind)
 		if err != nil {
 			done <- nil
 			return

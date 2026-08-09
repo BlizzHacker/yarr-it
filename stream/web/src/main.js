@@ -24,6 +24,10 @@ import {
   getLibrary, addToLibrary, removeFromLibrary, keyFor,
 } from './shelf.js';
 import { attachSubtitles } from './subtitles.js';
+// What a music card says beyond its title. A pure module because main.js
+// cannot be imported by a test -- it touches `document` at load -- and a
+// decision about what a card SAYS has to be testable.
+import { musicBits } from './music.js';
 import { PlaybackError } from './failures.js';
 import { api, apiFetch, getServer, setServer, probeServer } from './server.js';
 import { renderHome, itemFromCard, tileAction, domainSentence } from './home.js';
@@ -426,6 +430,7 @@ function tile(card) {
   const bits = [];
   if (card.year) bits.push(card.year);
   if (card.isSeries) bits.push(`S${card.season}E${card.episode}`);
+  bits.push(...musicBits(card));
   if (card.instant) {
     bits.push('plays instantly');
   } else {
@@ -436,6 +441,7 @@ function tile(card) {
   t.addEventListener('click', () => openCard(card));
   return t;
 }
+
 
 /**
  * Open a search result the way its own domain says it should open.
@@ -715,6 +721,9 @@ function openDetail(card) {
   if (card.isSeries) sub.push(`Season ${card.season}, Episode ${card.episode}`);
   if (card.art?.rating) sub.push(`★ ${card.art.rating.toFixed(1)}`);
   if (card.platform) sub.push(card.platform);
+  // Venue and date, for a card whose title is a sentence and whose identity is
+  // a place and a day. See musicBits.
+  sub.push(...musicBits(card));
   sub.push(card.instant ? 'Plays instantly — no download' : `${card.seeders} seeders`);
   $('#d-sub').textContent = sub.join('  ·  ');
 

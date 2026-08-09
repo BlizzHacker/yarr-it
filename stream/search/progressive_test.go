@@ -156,7 +156,15 @@ func TestNoIndexerConfiguredStillAnswersFromArchive(t *testing.T) {
 // A kind archive.org has no scope for, with no indexer configured, genuinely
 // cannot be answered. Saying "try again in a moment" there is false advice: the
 // user retries forever and waiting never fixes it.
+//
+// This used to be written with `kind=audio`, which had no scope because the
+// music domain had no archive.org source at all -- the defect music.go exists
+// to fix. Every domain in schema.json now has one, so the state under test has
+// to be produced rather than found. That is not a weaker test: the branch is
+// live the moment a seventh domain is added without a scope, which is exactly
+// when somebody needs it to behave.
 func TestAnUnanswerableSearchSaysWhyRatherThanPending(t *testing.T) {
+	withoutArchiveScope(t, "music")
 	s := newTestServer()
 
 	rec := httptest.NewRecorder()
