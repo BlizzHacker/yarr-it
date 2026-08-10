@@ -62,6 +62,39 @@ behind it.
 The full design — the resolver system, the IPTV playback ladder, and the
 hard-won WebTorrent gotchas — is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## State of the project
+
+284 tests run green today; here is exactly where they are and where they
+aren't, so you know what to trust and where a contribution lands hardest.
+
+| Component | Tests | Confidence | Notes |
+|---|---|---|---|
+| `bridge/` (relay, caps, budget) | 28 Go tests | **High** | The budget math, IPTV proxy, tracker and page paths are all asserted; runs in production behind yarrit.com |
+| `search/` (Prowlarr front-end) | 68 Go tests | **High** | Grouping, filtering, magnet handling, device shaping |
+| `web/` (SPA, engine, resolvers) | 188 node tests | **High for logic** | Resolvers, playback ladder, m3u sniffing, failure handling — all pure-function tested. The *browser* half (service worker, WebTorrent glue) is exercised by use, not by CI |
+| `gateway/` (VPN egress helper) | none | **Untested** | Small and stable, but nothing asserts it. A Go contributor could own this in an afternoon |
+| `extension/` (browser extension) | none | **Untested** | Manual testing only. **Needs an owner** |
+| `roku/` (Roku channel) | none | **Untested in CI** | BrightScript has no CI here; tested on real hardware per release |
+| TV / store builds (`installers/`, `store/`) | none | **Manual** | Sideloading verified per [SIDELOADING.md](SIDELOADING.md); store packaging exercised at submission time |
+
+Known limits worth stating plainly: playback quality depends entirely on the
+swarm and your indexers — Yarr.It hosts nothing and cannot make a dead
+torrent stream; WebRTC peer counts are low on most swarms, which is the
+entire reason `mw-bridge` exists; and the relay's monthly budget means the
+public instance degrades to web-seed/WebRTC tiers near the end of a heavy
+month, by design.
+
+**Where help lands hardest:** tests for `gateway/` and the extension; a
+Tizen/webOS person to verify the TV builds each release; IPTV edge-case
+playlists (send ones that misbehave); and issues with a reproduction —
+[github.com/BlizzHacker/yarr-it/issues](https://github.com/BlizzHacker/yarr-it/issues).
+
+Yarr.It is the front door of a larger self-hosted stack — the
+[Cartridge](https://github.com/BlizzHacker/rom-hub#readme) retro-gaming
+suite, [ROMarr](https://github.com/BlizzHacker/romarr) (the *arr for games)
+and [ROM Hub](https://github.com/BlizzHacker/rom-hub) (its plugin host) —
+and improvements to any of them tend to surface here.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
