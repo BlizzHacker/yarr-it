@@ -476,3 +476,47 @@ test('a healthy backend adds nothing to the page', async () => {
     assert.ok(!host.children.some((c) => c.className === 'backend-notice'));
   });
 });
+
+// --------------------------------------------------- browse rows that leave
+
+// A category page draws on more than one catalogue now: archive.org items,
+// which this client opens itself, and Vimm's Lair entries, which open on
+// vimm.net. The verb has to follow the destination.
+//
+// This is the same defect the TMDB tiles had -- a word describing an intention
+// instead of an outcome -- and it arrives here through a different door:
+// itemFromDiscover used to drop `external` on the floor, because until now
+// nothing on a browse page could leave the site.
+test('a browse tile from another site is labelled with where it goes', () => {
+  setPlayProbe(null);
+  const item = itemFromDiscover({
+    title: 'Super Mario World',
+    mediaType: 'game',
+    play: 'https://vimm.net/vault/2',
+    source: "Vimm's Lair",
+    external: { name: "Vimm's Lair", short: 'Vimm', host: 'vimm.net', page: 'https://vimm.net/vault/2' },
+  }, 'game');
+
+  assert.equal(item.external?.short, 'Vimm', 'external was dropped in normalisation');
+  const action = tileAction(item);
+  assert.equal(action.kind, 'open');
+  // Not "Play": nothing here plays it. Not "Open": that is a shrug over a link
+  // to somebody else's website. The arrow is half the message.
+  assert.equal(action.label, 'Vimm ↗');
+  assert.equal(action.external.host, 'vimm.net');
+});
+
+// The other half of the same rule: an archive.org tile on that same mixed page
+// must keep saying "Play", or the fix would relabel every game on the site.
+test('an archive.org tile on a mixed page still says Play', () => {
+  setPlayProbe(null);
+  const item = itemFromDiscover({
+    title: 'Chrono Trigger',
+    mediaType: 'game',
+    play: 'https://archive.org/details/chrono-trigger#ejs',
+    source: 'archive.org',
+  }, 'game');
+
+  assert.equal(item.external, null);
+  assert.equal(tileAction(item).label, 'Play');
+});

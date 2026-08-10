@@ -66,6 +66,22 @@ type discoverItm struct {
 	// thing comes from without parsing the URL, and so a row that turns out to
 	// be entirely one source is visible as that rather than as a mystery.
 	Source string `json:"source,omitempty"`
+	// External is the site this lives on when it is not this one, in the same
+	// shape a search card carries it.
+	//
+	// It exists because a row is no longer necessarily one source. A category
+	// page mixes archive.org items, which open here, with Vimm's Lair entries,
+	// which open on vimm.net -- and the client decides a tile's VERB from this
+	// field. Without it every Vimm tile in a browse row falls through to
+	// `canPlay`, which answers "no" and prints "Open" over an outbound link to
+	// somebody else's website. "Open" is not a lie so much as a shrug; the
+	// shipped standard for these is "Vimm ↗", and the arrow is the half of the
+	// message that says the click leaves.
+	//
+	// Absent on everything archive.org and TMDB produce, which is what makes
+	// omitempty right: those items ARE the thing, and a nil here is the
+	// positive statement that nothing about this tile leaves the site.
+	External *externalSite `json:"external,omitempty"`
 }
 
 type discoverCache struct {

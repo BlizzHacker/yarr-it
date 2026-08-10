@@ -398,8 +398,30 @@ const (
 )
 
 func (s *server) handleCategories(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"domains": s.categoryTree(s.allCounts())})
+}
+
+// allCounts is the measured archive.org counts with the local catalogue's
+// folded in.
+//
+// Folded HERE rather than inside categoryTree so that everything downstream --
+// the count on a tile, the ordering of machines within a family, and the test
+// for whether a machine is empty enough to hide -- sees one number per
+// category. Two half-counts flowing separately is how a machine ends up ordered
+// by one figure and labelled with another.
+//
+// It also fixes a category that would otherwise be invisible: a machine
+// archive.org holds nothing for is dropped from the tree as empty, and Vimm has
+// several such. A shelf with 41 games in it is a real shelf.
+func (s *server) allCounts() map[string]int {
 	counts := s.browse.allCounts()
-	writeJSON(w, 200, map[string]any{"domains": s.categoryTree(counts)})
+	if s.vimm == nil {
+		return counts
+	}
+	for slug, n := range s.vimm.vimmSystemCounts() {
+		counts[slug] += n
+	}
+	return counts
 }
 
 // categoryTree assembles the whole shape. Pure apart from reading the count
@@ -572,16 +594,23 @@ func (s *server) handleRows(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 404, map[string]string{"error": "no such category"})
 			return
 		}
-		row, err := s.browseRow(ctx, key, limit, page)
+		row, more, err := s.browsePage(ctx, key, limit, page)
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": "could not load that category"})
 			return
 		}
 		writeJSON(w, 200, map[string]any{
-			"row":   row,
-			"path":  path,
-			"page":  page,
-			"total": s.browse.allCounts()[countKeyFor(key)],
+			"row":  row,
+			"path": path,
+			"page": page,
+			// Every catalogue behind this category, not only archive.org's. A
+			// machine's page says "1,204 items" and then shows tiles from two
+			// sources; a total that counted one of them would be visibly wrong
+			// the moment somebody paged to the end.
+			"total": s.categoryTotal(key),
+			// Whether to offer "Load more", stated rather than inferred from
+			// whether this page came back full. See browsePage.
+			"more": more,
 		})
 		return
 	}
@@ -633,14 +662,44 @@ func countKeyFor(key string) string {
 	return key
 }
 
+// categoryTotal is how many items a category really holds, across every
+// catalogue behind it.
+//
+// The archive.org half is a measured number from the background refresh and can
+// be absent -- see countsUnmeasured -- while the Vimm half is a local count
+// that is always exact and never stale. Adding them is right even when the
+// first is missing: "941 items" on a page that has not yet counted the Archive
+// is closer to true than "0", and a client already reads 0 as "not counted
+// yet".
+func (s *server) categoryTotal(key string) int {
+	total := s.browse.allCounts()[countKeyFor(key)]
+	if slug, ok := strings.CutPrefix(key, "ia:sys:"); ok && s.vimm != nil {
+		total += len(s.vimm.worksBySystem(slug))
+	}
+	return total
+}
+
 func (s *server) browseRow(ctx context.Context, key string, limit, page int) (discoverRow, error) {
+	row, _, err := s.browsePage(ctx, key, limit, page)
+	return row, err
+}
+
+// browsePage is browseRow plus the one thing only the server can know: whether
+// there is another page.
+//
+// It used to be the client's guess -- a page that came back short meant the
+// end -- and that was already only approximately true. It stopped being true at
+// all once a game category drew from two catalogues with different depths,
+// because the page a source runs out on is short and yet the other source has
+// thousands left. See vimm_browse.go.
+func (s *server) browsePage(ctx context.Context, key string, limit, page int) (discoverRow, bool, error) {
 	cacheKey := fmt.Sprintf("%s\x00%d\x00%d", key, limit, page)
 	if row, ok := s.browse.row(cacheKey); ok {
-		return row, nil
+		return row, s.hasMoreAfter(key, row, limit, page), nil
 	}
 	src, ok := s.sourceFor(key)
 	if !ok {
-		return discoverRow{}, fmt.Errorf("unknown row key")
+		return discoverRow{}, false, fmt.Errorf("unknown row key")
 	}
 
 	var (
@@ -648,6 +707,10 @@ func (s *server) browseRow(ctx context.Context, key string, limit, page int) (di
 		err error
 	)
 	switch {
+	case src.solr != "" && strings.HasPrefix(key, "ia:sys:"):
+		// A game machine, which is the one category with more than one
+		// catalogue behind it.
+		row, err = s.gameRow(ctx, key, src, limit, page)
 	case src.solr != "":
 		row, err = fetchArchivePage(ctx, archiveRow{
 			key: key, title: src.title, query: src.solr,
@@ -658,11 +721,116 @@ func (s *server) browseRow(ctx context.Context, key string, limit, page int) (di
 	default:
 		err = fmt.Errorf("row has no source")
 	}
+	// A row that is real but incomplete is served and not cached. See gameRow.
+	if err == errArchiveDegraded {
+		return row, s.hasMoreAfter(key, row, limit, page), nil
+	}
 	if err != nil {
-		return discoverRow{}, err
+		return discoverRow{}, false, err
 	}
 	s.browse.putRow(cacheKey, row, browseRowTTL)
+	return row, s.hasMoreAfter(key, row, limit, page), nil
+}
+
+// gameRow draws one machine's page from both catalogues.
+//
+// The share each contributes is fixed per page and computed from the page
+// number alone -- see vimmShareOf. That is what makes "Load more" honest: an
+// archive.org offset that depended on how many Vimm entries happened to survive
+// on earlier pages would skip or repeat items as soon as one source ran out.
+//
+// archive.org failing does NOT fail the row. The catalogue is a file on this
+// box and is always available, so an Archive outage should cost the Archive's
+// share of the page and not the page -- which is the same call discover.go
+// makes when one source of a shelf is down. Such a row is deliberately not
+// cached: a three-hour cache of a half-page would outlive the outage that
+// caused it.
+func (s *server) gameRow(ctx context.Context, key string, src rowSource, limit, page int) (discoverRow, error) {
+	slug := strings.TrimPrefix(key, "ia:sys:")
+	share := vimmShareOf(limit)
+	fromVimm := s.vimm.vimmBrowseItems(slug, (page-1)*share, share)
+
+	archiveLimit := limit - len(fromVimm)
+	row, err := fetchArchivePage(ctx, archiveRow{
+		key: key, title: src.title, query: src.solr,
+		sort: src.solrSort, mediaType: src.mediaType,
+	}, archiveLimit, page)
+	if err != nil {
+		if len(fromVimm) == 0 {
+			return discoverRow{}, err
+		}
+		log.Printf("browse %s: archive.org unavailable, serving %d catalogue entries: %v",
+			key, len(fromVimm), err)
+		return discoverRow{Title: src.title, Key: key, Items: fromVimm}, errArchiveDegraded
+	}
+	row.Items = interleave(row.Items, fromVimm)
 	return row, nil
+}
+
+// errArchiveDegraded marks a row that is real but incomplete. It never reaches
+// a caller: gameRow's only consumer turns it back into a successful row that is
+// simply not cached.
+var errArchiveDegraded = fmt.Errorf("archive.org unavailable")
+
+// interleave spreads the smaller list evenly through the larger one.
+//
+// Not concatenation, which is the tempting version and which puts twenty Vimm
+// tiles at the top of every page followed by forty archive.org ones. That reads
+// as two lists that happen to share a heading, and on a phone -- where a screen
+// is four tiles -- it reads as a Vimm page, because the Archive is five scrolls
+// down.
+func interleave(major, minor []discoverItm) []discoverItm {
+	if len(minor) == 0 {
+		return major
+	}
+	if len(major) == 0 {
+		return minor
+	}
+	out := make([]discoverItm, 0, len(major)+len(minor))
+	// How many major items to lay down between each minor one. At 40 and 20
+	// that is every second tile; at 40 and 4 it is every tenth.
+	step := float64(len(major)+len(minor)) / float64(len(minor))
+	mi, next := 0, step-1
+	for i := range major {
+		for mi < len(minor) && float64(len(out)) >= next {
+			out = append(out, minor[mi])
+			mi++
+			next += step
+		}
+		out = append(out, major[i])
+	}
+	// Whatever did not fit between the majors goes on the end rather than being
+	// dropped: this is a page of a paged list and a dropped item is one nobody
+	// ever sees.
+	out = append(out, minor[mi:]...)
+	return out
+}
+
+// hasMoreAfter answers whether another page exists, per source.
+//
+// A full archive.org share means the Archive has more; unread catalogue entries
+// mean Vimm has more; either is enough. The alternative -- the client's old
+// "was this page full" test -- gets it wrong in both directions now, and the
+// direction that matters is the false negative: a page one tile short hides
+// "Load more" over a catalogue with 900 entries left in it.
+func (s *server) hasMoreAfter(key string, row discoverRow, limit, page int) bool {
+	if !strings.HasPrefix(key, "ia:sys:") {
+		return len(row.Items) >= limit
+	}
+	slug := strings.TrimPrefix(key, "ia:sys:")
+	share := vimmShareOf(limit)
+	if s.vimm != nil {
+		if len(s.vimm.worksBySystem(slug)) > page*share {
+			return true
+		}
+	}
+	// What archive.org contributed to this page, which is the page minus the
+	// catalogue's share of it.
+	fromArchive := len(row.Items)
+	if s.vimm != nil {
+		fromArchive -= len(s.vimm.vimmBrowseItems(slug, (page-1)*share, share))
+	}
+	return fromArchive >= limit-share
 }
 
 func (s *server) tmdbRow(ctx context.Context, key string, src rowSource, limit, page int) (discoverRow, error) {

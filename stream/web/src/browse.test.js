@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  routeOf, countLabel, matchCategories, findDomain, findCategory, categoryCount,
+  routeOf, countLabel, matchCategories, findDomain, findCategory, categoryCount, hasMore,
 } from './browse.js';
 
 const TREE = [
@@ -131,4 +131,33 @@ test('famicom finds the NES, which shares not one word with it', () => {
   const cats = TREE[0].groups[0].categories;
   assert.equal(matchCategories(cats, 'famicom')[0].path, 'games/nes');
   assert.equal(matchCategories(cats, 'sfc')[0].path, 'games/snes');
+});
+
+// "Load more" over a category with thousands of items left in it must not
+// vanish because one of the catalogues behind it ran out. A game category
+// draws on archive.org and on the local Vimm's Lair catalogue, and the page
+// where the smaller one is exhausted comes back short while the larger one is
+// barely started.
+test('the server decides whether there is another page', () => {
+  const full = { got: 60, perPage: 60, shown: 60, total: 1200 };
+  // A short page that the server says has more behind it: the case the old
+  // "was this page full" guess got wrong.
+  assert.equal(hasMore({ more: true }, { ...full, got: 40 }), true);
+  // And the reverse: a full page the server says is the last one.
+  assert.equal(hasMore({ more: false }, full), false);
+});
+
+// The guess is kept for a client talking to a server that predates `more`, so
+// upgrading one without the other cannot break paging.
+test('a server that says nothing falls back to the old guess', () => {
+  assert.equal(hasMore({}, { got: 60, perPage: 60, shown: 60, total: 1200 }), true);
+  assert.equal(hasMore({}, { got: 40, perPage: 60, shown: 40, total: 1200 }), false);
+  // Everything the category claims to hold is on screen.
+  assert.equal(hasMore({}, { got: 60, perPage: 60, shown: 1200, total: 1200 }), false);
+  // No total counted yet is not a reason to stop offering more.
+  assert.equal(hasMore({}, { got: 60, perPage: 60, shown: 60, total: 0 }), true);
+  // A malformed body must not throw on a page somebody is looking at.
+  assert.equal(hasMore(null, { got: 60, perPage: 60, shown: 60, total: 0 }), true);
+  // `more` is only honoured as a boolean; a stray string is not an answer.
+  assert.equal(hasMore({ more: 'yes' }, { got: 10, perPage: 60, shown: 10, total: 0 }), false);
 });

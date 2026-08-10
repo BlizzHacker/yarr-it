@@ -239,6 +239,16 @@ export function itemFromDiscover(it, domain) {
     overview: it.overview || '',
     rating: it.rating || 0,
     uri: it.play || '',
+    // The site this lives on, when it is not this one. Same field and same
+    // meaning as itemFromCard's, because tileAction reads one property and must
+    // not have to know which endpoint built the item.
+    //
+    // A discover item never used to have one: every row was archive.org or
+    // TMDB, and both are things this client either opens itself or searches
+    // for. A game category page now also carries Vimm's Lair entries, which
+    // open on vimm.net -- and dropping this here is precisely how such a tile
+    // ends up labelled with a verb instead of a destination.
+    external: it.external || null,
     card: null,
   };
 }

@@ -112,6 +112,29 @@ export function categoryCount(domain) {
   return (domain?.groups || []).reduce((a, g) => a + (g.categories || []).length, 0);
 }
 
+/**
+ * Whether to keep offering "Load more".
+ *
+ * The server's answer wins whenever it gives one, because only the server knows
+ * how deep each catalogue behind a category goes. A game category draws on
+ * archive.org and on the local Vimm's Lair catalogue at once, and those run out
+ * at very different depths.
+ *
+ * The old rule -- a page that came back short is the end -- was always a guess,
+ * and mixing two sources made it wrong in the direction that costs the most: on
+ * the page where the smaller catalogue runs out, the page is short while the
+ * larger source still has thousands of items, so "Load more" vanished over a
+ * category that was barely started.
+ *
+ * The guess is kept as a fallback rather than deleted, so a client running
+ * against a server that predates `more` behaves exactly as it did before.
+ */
+export function hasMore(body, { got, perPage, shown, total }) {
+  if (typeof body?.more === 'boolean') return body.more;
+  if (got < perPage) return false;
+  return !(total > 0 && shown >= total);
+}
+
 // --------------------------------------------------------------------- DOM --
 
 const el = (tag, cls, text) => {
@@ -502,7 +525,9 @@ export function mountBrowse({
         }
         for (const item of items) { state.items.push(item); grid.append(renderTile(item, route.domain)); }
         state.nextPage += 1;
-        more.hidden = items.length < perPage || (total > 0 && state.items.length >= total);
+        more.hidden = !hasMore(body, {
+          got: items.length, perPage, shown: state.items.length, total,
+        });
         more.disabled = false;
         more.textContent = 'Load more';
         paintSub();
