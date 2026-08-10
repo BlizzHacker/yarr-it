@@ -1,5 +1,6 @@
 import { makePlayable, RENDER } from '../source.js';
 import { coreFromExtension } from '../rom-core.js';
+import { PlaybackError, FAILURE } from '../failures.js';
 
 /**
  * Game ROMs via EmulatorJS, the way archive.org's web emulators work.
@@ -114,10 +115,82 @@ export function bootEmulator(el, { gameUrl, core, name, biosUrl = null, coreOpti
 }
 
 /**
+ * Fetch a ROM from the first source that yields the whole thing.
+ *
+ * WHY THE PLAYER FETCHES THIS ITSELF instead of handing EmulatorJS a URL.
+ *
+ * EmulatorJS names the file it writes into the core's filesystem after the URL
+ * it downloaded -- `gameUrl.split("/").pop().split("?")[0]` -- and hands the
+ * core that path. Several libretro cores read the extension to decide WHICH
+ * MACHINE they are emulating. Through our relay the URL is `/bridge/iptv?u=…`,
+ * so every ROM on the site arrived called `iptv`, with no extension at all; and
+ * archive.org's own name is no better for the machine that matters, because it
+ * calls both Game Gear and Mega Drive payloads `.bin`.
+ *
+ * Measured: genesis_plus_gx given a Game Gear ROM as `iptv` or `.bin` emulates
+ * a MASTER SYSTEM -- 256x192 instead of the Game Gear's 160x144 -- and draws a
+ * black screen while reporting itself started and running at 60 frames a
+ * second. Given the same bytes as `.gg` it plays.
+ *
+ * EmulatorJS uses `EJS_gameName` as the filename when the URL is a `blob:` one,
+ * which is the documented way to say what the file is called. So the bytes are
+ * fetched here, wrapped in a blob, and the name comes from the server -- which
+ * is where the core table already lives, and so where the answer to "what must
+ * this be called" belongs.
+ *
+ * Sources are tried in order and the ANSWER IS CHECKED, not assumed: an
+ * archive.org storage node that answers 5xx returns a short HTML body, and a
+ * WASM emulator handed 170 bytes of HTML boots and runs nothing. Measured, that
+ * happens to roughly one request in a hundred and never twice to the same item,
+ * so trying the next source turns a dead game into a slower one.
+ */
+export async function fetchRom(sources, { expectBytes = 0, fetchImpl = fetch } = {}) {
+  const tried = [];
+  for (const src of sources) {
+    if (!src) continue;
+    try {
+      const response = await fetchImpl(src);
+      if (!response.ok) {
+        tried.push(`${src} → HTTP ${response.status}`);
+        continue;
+      }
+      const buf = await response.arrayBuffer();
+      // A size the server told us is a size worth checking. A truncated or
+      // error-page body is the failure that boots successfully and plays
+      // nothing, which is the one this whole path exists to stop.
+      if (expectBytes && buf.byteLength !== expectBytes) {
+        tried.push(`${src} → ${buf.byteLength} bytes, expected ${expectBytes}`);
+        continue;
+      }
+      if (buf.byteLength === 0) {
+        tried.push(`${src} → empty`);
+        continue;
+      }
+      return buf;
+    } catch (error) {
+      tried.push(`${src} → ${error?.message ?? error}`);
+    }
+  }
+  throw new PlaybackError(
+    FAILURE.DEAD_STREAM,
+    `the ROM could not be fetched (${tried.join('; ') || 'no sources offered'})`,
+  );
+}
+
+/**
  * Boot EmulatorJS into `el` against any URL -- an http(s) ROM or a blob: URL
  * from a completed torrent file. Returns a handle whose destroy() stops it.
+ *
+ * `sources`, when given, is an ordered list of places to fetch the ROM from;
+ * the bytes are collected here and handed to EmulatorJS as a blob so that
+ * `name` -- not the URL -- decides what the core sees. See fetchRom. Without
+ * it, `url` is passed straight through exactly as before, which is what the
+ * torrent path does with a blob: URL it made itself.
  */
-export function mountEmulator(el, url, { core, name, biosUrl = null, coreOptions = null, doc = document }) {
+export function mountEmulator(el, url, {
+  core, name, biosUrl = null, coreOptions = null, doc = document,
+  sources = null, expectBytes = 0, label = null, fetchImpl = undefined,
+}) {
   // A WASM emulator needs a REAL user gesture before the browser will let it
   // run: it opens an AudioContext, and autoplay policy holds the whole run loop
   // until the page has been interacted with. Relying on EJS_startOnLoaded alone
@@ -129,12 +202,12 @@ export function mountEmulator(el, url, { core, name, biosUrl = null, coreOptions
   const button = doc.createElement('button');
   button.className = 'canvas-start';
   button.type = 'button';
-  button.textContent = `▶  Play ${name}`;
+  button.textContent = `▶  Play ${label ?? name}`;
   el.replaceChildren(button);
 
-  const state = { tag: null, booted: false, onResize: null };
+  const state = { tag: null, booted: false, onResize: null, blob: null };
 
-  button.addEventListener('click', () => {
+  button.addEventListener('click', async () => {
     if (state.booted) return;
     state.booted = true;
 
@@ -142,7 +215,29 @@ export function mountEmulator(el, url, { core, name, biosUrl = null, coreOptions
     host.style.width = '100%';
     host.style.height = '100%';
     el.replaceChildren(host);
-    state.tag = bootEmulator(host, { gameUrl: url, core, name, biosUrl, coreOptions, doc });
+
+    // The ROM is collected here, before the emulator exists, so that the name
+    // the core sees is ours to set rather than whatever the URL happened to end
+    // in. A failure has to be said out loud: booting an emulator with no ROM
+    // produces a black screen that reports itself as running, which is the
+    // failure mode this whole path was written to remove.
+    let gameUrl = url;
+    if (sources) {
+      host.textContent = 'Fetching the game…';
+      try {
+        const bytes = await fetchRom(sources, { expectBytes, ...(fetchImpl ? { fetchImpl } : {}) });
+        state.blob = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+        gameUrl = state.blob;
+      } catch (error) {
+        host.textContent = error?.message
+          ? `This game could not be started — ${error.message}`
+          : 'This game could not be started.';
+        return;
+      }
+      host.replaceChildren();
+    }
+
+    state.tag = bootEmulator(host, { gameUrl, core, name, biosUrl, coreOptions, doc });
 
     // EmulatorJS lays its canvas out once and does not always catch a viewport
     // change: measured, a game booted at 1280x720 and then resized to 375x667
@@ -172,6 +267,16 @@ export function mountEmulator(el, url, { core, name, biosUrl = null, coreOptions
         if (state.onResize) globalThis.removeEventListener?.('resize', state.onResize);
       } catch {
         /* nothing running */
+      }
+      // The blob holds the whole ROM; without this it outlives the game that
+      // needed it and the tab keeps paying for every title anybody opened.
+      if (state.blob) {
+        try {
+          URL.revokeObjectURL(state.blob);
+        } catch {
+          /* no URL registry in this environment */
+        }
+        state.blob = null;
       }
       state.onResize = null;
       state.tag = null;

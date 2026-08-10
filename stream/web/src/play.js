@@ -205,7 +205,11 @@ export function normalise(raw, id = '') {
     core: raw.core || '',
     coreFile: raw.coreFile || '',
     embed: raw.embed || '',
-    rom: raw.rom && raw.rom.url ? { ...raw.rom } : null,
+    // Either byte path is enough to have a ROM. There are two now -- the
+    // Archive's own cross-origin endpoint and our relay -- and requiring the
+    // relay specifically would refuse a perfectly playable answer from a server
+    // that had stopped offering one.
+    rom: raw.rom && (raw.rom.url || raw.rom.fetch) ? { ...raw.rom } : null,
     touch: raw.touch === true,
     route,
     reasons,
@@ -507,7 +511,9 @@ export function solePlayerSentence(verdict) {
  * server's own sentence -- so what a person is told after pressing is the same
  * thing they were told before it.
  */
-export function toPlayable(verdict, { doc = undefined, route = undefined, biosUrl = null } = {}) {
+export function toPlayable(verdict, {
+  doc = undefined, route = undefined, biosUrl = null, fetchImpl = undefined,
+} = {}) {
   if (!canPlay(verdict)) {
     throw new PlaybackError(
       FAILURE.UNSUPPORTED_CODEC,
@@ -531,12 +537,21 @@ export function toPlayable(verdict, { doc = undefined, route = undefined, biosUr
     return makePlayable({ render: RENDER.EMBED, src: verdict.embed, mime: 'text/html' });
   }
 
-  // EmulatorJS. The ROM URL is the server's -- it points at the relay, because
-  // archive.org sends no Access-Control-Allow-Origin on downloads and a WASM
-  // emulator fetches the ROM itself. Rebuilding that URL here would be a second
-  // place for the relay path to be wrong.
-  const { url, name } = verdict.rom;
+  // EmulatorJS. Both the places to fetch from and the name the core must see
+  // are the server's -- rebuilding either here would be a second place for them
+  // to be wrong, and the name in particular is not a cosmetic field: for the
+  // Game Gear and the Master System the extension is the only thing telling
+  // genesis_plus_gx which console it is emulating, and archive.org calls a Game
+  // Gear ROM ".bin" like everything else. See fetchRom in resolvers/game.js.
+  //
+  // `fetch` is archive.org's own cross-origin endpoint and costs us nothing;
+  // `url` is our relay and is the fallback for when that fails. An older server
+  // that sends neither `fetch` nor `file` still works: the list collapses to the
+  // relay and the name falls back to the Archive's own, which is exactly how
+  // this behaved before.
+  const { url, name, file, fetch: corsUrl, sizeBytes } = verdict.rom;
   const label = name || verdict.title || 'game';
+  const sources = [corsUrl, url].filter(Boolean);
   let handle = null;
 
   // Firmware, if this machine needs any. Two owners, one precedence rule, and
@@ -563,12 +578,19 @@ export function toPlayable(verdict, { doc = undefined, route = undefined, biosUr
 
   return makePlayable({
     render: RENDER.CANVAS,
-    src: url,
+    src: sources[0],
     mime: 'application/octet-stream',
     mount(el) {
       handle = mountEmulator(el, url, {
         core: verdict.core,
-        name: label,
+        // What the core is told the file is called. `file` when the server said
+        // so, the Archive's own name when it did not.
+        name: file || label,
+        // What the button says, which is the name a person recognises.
+        label,
+        sources,
+        expectBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
+        ...(fetchImpl ? { fetchImpl } : {}),
         ...(firmware ? { biosUrl: firmware } : {}),
         ...(coreOptions && Object.keys(coreOptions).length ? { coreOptions } : {}),
         ...(doc ? { doc } : {}),
@@ -593,5 +615,10 @@ export async function play(id, {
   bios = [], isolated = undefined, route = undefined, biosUrl = null,
 } = {}) {
   const verdict = await fetchVerdict(id, { fetchImpl, base, bios, isolated });
-  return toPlayable(verdict, { doc, route: route ?? choosePlayer(verdict), biosUrl });
+  // The same fetch reaches the ROM as reached the verdict: a caller that
+  // supplied one meant it for both, and the ROM is now fetched by us rather
+  // than by EmulatorJS.
+  return toPlayable(verdict, {
+    doc, route: route ?? choosePlayer(verdict), biosUrl, fetchImpl,
+  });
 }

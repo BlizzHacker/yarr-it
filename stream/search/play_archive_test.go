@@ -431,6 +431,201 @@ func TestANESItemResolvesToOurOwnPlayer(t *testing.T) {
 	}
 }
 
+// THE GAME GEAR BUG, pinned at the field that carries the fix.
+//
+// Every Game Gear item on the live site was a black screen that reported itself
+// as running. The metadata was not the problem and neither was the core map:
+// all 144 items sampled from /browse/games/gamegear declared `emulator=gamegear`
+// and `emulator_ext=bin`, and `gamegear -> segaGG` is right. The problem was the
+// NAME the ROM reached the emulator under.
+//
+// EmulatorJS writes the ROM into the core's filesystem under a name it takes
+// from the URL, and genesis_plus_gx reads the extension to choose between the
+// five machines it emulates. Measured 2026-08-09 against cdn.emulatorjs.org's
+// stable build, same 131072 bytes every time:
+//
+//	Pac-Man_1990Namco.gg    ->  160x144, Game Gear, plays
+//	Pac-Man_1990Namco.bin   ->  256x192, Master System, black screen
+//	iptv (via our relay)    ->  256x192, Master System, black screen
+//
+// So archive.org's own filename is NOT sufficient -- `.bin` is as wrong as no
+// extension at all, which is why fetching straight from the Archive does not on
+// its own fix this. The extension has to be corrected.
+func TestAGameGearROMIsNamedForTheMachineAndNotForTheArchive(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"gg_Pac-Man_1990Namco": itemJSON(t, map[string]any{
+			"identifier": "gg_Pac-Man_1990Namco", "title": "Pac-Man",
+			"mediatype": "software", "emulator": "gamegear", "emulator_ext": "bin",
+			"collection":             []string{"gamegear_library", "consolelivingroom"},
+			"access-restricted-item": "true",
+		}, []fakeFile{{"Pac-Man_1990Namco.bin", "131072"}}),
+	})
+
+	got := p.Resolve(context.Background(), "gg_Pac-Man_1990Namco")
+	if got.Route != routeEmulatorJS || got.ROM == nil {
+		t.Fatalf("route=%q rom=%+v", got.Route, got.ROM)
+	}
+	if got.Core != "segaGG" {
+		t.Fatalf("core=%q, want segaGG", got.Core)
+	}
+	// The Archive's own name is kept, because that is what the file is called
+	// where it lives and what a person is shown.
+	if got.ROM.Name != "Pac-Man_1990Namco.bin" {
+		t.Errorf("name=%q, want the Archive's own basename", got.ROM.Name)
+	}
+	// The emulator's name is not, because `.bin` boots a Master System.
+	if got.ROM.File != "Pac-Man_1990Namco.gg" {
+		t.Errorf("file=%q; genesis_plus_gx picks the machine from this extension, "+
+			"and .bin means Master System", got.ROM.File)
+	}
+}
+
+// The other half of the same rule: a machine whose core can identify it from
+// the bytes must keep the Archive's own name. Overriding everything would be a
+// second table to drift, and would overrule the source where it was already
+// right -- fceumm reads the iNES header and does not care what the file is
+// called (measured: 256x224 with and without an extension).
+func TestACoreThatKnowsItsOwnROMKeepsTheArchivesFilename(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"pacman_nes_2": itemJSON(t, map[string]any{
+			"identifier": "pacman_nes_2", "emulator": "nes", "emulator_ext": "nes",
+			"collection": []string{"consolelivingroom"},
+		}, []fakeFile{{"pacman.nes", "24592"}}),
+	})
+
+	got := p.Resolve(context.Background(), "pacman_nes_2")
+	if got.ROM == nil {
+		t.Fatal("no ROM")
+	}
+	if got.ROM.File != got.ROM.Name || got.ROM.File != "pacman.nes" {
+		t.Errorf("file=%q name=%q; nothing should be renamed here",
+			got.ROM.File, got.ROM.Name)
+	}
+}
+
+// The table may only name systems EmulatorJS actually has, for the same reason
+// the core map may only name published cores: a plausible-looking value that
+// does not exist browses fine and fails on the button press.
+func TestEveryRenamedSystemIsARealEmulatorJSSystem(t *testing.T) {
+	for system, ext := range coreROMExtensions {
+		if _, ok := emulatorJSSystems[system]; !ok {
+			t.Errorf("coreROMExtensions names %q, which is not an EmulatorJS system", system)
+		}
+		if ext == "" || strings.HasPrefix(ext, ".") {
+			t.Errorf("%s: extension %q should be bare, with no leading dot", system, ext)
+		}
+	}
+	// The machine the bug was about, spelled out so a well-meaning tidy-up
+	// cannot quietly drop it.
+	if coreROMExtensions["segaGG"] != "gg" {
+		t.Error("Game Gear must be renamed to .gg; .bin boots a Master System")
+	}
+}
+
+// The name this endpoint promises has to be the name the core receives.
+// EmulatorJS strips a fixed set of punctuation out of a game name before using
+// it as a filename, and a name that came back empty on the other side would be
+// written as "game" -- with no extension, which is the failure being fixed.
+func TestTheEmulatorFilenameSurvivesEmulatorJSsOwnSanitiser(t *testing.T) {
+	for _, tc := range []struct {
+		base, core, want string
+	}{
+		{"Pac-Man_1990Namco.bin", "segaGG", "Pac-Man_1990Namco.gg"},
+		{"Dr._Robotnik_s_Mean_Bean_Machine.bin", "segaGG", "Dr._Robotnik_s_Mean_Bean_Machine.gg"},
+		{"Golden_Axe_1989_Sega.bin", "segaMS", "Golden_Axe_1989_Sega.sms"},
+		// Already right: replaced with itself rather than doubled up.
+		{"Sonic.gg", "segaGG", "Sonic.gg"},
+		// No extension to replace -- one is added rather than the stem eaten.
+		{"sonic", "segaGG", "sonic.gg"},
+		// A name made entirely of characters EmulatorJS strips. It must not
+		// come out as a bare "game" with the extension lost.
+		{"?*'.bin", "segaGG", "game.gg"},
+		// A core with nothing to correct keeps the name, sanitiser and all.
+		{"pacman.nes", "nes", "pacman.nes"},
+		{"weird'name.nes", "nes", "weirdname.nes"},
+	} {
+		if got := emulatorFileName(tc.base, tc.core); got != tc.want {
+			t.Errorf("emulatorFileName(%q, %q) = %q, want %q", tc.base, tc.core, got, tc.want)
+		}
+	}
+	// Whatever comes out must contain none of the characters EmulatorJS removes,
+	// or the promise and the delivery differ by definition.
+	for _, base := range []string{"a#b$c%d.bin", "x&y'z.bin", "{}|^.bin"} {
+		got := emulatorFileName(base, "segaGG")
+		if strings.ContainsAny(got, emulatorNameStrip) {
+			t.Errorf("emulatorFileName(%q) = %q, which EmulatorJS would still rewrite", base, got)
+		}
+	}
+}
+
+// WHERE THE BYTES COME FROM. archive.org's /cors/ endpoint is the supported
+// cross-origin path -- it is what their own Emularity player fetches a ROM with
+// -- and unlike /download/ it answers with an Access-Control-Allow-Origin, so a
+// WASM emulator in the visitor's browser can read it directly.
+//
+// Measured 2026-08-09 across 287 live items on seven systems (Game Gear, NES,
+// SNES, Atari 2600, Game Boy Color, Genesis, Master System): 287/287 answered
+// 200 with `Access-Control-Allow-Origin: https://yarrit.com` and a
+// Content-Length equal to the size the metadata declared. Over the same items
+// our own relay answered 200 for 286 and 500 for one, and never the same item
+// twice -- which is why the relay stays as the fallback rather than the path.
+func TestTheROMIsOfferedFromTheArchivesOwnCORSEndpointFirst(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"pacman_nes_2": itemJSON(t, map[string]any{
+			"identifier": "pacman_nes_2", "emulator": "nes", "emulator_ext": "nes",
+			"collection": []string{"consolelivingroom"},
+		}, []fakeFile{{"pacman.nes", "24592"}}),
+	})
+
+	got := p.Resolve(context.Background(), "pacman_nes_2")
+	if got.ROM == nil {
+		t.Fatal("no ROM")
+	}
+	if got.ROM.Fetch != "https://archive.org/cors/pacman_nes_2/pacman.nes" {
+		t.Errorf("fetch=%q, want the Archive's own cross-origin endpoint", got.ROM.Fetch)
+	}
+	// The relay is still offered, because /cors/ is one endpoint on one host and
+	// archive.org's storage nodes intermittently answer 5xx.
+	if !strings.HasPrefix(got.ROM.URL, "/bridge/iptv?u=") {
+		t.Errorf("url=%q; the relay must remain as the fallback", got.ROM.URL)
+	}
+}
+
+// THE STREAM-ONLY LINE, restated now that there are two byte paths.
+//
+// The Archive's marker says PLAY YES, DOWNLOAD NO. Fetching /cors/ in the
+// visitor's own browser IS the play: it is their browser talking to the
+// Archive's server with the Archive's own CORS grant, and it is what the
+// Archive's own player does. Relaying the same bytes through our host is the
+// act that would republish them, so preferring the direct fetch is if anything
+// the more careful of the two.
+//
+// What the marker forbids is a link to keep, and that is still refused.
+func TestAStreamOnlyItemMayBeFetchedToPlayButStillOffersNoDownload(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"gg_stream_only": itemJSON(t, map[string]any{
+			"identifier": "gg_stream_only", "emulator": "gamegear", "emulator_ext": "bin",
+			"collection":             []string{"gamegear_library", "stream_only"},
+			"access-restricted-item": "true",
+		}, []fakeFile{{"Game.bin", "131072"}}),
+	})
+
+	got := p.Resolve(context.Background(), "gg_stream_only")
+	if got.ROM == nil || !got.StreamOnly {
+		t.Fatalf("rom=%+v streamOnly=%v", got.ROM, got.StreamOnly)
+	}
+	if got.ROM.Fetch == "" {
+		t.Error("a stream-only item still has to be fetchable, or it cannot be played at all")
+	}
+	if got.ROM.Direct != "" {
+		t.Errorf("direct=%q; the download link is the thing the marker refuses", got.ROM.Direct)
+	}
+	// And the fix still applies to it -- these are the items the bug was about.
+	if got.ROM.File != "Game.gg" {
+		t.Errorf("file=%q, want Game.gg", got.ROM.File)
+	}
+}
+
 // The negative that matters most in volume: 96% of Game Gear items, 89% of
 // Master System, 88% of ColecoVision and 95% of PlayStation are stream-only.
 // Every one of those is a Play button the shipped code offers and cannot honour.

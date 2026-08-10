@@ -118,13 +118,27 @@ function fakeDocument() {
   return { body: fakeElement('BODY'), createElement: (tag) => fakeElement(tag.toUpperCase()) };
 }
 
+// The player fetches the ROM itself before booting, so that the name the core
+// sees is ours to set rather than whatever the URL happened to end in. A boot in
+// a test therefore needs bytes to boot on, and the right NUMBER of them: a
+// length that disagrees with the verdict is treated as a failed fetch, which is
+// how a truncated body or an error page is caught.
+function romFetch(bytes) {
+  return async () => ({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => new ArrayBuffer(bytes),
+  });
+}
+
 // A WASM emulator needs a real user gesture before the browser will let it run,
-// so mountEmulator hangs the boot off a click. Press it the way a person would.
-function boot(playable) {
+// so mountEmulator hangs the boot off a click. Press it the way a person would,
+// and wait: the click handler fetches the ROM before there is an emulator.
+async function boot(playable) {
   const host = fakeElement('DIV');
   playable.mount(host);
   const [button] = host.children;
-  for (const fn of button.listeners.click ?? []) fn();
+  for (const fn of button.listeners.click ?? []) await fn();
   return host;
 }
 
@@ -198,9 +212,11 @@ test('normaliseBios refuses anything that is not an offer', () => {
 
 // --- what the emulator is handed ---------------------------------------------
 
-test('the emulator is pointed at the library copy when this browser holds nothing', () => {
+test('the emulator is pointed at the library copy when this browser holds nothing', async () => {
   const doc = fakeDocument();
-  boot(toPlayable(normalise(libraryBios), { doc, route: ROUTE.EMULATORJS }));
+  await boot(toPlayable(normalise(libraryBios), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: romFetch(16384),
+  }));
   assert.equal(globalThis.EJS_biosUrl, '/api/play/bios/library/coleco/coleco.rom');
 });
 
@@ -208,10 +224,11 @@ test('the emulator is pointed at the library copy when this browser holds nothin
 // a specific Kickstart revision because the game they want needs it has said
 // something, and quietly running the library's copy instead would be overruling
 // them about their own machine.
-test('a file this browser holds beats the library copy', () => {
+test('a file this browser holds beats the library copy', async () => {
   const doc = fakeDocument();
-  boot(toPlayable(normalise(libraryBios), {
+  await boot(toPlayable(normalise(libraryBios), {
     doc, route: ROUTE.EMULATORJS, biosUrl: 'blob:the-one-they-chose',
+    fetchImpl: romFetch(16384),
   }));
   assert.equal(globalThis.EJS_biosUrl, 'blob:the-one-they-chose');
 });
@@ -219,12 +236,16 @@ test('a file this browser holds beats the library copy', () => {
 // EJS_biosUrl is a GLOBAL and outlives the game that set it. A library BIOS left
 // behind would be handed to the next game, and a Kickstart ROM fed to an NES core
 // is a black screen with no error anywhere.
-test('the library firmware is cleared before the next game', () => {
+test('the library firmware is cleared before the next game', async () => {
   const doc = fakeDocument();
-  boot(toPlayable(normalise(libraryBios), { doc, route: ROUTE.EMULATORJS }));
+  await boot(toPlayable(normalise(libraryBios), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: romFetch(16384),
+  }));
   assert.equal(globalThis.EJS_biosUrl, '/api/play/bios/library/coleco/coleco.rom');
 
-  boot(toPlayable(normalise(nesNoFirmware), { doc, route: ROUTE.EMULATORJS }));
+  await boot(toPlayable(normalise(nesNoFirmware), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: romFetch(24592),
+  }));
   assert.equal(globalThis.EJS_biosUrl, '');
 });
 
@@ -247,7 +268,7 @@ test('the firmware URL ends in a name the core actually looks for', () => {
 // A server that has never heard of any of this -- an older build, a household
 // with no library, a library that is down -- must produce exactly what it
 // produced before, which is the offer to supply a file by hand.
-test('with no library anywhere the answer is the refusal it always was', () => {
+test('with no library anywhere the answer is the refusal it always was', async () => {
   const verdict = normalise(noFirmwareAnywhere);
   assert.equal(verdict.route, ROUTE.ARCHIVE);
   assert.equal(verdict.playable, true);
@@ -257,6 +278,8 @@ test('with no library anywhere the answer is the refusal it always was', () => {
 
   // And nothing is handed to the emulator, because there is nothing to hand it.
   const doc = fakeDocument();
-  boot(toPlayable(normalise(nesNoFirmware), { doc, route: ROUTE.EMULATORJS }));
+  await boot(toPlayable(normalise(nesNoFirmware), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: romFetch(24592),
+  }));
   assert.equal(globalThis.EJS_biosUrl, '');
 });

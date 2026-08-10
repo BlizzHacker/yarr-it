@@ -105,17 +105,119 @@ import (
 // must fail fast: an Archive that is slow costs a Play button, not a page.
 const playMetadataTimeout = 12 * time.Second
 
-// The largest ROM worth relaying, matching MAX_RELAY_ROM in
-// web/src/resolvers/archive.js. archive.org sends no Access-Control-Allow-Origin
-// on downloads and a WASM emulator fetches the ROM itself, so every byte crosses
-// our relay -- whose monthly allowance is shared with a mail server. Cartridge
-// games are kilobytes to a few megabytes; anything past this is a disc image,
-// which their own player streams and ours would have to pull in full.
+// The largest ROM worth carrying for one game, matching MAX_RELAY_ROM in
+// web/src/resolvers/archive.js. Cartridge games are kilobytes to a few
+// megabytes; anything past this is a disc image, which their own player streams
+// and ours would have to pull in full.
+//
+// This used to be justified purely by our relay's monthly allowance, which is
+// shared with a mail server. That is now only HALF true: the ROM is normally
+// fetched by the visitor's own browser straight from archive.org (see
+// ROM.Fetch), so those bytes cost us nothing. The ceiling stays because the
+// relay is still the fallback when that fetch fails, and because a WASM
+// emulator holds the whole ROM in memory either way -- but the reason is now
+// "what a browser tab will hold" rather than "what we can afford". Whether it
+// can be raised for the direct path is a real question and a separate one: it
+// would change which items get a Play button on every system at once.
 //
 // It is enforced HERE as well as in the browser on purpose. Enforced only in the
 // browser it is a message shown after the click, which is the dead button this
 // file exists to remove.
 const maxRelayROMBytes = 48 << 20
+
+// --- what the emulator must call the file -----------------------------------
+
+// coreROMExtensions is the extension a core needs on the ROM in order to know
+// WHICH MACHINE it is looking at. It is empty for almost every core, and that
+// is the point: this exists only where a core cannot work the machine out from
+// the bytes.
+//
+// This is not a stylistic nicety. EmulatorJS writes the ROM into the core's
+// filesystem under a name it derives from the URL, and hands the core that
+// path; libretro cores that serve several machines read the extension to pick
+// between them. Measured against the live site and cdn.emulatorjs.org's own
+// stable build on 2026-08-09, booting one Game Gear ROM (gg_Pac-Man_1990Namco,
+// 131072 bytes, unchanged in every case) under different names:
+//
+//	name handed to genesis_plus_gx     video output     machine chosen
+//	Pac-Man_1990Namco.gg               160x144          Game Gear   (right)
+//	Pac-Man_1990Namco.bin              256x192          Master System
+//	iptv            (no extension)     256x192          Master System
+//
+// 160x144 is the Game Gear's screen and 256x192 is the Master System's, so the
+// last two are not a cosmetic difference: the core is emulating the wrong
+// console. On screen it is a black picture that reports itself as running --
+// `started` is true, frames advance at 60/s, and nothing anywhere says no.
+//
+// Game Gear is the machine this actually bites, and the reason is specific:
+// a Game Gear cartridge carries the same "TMR SEGA" header a Master System one
+// does, so genesis_plus_gx CANNOT tell them apart from content and falls back to
+// Master System. Everything else was measured to survive with no extension at
+// all -- Mega Drive is recognised from its own header (320x224 either way), NES
+// from the iNES header, SNES and Atari 2600 likewise -- so nothing else is
+// listed here and nothing else is overridden.
+//
+// Master System IS listed even though it currently works, because it works by
+// ACCIDENT: it happens to be the fallback the core picks when it cannot tell.
+// Naming it costs nothing, was measured to behave identically (256x192), and
+// means the one machine that survives on a default no longer depends on it.
+//
+// The extension is REPLACED rather than appended, because archive.org names
+// both Game Gear and Mega Drive payloads `.bin` -- so preserving the Archive's
+// own filename, which is what fetching straight from them does, is not enough
+// on its own. This is the one place the Archive is overruled about its own
+// item, and it is overruled about the NAME only; the bytes are theirs.
+var coreROMExtensions = map[string]string{
+	"segaGG": "gg",
+	"segaMS": "sms",
+}
+
+// emulatorFileName is what the player must call the ROM when it hands it to the
+// core. Almost always the Archive's own basename; different only for the cores
+// above, and only in the extension.
+//
+// The result is also forced to survive EmulatorJS's own sanitiser, which strips
+// a fixed set of punctuation out of the name before writing the file. A name
+// that came back empty on the other side would be written as "game" with no
+// extension, which is the exact failure this function exists to prevent -- so
+// the name promised here is a name that arrives intact.
+func emulatorFileName(base, core string) string {
+	ext, needs := coreROMExtensions[core]
+	if !needs {
+		if cleaned := stripEmulatorName(base); cleaned != "" && cleaned != "." {
+			return cleaned
+		}
+		return "game"
+	}
+	stem := base
+	if i := strings.LastIndex(base, "."); i > 0 {
+		stem = base[:i]
+	}
+	// The STEM is what has to survive, and it is checked on its own. Sanitising
+	// the assembled name instead lets a stem of pure punctuation collapse and
+	// leaves a bare ".gg" -- a file whose whole name is an extension, which is
+	// not the name this promised.
+	stem = stripEmulatorName(stem)
+	if stem == "" || stem == "." {
+		stem = "game"
+	}
+	return stem + "." + ext
+}
+
+// emulatorNameStrip is the character class EmulatorJS removes from a game name
+// before using it as a filename, copied from `getBaseFileName` in its stable
+// emulator.min.js (read 2026-08-09). Applied here so that what this endpoint
+// promises and what the core receives are the same string.
+const emulatorNameStrip = "#<$+%>!`&*'|{}/\\?\"=@:^\r\n"
+
+func stripEmulatorName(name string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if strings.ContainsRune(emulatorNameStrip, r) {
+			return -1
+		}
+		return r
+	}, name))
+}
 
 // --- the vocabulary --------------------------------------------------------
 
@@ -417,15 +519,45 @@ type playReason struct {
 
 // playROM is the file, and only ever appears when it is actually fetchable.
 type playROM struct {
+	// Name is the Archive's own basename, for showing a person.
 	Name string `json:"name"`
-	// URL is what the player loads: the relay, because archive.org sends no
-	// Access-Control-Allow-Origin on downloads and a WASM emulator fetches the
-	// ROM itself.
+	// File is what the ROM must be CALLED when it is handed to the emulator,
+	// which is not always what the Archive calls it. For most machines the two
+	// are the same string; for the machines in coreROMExtensions the extension
+	// is the only thing telling the core which console it is emulating, and
+	// getting it wrong boots a different machine that reports itself as running.
+	// See emulatorFileName -- this field is the whole reason it exists.
+	File string `json:"file"`
+	// Fetch is where the BROWSER should get the bytes: archive.org's own
+	// cross-origin endpoint. It is the supported path for exactly this -- their
+	// own Emularity player uses it -- and unlike /download/ it answers with an
+	// Access-Control-Allow-Origin, so a WASM emulator can fetch it directly and
+	// no byte crosses our relay.
+	//
+	// Present for stream-only items too, and deliberately. The Archive's marker
+	// says PLAY YES, DOWNLOAD NO; this is the play, performed by the visitor's
+	// own browser against the Archive's own server with the Archive's own CORS
+	// grant. Relaying the same bytes through our host is the act that would
+	// republish them, so preferring this is if anything the more careful of the
+	// two. What the marker forbids -- publishing a link to keep -- is still
+	// refused, one field down.
+	Fetch string `json:"fetch,omitempty"`
+	// URL is the fallback: the same file through our own relay. Kept because
+	// Fetch depends on one endpoint on one host staying up and CORS-enabled,
+	// and because archive.org's storage nodes intermittently answer 5xx --
+	// measured, roughly one request in a hundred and never the same item twice.
+	// A client that checks the bytes it got and falls back here turns that into
+	// a slower load instead of a dead game.
 	URL string `json:"url"`
-	// Direct is the same file at archive.org, so a caller that is not a browser
-	// (a native client, a test) can skip the relay and cost us nothing. EMPTY
-	// for an item the Archive marks stream-only: playing it is permitted and
-	// handing somebody the file is what is not.
+	// Direct is the same file at archive.org's /download/ endpoint, so a caller
+	// that is not a browser (a native client, a test) can skip the relay and
+	// cost us nothing. EMPTY for an item the Archive marks stream-only: playing
+	// it is permitted and handing somebody the file is what is not.
+	//
+	// This is NOT the field a player fetches -- that is Fetch, above -- and the
+	// distinction is the point. Direct is an invitation to keep a copy;
+	// withholding it is how the stream-only marker is honoured, and that has not
+	// changed.
 	Direct    string `json:"direct,omitempty"`
 	SizeBytes int64  `json:"sizeBytes"`
 }
@@ -710,6 +842,7 @@ type playArchive struct {
 	// point it at a local server; there is no other reason to change it.
 	metadataBase string
 	downloadBase string
+	corsBase     string
 	embedBase    string
 
 	// firmware is the household's own library, if it has one. nil is a
@@ -742,7 +875,11 @@ func newPlayArchive(client *http.Client) *playArchive {
 		client:       client,
 		metadataBase: "https://archive.org/metadata/",
 		downloadBase: "https://archive.org/download/",
-		embedBase:    "https://archive.org/embed/",
+		// The Archive's own cross-origin endpoint, which is what their Emularity
+		// player fetches a ROM with. Same bytes as /download/, but it answers
+		// with an Access-Control-Allow-Origin, so a browser may read it.
+		corsBase:  "https://archive.org/cors/",
+		embedBase: "https://archive.org/embed/",
 		// Both firmware sources are left nil here and wired in
 		// registerPlayRoutes. A constructor that reached the network by default
 		// would make every test that builds one reach the network too, and a
@@ -1118,7 +1255,8 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 		})
 	}
 
-	direct := p.downloadBase + url.PathEscape(id) + "/" + archiveFilePath(name)
+	escaped := url.PathEscape(id) + "/" + archiveFilePath(name)
+	direct := p.downloadBase + escaped
 	answer.StreamOnly = streamOnly
 	answer.Playable = true
 	answer.Route = routeEmulatorJS
@@ -1142,7 +1280,15 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 	}
 	answer.ROM = &playROM{
 		Name: path.Base(name),
-		URL:  "/bridge/iptv?u=" + url.QueryEscape(direct),
+		// What the core must see. Different from Name only where the extension
+		// is what picks the machine, and that difference is the whole fix: a
+		// Game Gear ROM called ".bin" boots as a Master System.
+		File: emulatorFileName(path.Base(name), plat.Core),
+		// Preferred: the visitor's own browser, straight from the Archive, with
+		// their CORS header. No byte of this crosses our relay.
+		Fetch: p.corsBase + escaped,
+		// Fallback, for when that fetch fails.
+		URL: "/bridge/iptv?u=" + url.QueryEscape(direct),
 		// Direct is the file at archive.org, for a caller that is not a browser
 		// and can skip our relay -- and it is WITHHELD for a stream-only item,
 		// because a direct link is exactly the download the Archive asks us not

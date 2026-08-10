@@ -213,18 +213,29 @@ test('our player is a canvas that boots on a real click, not on load', () => {
 
 // The core reaches EmulatorJS as EJS_core, and that is the value the whole
 // server-side table exists to get right. This is where it is finally spent.
-test('the core the server chose is the one EmulatorJS is configured with', () => {
+test('the core the server chose is the one EmulatorJS is configured with', async () => {
   const doc = fakeDocument();
-  const playable = toPlayable(normalise(nesVerdict), { doc });
+  const playable = toPlayable(normalise(nesVerdict), {
+    doc, fetchImpl: romFetch(nesVerdict.rom.sizeBytes),
+  });
   const el = fakeElement();
   playable.mount(el);
 
-  // The boot hangs off a real click, so drive it the way a person would.
-  el.children[0].listeners.click[0]();
+  // The boot hangs off a real click, so drive it the way a person would -- and
+  // wait, because the ROM is fetched before there is an emulator to hand it to.
+  await el.children[0].listeners.click[0]();
 
   assert.equal(globalThis.EJS_core, 'nes');
-  assert.equal(globalThis.EJS_gameUrl, nesVerdict.rom.url);
   assert.equal(globalThis.EJS_gameName, 'pacman.nes');
+  // The URL EmulatorJS is given is a blob: one, and that is the fix rather than
+  // an implementation detail. EmulatorJS names the file it writes into the
+  // core's filesystem after the URL it downloaded; through the relay that name
+  // was `iptv`, with no extension, for every ROM on the site. A blob: URL makes
+  // it use EJS_gameName instead, which is the name the server chose.
+  assert.ok(
+    String(globalThis.EJS_gameUrl).startsWith('blob:'),
+    `EJS_gameUrl is ${globalThis.EJS_gameUrl}; a URL-derived name is what broke the Game Gear`,
+  );
 });
 
 test('the ROM is loaded through the relay, because archive.org sends no CORS header', () => {
@@ -373,6 +384,22 @@ function fakeDocument() {
     body,
     createElement: (tag) => fakeElement(tag.toUpperCase()),
   };
+}
+
+/**
+ * The ROM the player now fetches for itself before booting.
+ *
+ * The byte COUNT matters: a length that disagrees with the verdict is treated
+ * as a failed fetch and the next source is tried. That is what catches an
+ * archive.org node answering 5xx with a short HTML body, which a WASM emulator
+ * would otherwise boot on and run nothing.
+ */
+function romFetch(bytes) {
+  return async () => ({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => new ArrayBuffer(bytes),
+  });
 }
 
 // --- the player switch -------------------------------------------------------
@@ -529,25 +556,29 @@ test('the guide and the BIOS offer survive normalisation', () => {
 
 // A WASM emulator needs a real user gesture before the browser will let it run,
 // so mountEmulator hangs the boot off a click. Press it the way a person would.
-function boot(playable) {
+async function boot(playable) {
   const host = fakeElement('DIV');
   playable.mount(host);
   const [button] = host.children;
-  for (const fn of button.listeners.click ?? []) fn();
+  // Awaited: the click handler fetches the ROM before there is an emulator.
+  for (const fn of button.listeners.click ?? []) await fn();
   return host;
 }
 
-test('a BIOS URL is handed to the emulator and nothing else is', () => {
+test('a BIOS URL is handed to the emulator and nothing else is', async () => {
   const doc = fakeDocument();
-  boot(toPlayable(normalise(nesVerdict), {
-    doc, route: ROUTE.EMULATORJS, biosUrl: 'blob:stored-locally',
+  const rom = romFetch(nesVerdict.rom.sizeBytes);
+  await boot(toPlayable(normalise(nesVerdict), {
+    doc, route: ROUTE.EMULATORJS, biosUrl: 'blob:stored-locally', fetchImpl: rom,
   }));
   assert.equal(globalThis.EJS_biosUrl, 'blob:stored-locally');
 
   // Globals persist between games, so a BIOS left set from the last one would
   // be handed to the next: a Kickstart ROM fed to an NES core is a black screen
   // with no error anywhere.
-  boot(toPlayable(normalise(nesVerdict), { doc, route: ROUTE.EMULATORJS }));
+  await boot(toPlayable(normalise(nesVerdict), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: rom,
+  }));
   assert.equal(globalThis.EJS_biosUrl, '');
 });
 
@@ -555,18 +586,193 @@ test('a BIOS URL is handed to the emulator and nothing else is', () => {
 // EmulatorJS for a threaded core without it loads a core that throws on
 // construction. Reading the platform's own answer means this is right whether or
 // not the isolation headers are ever deployed.
-test('threading is claimed only when the platform says the page is isolated', () => {
+test('threading is claimed only when the platform says the page is isolated', async () => {
   const doc = fakeDocument();
+  const rom = romFetch(nesVerdict.rom.sizeBytes);
   const before = globalThis.crossOriginIsolated;
   try {
     globalThis.crossOriginIsolated = false;
-    boot(toPlayable(normalise(nesVerdict), { doc, route: ROUTE.EMULATORJS }));
+    await boot(toPlayable(normalise(nesVerdict), {
+      doc, route: ROUTE.EMULATORJS, fetchImpl: rom,
+    }));
     assert.equal(globalThis.EJS_threads, false);
 
     globalThis.crossOriginIsolated = true;
-    boot(toPlayable(normalise(nesVerdict), { doc, route: ROUTE.EMULATORJS }));
+    await boot(toPlayable(normalise(nesVerdict), {
+      doc, route: ROUTE.EMULATORJS, fetchImpl: rom,
+    }));
     assert.equal(globalThis.EJS_threads, true);
   } finally {
     globalThis.crossOriginIsolated = before;
   }
+});
+
+// --- where the ROM comes from, and what it is called on arrival --------------
+
+import { fetchRom } from './resolvers/game.js';
+
+// A Game Gear verdict of the shape the server now returns. `name` is what the
+// Archive calls the file; `file` is what genesis_plus_gx has to see, and the
+// two differ for exactly the machines whose core cannot tell which console it
+// is looking at from the bytes.
+const gameGearVerdict = {
+  id: 'gg_Pac-Man_1990Namco',
+  title: 'Pac-Man',
+  emulator: 'gamegear',
+  platform: 'gamegear',
+  system: 'Game Gear',
+  playable: true,
+  route: 'emulatorjs',
+  core: 'segaGG',
+  coreFile: 'genesis_plus_gx',
+  rom: {
+    name: 'Pac-Man_1990Namco.bin',
+    file: 'Pac-Man_1990Namco.gg',
+    fetch: 'https://archive.org/cors/gg_Pac-Man_1990Namco/Pac-Man_1990Namco.bin',
+    url: '/bridge/iptv?u=https%3A%2F%2Farchive.org%2Fdownload%2Fgg_Pac-Man_1990Namco%2FPac-Man_1990Namco.bin',
+    sizeBytes: 131072,
+  },
+  embed: 'https://archive.org/embed/gg_Pac-Man_1990Namco',
+  touch: true,
+  streamOnly: true,
+};
+
+const bytes = (n) => ({ ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(n) });
+
+// THE BUG THIS WHOLE PATH IS ABOUT. EmulatorJS names the file it writes into the
+// core's filesystem after the URL it downloaded, and genesis_plus_gx reads that
+// extension to pick between the five machines it emulates. Measured: the same
+// Game Gear ROM called `.gg` runs at 160x144 and plays; called `.bin`, or called
+// `iptv` because it came through our relay, it runs at 256x192 as a Master
+// System and draws a black screen while reporting itself started.
+test('the core is told the name the machine needs, not the one the Archive uses', async () => {
+  const doc = fakeDocument();
+  await boot(toPlayable(normalise(gameGearVerdict), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: async () => bytes(131072),
+  }));
+  assert.equal(globalThis.EJS_gameName, 'Pac-Man_1990Namco.gg');
+  assert.equal(globalThis.EJS_core, 'segaGG');
+});
+
+// The button is for a person, so it says the name the item actually has.
+test('the button shows the Archive’s name even when the core is told another', () => {
+  const playable = toPlayable(normalise(gameGearVerdict), { doc: fakeDocument() });
+  const el = fakeElement();
+  playable.mount(el);
+  assert.match(el.children[0].textContent, /Pac-Man_1990Namco\.bin/);
+});
+
+// An older server sends neither `file` nor `fetch`. That must keep working and
+// must not start renaming things on its own -- a second copy of the machine
+// table here is the thing the server holds one for.
+test('a verdict with no file field falls back to the Archive’s own name', async () => {
+  const doc = fakeDocument();
+  await boot(toPlayable(normalise(nesVerdict), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: async () => bytes(24592),
+  }));
+  assert.equal(globalThis.EJS_gameName, 'pacman.nes');
+});
+
+test('the Archive’s own CORS endpoint is tried before our relay', async () => {
+  const asked = [];
+  await fetchRom(
+    [gameGearVerdict.rom.fetch, gameGearVerdict.rom.url],
+    { expectBytes: 131072, fetchImpl: async (u) => { asked.push(u); return bytes(131072); } },
+  );
+  assert.deepEqual(asked, [gameGearVerdict.rom.fetch]);
+  assert.ok(asked[0].startsWith('https://archive.org/cors/'), 'the free path should be first');
+});
+
+// Measured: archive.org's storage nodes answer 5xx for roughly one request in a
+// hundred, never twice for the same item. Falling back turns that from a dead
+// game into a slower one.
+test('a 5xx from the Archive falls through to the relay rather than failing', async () => {
+  const asked = [];
+  const buf = await fetchRom(
+    [gameGearVerdict.rom.fetch, gameGearVerdict.rom.url],
+    {
+      expectBytes: 131072,
+      fetchImpl: async (u) => {
+        asked.push(u);
+        return u.startsWith('https://') ? { ok: false, status: 503 } : bytes(131072);
+      },
+    },
+  );
+  assert.equal(buf.byteLength, 131072);
+  assert.equal(asked.length, 2);
+  assert.ok(asked[1].startsWith('/bridge/iptv'));
+});
+
+// THE SILENT ONE. A relay that passes an upstream error through returns a short
+// HTML body with a 200-shaped read; a WASM emulator handed 170 bytes of HTML
+// boots, reports itself started, and runs nothing. A length that disagrees with
+// the verdict is therefore a failed fetch, not a ROM.
+test('a body of the wrong length is refused instead of booted', async () => {
+  const asked = [];
+  const buf = await fetchRom(
+    [gameGearVerdict.rom.fetch, gameGearVerdict.rom.url],
+    {
+      expectBytes: 131072,
+      fetchImpl: async (u) => {
+        asked.push(u);
+        return u.startsWith('https://') ? bytes(170) : bytes(131072);
+      },
+    },
+  );
+  assert.equal(buf.byteLength, 131072);
+  assert.equal(asked.length, 2, 'the short body should not have been accepted');
+});
+
+test('an empty body is refused too', async () => {
+  await assert.rejects(
+    fetchRom(['/only'], { expectBytes: 0, fetchImpl: async () => bytes(0) }),
+    /could not be fetched/,
+  );
+});
+
+// When everything fails the message has to say what was tried, because "it did
+// not work" is not something anybody can act on.
+test('when no source yields the ROM the failure names what it tried', async () => {
+  await assert.rejects(
+    fetchRom(
+      ['https://archive.org/cors/x/y.bin', '/bridge/iptv?u=z'],
+      { expectBytes: 100, fetchImpl: async () => ({ ok: false, status: 503 }) },
+    ),
+    (error) => {
+      assert.equal(error.name, 'PlaybackError');
+      assert.match(error.message, /archive\.org/);
+      assert.match(error.message, /bridge/);
+      assert.match(error.message, /503/);
+      return true;
+    },
+  );
+});
+
+// A fetch that throws (offline, blocked, CORS refused) is a source that did not
+// work, not an exception that escapes the loop and kills the fallback.
+test('a throwing source is just another source that failed', async () => {
+  const buf = await fetchRom(
+    ['https://archive.org/cors/x/y.bin', '/bridge/iptv?u=z'],
+    {
+      expectBytes: 8,
+      fetchImpl: async (u) => {
+        if (u.startsWith('https://')) throw new TypeError('Failed to fetch');
+        return bytes(8);
+      },
+    },
+  );
+  assert.equal(buf.byteLength, 8);
+});
+
+// A failed fetch must SAY so. Booting an emulator with no ROM produces a black
+// screen that reports itself as running, which is the exact failure mode this
+// whole path exists to remove.
+test('a ROM that cannot be fetched leaves a message, not an empty emulator', async () => {
+  const doc = fakeDocument();
+  const before = globalThis.EJS_gameUrl;
+  const host = await boot(toPlayable(normalise(gameGearVerdict), {
+    doc, route: ROUTE.EMULATORJS, fetchImpl: async () => ({ ok: false, status: 503 }),
+  }));
+  assert.match(host.children[0].textContent, /could not be started/);
+  assert.equal(globalThis.EJS_gameUrl, before, 'no emulator should have been configured');
 });
