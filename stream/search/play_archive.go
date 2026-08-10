@@ -104,7 +104,14 @@ import (
 
 // How long the one metadata call gets. This endpoint paints a button, so it
 // must fail fast: an Archive that is slow costs a Play button, not a page.
-const playMetadataTimeout = 12 * time.Second
+// Generous on purpose, because it is now paid at most once per item per six
+// hours rather than on every request. The old 12 seconds was correct when
+// nothing was kept -- a slow Archive had to cost a button rather than a page --
+// but it is measurably shorter than archive.org's bad days (16 to 18 seconds
+// from this VPS tonight), which meant the deadline itself guaranteed that no
+// game could ever be started while they were struggling. A miss waits; every
+// hit after it is instant.
+const playMetadataTimeout = 25 * time.Second
 
 // The largest ROM worth carrying for one game, matching MAX_RELAY_ROM in
 // web/src/resolvers/archive.js. Cartridge games are kilobytes to a few
