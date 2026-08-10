@@ -125,6 +125,18 @@ export function viaRelay(url) {
  * Past this, paying to relay a ROM is not worth it. Cartridge-era games are
  * kilobytes to a few megabytes; anything larger is a disc image, which the
  * archive's own player streams and ours would have to download in full.
+ *
+ * THIS IS THE RELAY'S LIMIT AND ONLY THE RELAY'S, which is why it is still 48
+ * MiB when play.js now runs 426 MiB PlayStation discs. Everything in THIS file
+ * goes through viaRelay() below -- every byte is ours to pay for -- so the old
+ * ceiling is exactly right for it.
+ *
+ * The main path no longer works this way. `/api/play/archive` sends the browser
+ * to archive.org's own cross-origin endpoint, so those bytes cost nothing and
+ * the ceiling there is what a TAB will hold rather than what we can afford:
+ * maxDirectROMBytes in play_archive.go, 512 MiB, with maxRelayROMBytes kept at
+ * this same 48 MiB for the fallback. Two numbers, because there are two byte
+ * paths; this file only ever had the expensive one.
  */
 export const MAX_RELAY_ROM = 48 << 20;
 

@@ -776,3 +776,160 @@ test('a ROM that cannot be fetched leaves a message, not an empty emulator', asy
   assert.match(host.children[0].textContent, /could not be started/);
   assert.equal(globalThis.EJS_gameUrl, before, 'no emulator should have been configured');
 });
+
+// --- what THIS device can hold ------------------------------------------------
+
+import {
+  deviceMemoryGiB, romBudgetBytes, romFitsDevice, bytesLabel,
+  RAM_MULTIPLE_PER_ROM, LOW_END_DEVICE_GIB,
+} from './play.js';
+
+/**
+ * The third device fact, alongside touch and cross-origin isolation.
+ *
+ * play_archive.go stops at 512 MiB because that is what SOME browser might hold.
+ * Whether THIS browser holds it is a fact about the handset, and the same 426 MiB
+ * PlayStation disc is a good game on a laptop and a killed tab on a phone. The
+ * rule below is measured rather than guessed -- the ROM is resident three times
+ * over while it plays, so a device needs roughly sixteen times the file in RAM.
+ *
+ * The assertions come in pairs for the reason the top of this file gives: one
+ * that says yes and one that says no, because a check that only ever allowed
+ * would pass every "does it play" test and none of the ones that matter.
+ */
+
+/** A 426 MiB PlayStation disc, the size this whole change is about. */
+const discVerdict = {
+  ...nesVerdict,
+  id: 'psx_kasparov',
+  emulator: 'psx',
+  platform: 'psx',
+  system: 'PlayStation',
+  core: 'psx',
+  coreFile: 'pcsx_rearmed',
+  rom: {
+    name: 'playstationdisc.chd',
+    file: 'playstationdisc.chd',
+    fetch: 'https://archive.org/cors/psx_kasparov/playstationdisc.chd',
+    url: '',
+    sizeBytes: 446954699,
+  },
+  embed: 'https://archive.org/embed/psx_kasparov',
+};
+
+test('a device that did not say is treated as unknown, never as small', () => {
+  assert.equal(deviceMemoryGiB({}), 0);
+  assert.equal(deviceMemoryGiB({ deviceMemory: 0 }), 0);
+  assert.equal(deviceMemoryGiB(undefined), 0);
+  assert.equal(romBudgetBytes(0), Infinity,
+    'refusing on a missing field would take Play off every desktop Safari');
+  assert.equal(romFitsDevice(discVerdict, 0), true);
+});
+
+test('the budget is the measured multiple of what the device reports', () => {
+  assert.equal(romBudgetBytes(8), Math.floor((8 * 1024 ** 3) / RAM_MULTIPLE_PER_ROM));
+  assert.equal(romBudgetBytes(LOW_END_DEVICE_GIB), 256 * 1024 * 1024,
+    'a 4 GiB phone holds every cartridge ever made and no disc at all');
+});
+
+test('a 426 MiB disc plays on a laptop and is refused on a phone', () => {
+  assert.equal(romFitsDevice(discVerdict, 8), true, '8 GiB holds a PlayStation disc');
+  assert.equal(romFitsDevice(discVerdict, 4), false, '4 GiB does not');
+
+  const [oursBig] = playerOptions(normalise(discVerdict), { memoryGiB: 8 });
+  assert.equal(oursBig.available, true);
+
+  const [oursSmall, theirsSmall] = playerOptions(normalise(discVerdict), { memoryGiB: 4 });
+  assert.equal(oursSmall.available, false);
+  assert.match(oursSmall.why, /426\.2 MiB/, 'the refusal names the size');
+  assert.match(oursSmall.why, /this device/, 'and blames the device, not the game');
+  assert.equal(theirsSmall.available, true,
+    'the Archive streams it, which is a real fallback and not a consolation prize');
+});
+
+test('a phone is sent to the Archive rather than shown a button that dies', () => {
+  const verdict = normalise(discVerdict);
+  assert.equal(choosePlayer(verdict, '', { memoryGiB: 4 }), ROUTE.ARCHIVE);
+  assert.equal(choosePlayer(verdict, '', { memoryGiB: 8 }), ROUTE.EMULATORJS);
+
+  // And the remembered preference cannot override a device fact: a viewer who
+  // once chose our player does not thereby gain memory.
+  assert.equal(choosePlayer(verdict, ROUTE.EMULATORJS, { memoryGiB: 4 }), ROUTE.ARCHIVE);
+  assert.equal(canSwitchPlayer(verdict, { memoryGiB: 4 }), false);
+  assert.match(solePlayerSentence(verdict, { memoryGiB: 4 }), /Internet Archive player only/);
+});
+
+test('the label follows the switch, and warns where nothing can be known', () => {
+  const verdict = normalise(discVerdict);
+
+  const onPhone = playLabel(verdict, { memoryGiB: 4 });
+  assert.equal(onPhone.label, 'Play at the Internet Archive',
+    'a button that cannot deliver must not say "Play"');
+
+  const onLaptop = playLabel(verdict, { memoryGiB: 8 });
+  assert.equal(onLaptop.label, 'Play');
+  assert.equal(onLaptop.caveat, '', 'a device that answered needs no warning');
+
+  // OFFER IT BUT WARN: Safari and Firefox report nothing, so there is no fact to
+  // refuse on and the size is said out loud instead.
+  const unknown = playLabel(verdict, { memoryGiB: 0 });
+  assert.equal(unknown.label, 'Play');
+  assert.match(unknown.caveat, /426\.2 MiB/);
+  assert.match(unknown.caveat, /phone/);
+
+  // A cartridge is never warned about on any device.
+  assert.equal(playLabel(normalise(nesVerdict), { memoryGiB: 0 }).caveat, '');
+});
+
+test('toPlayable refuses the route the device cannot run', () => {
+  const verdict = normalise(discVerdict);
+  assert.throws(
+    () => toPlayable(verdict, { route: ROUTE.EMULATORJS, memoryGiB: 4 }),
+    /more than this device/,
+    'the switch may not be used to hand-build the dead button',
+  );
+  const ok = toPlayable(verdict, { route: ROUTE.ARCHIVE, memoryGiB: 4 });
+  assert.equal(ok.render, RENDER.EMBED);
+});
+
+test('sizes read like a sentence, the way the server writes them', () => {
+  assert.equal(bytesLabel(512), '512 B');
+  assert.equal(bytesLabel(24592), '24.0 KiB');
+  assert.equal(bytesLabel(50331648), '48.0 MiB');
+  assert.equal(bytesLabel(446954699), '426.2 MiB');
+  assert.equal(bytesLabel(536870912), '512.0 MiB');
+});
+
+// --- the relay is a fallback now, not the path --------------------------------
+
+/**
+ * The server withholds `rom.url` for anything past what it can afford to relay.
+ * A verdict with only `fetch` is therefore NORMAL for a disc, and treating it as
+ * broken would refuse every large game the change exists to allow.
+ */
+test('a ROM with only the direct path is playable, with one source', async () => {
+  const verdict = normalise(discVerdict);
+  assert.ok(verdict.rom, 'a fetch-only ROM survives normalise');
+  assert.equal(verdict.route, ROUTE.EMULATORJS);
+
+  const asked = [];
+  const doc = fakeDocument();
+  await boot(toPlayable(verdict, {
+    doc,
+    route: ROUTE.EMULATORJS,
+    memoryGiB: 8,
+    fetchImpl: async (u) => {
+      asked.push(u);
+      return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(446954699) };
+    },
+  }));
+  assert.deepEqual(asked, [discVerdict.rom.fetch],
+    'no relay is tried, because none was offered');
+});
+
+test('a device refusal is explained, not silently rerouted', () => {
+  const { label, hint } = playLabel(normalise(discVerdict), { memoryGiB: 4 });
+  assert.equal(label, 'Play at the Internet Archive');
+  assert.match(hint, /426\.2 MiB/,
+    'the server said nothing here, so the device sentence is the only true one');
+});

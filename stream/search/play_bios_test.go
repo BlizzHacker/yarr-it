@@ -427,14 +427,19 @@ func TestAMachineWithNoFirmwareAnywhereIsStillRefused(t *testing.T) {
 }
 
 // EQUIVALENCE, in the direction that matters. Firmware answers exactly one
-// question. Every other check still runs, and a PlayStation disc image is still
-// hundreds of megabytes past what this relay carries.
-func TestLibraryFirmwareDoesNotMakeADiscImagePlayable(t *testing.T) {
+// question, and every other check still runs -- so a ROM past what any browser
+// will hold is still refused no matter whose BIOS is available.
+//
+// The SIZE in this test changed and the INTENTION did not. It used to use a real
+// 426 MiB PlayStation disc, because 426 MiB was past the ceiling; that disc now
+// plays (see below), so proving "firmware is not a skeleton key" needs a file
+// that is genuinely too large rather than one that merely used to be.
+func TestLibraryFirmwareDoesNotLiftTheBrowserCeiling(t *testing.T) {
 	p := fakeArchive(t, map[string]string{
-		"psx_big": itemJSON(t, map[string]any{
-			"identifier": "psx_big", "emulator": "psx", "emulator_ext": "chd",
+		"psx_vast": itemJSON(t, map[string]any{
+			"identifier": "psx_vast", "emulator": "psx", "emulator_ext": "chd",
 			"collection": []string{"x"},
-		}, []fakeFile{{"game.chd", "446676992"}}),
+		}, []fakeFile{{"game.chd", "805306368"}}), // 768 MiB, past maxDirectROMBytes
 	})
 	p.firmware = &fakeLibrary{
 		held: map[string]libraryFirmware{
@@ -442,10 +447,10 @@ func TestLibraryFirmwareDoesNotMakeADiscImagePlayable(t *testing.T) {
 		},
 	}
 
-	got := p.Resolve(context.Background(), "psx_big")
+	got := p.Resolve(context.Background(), "psx_vast")
 	if got.Route != routeArchive {
-		t.Fatalf("route=%q; 426 MiB is past the relay ceiling whatever firmware exists",
-			got.Route)
+		t.Fatalf("route=%q; 768 MiB is past what a browser tab holds, whatever "+
+			"firmware exists", got.Route)
 	}
 	if !hasReason(got, reasonTooLarge) {
 		t.Errorf("reasons=%v, want too_large -- the firmware question is answered, "+
@@ -453,6 +458,75 @@ func TestLibraryFirmwareDoesNotMakeADiscImagePlayable(t *testing.T) {
 	}
 	if got.ROM != nil {
 		t.Error("an archive route must not carry a ROM")
+	}
+}
+
+// AND THE OTHER HALF OF THE SAME RULE, which is the reason this work happened:
+// a real PlayStation disc, with firmware available, now plays in our own player.
+//
+// psx_kasparov's 426 MiB .chd was refused `too_large` under the single 48 MiB
+// ceiling -- a limit that existed because every byte used to cross our relay.
+// The bytes now come from archive.org's own cross-origin endpoint straight to
+// the visitor's browser, so the only remaining questions are firmware (answered)
+// and whether a tab will hold it (it will, measured).
+func TestARealPlayStationDiscPlaysHereWithFirmware(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"psx_kasparov": itemJSON(t, map[string]any{
+			"identifier": "psx_kasparov", "emulator": "psx", "emulator_ext": "chd",
+			"collection": []string{"consolelivingroom"},
+		}, []fakeFile{{"playstationdisc.chd", "446954699"}}), // 426.2 MiB
+	})
+	p.firmware = &fakeLibrary{
+		held: map[string]libraryFirmware{
+			"psx": {Core: "psx", Name: "scph5500.bin", ID: 6, Size: 524288},
+		},
+	}
+
+	got := p.Resolve(context.Background(), "psx_kasparov")
+	if got.Route != routeEmulatorJS {
+		t.Fatalf("route=%q reasons=%v; a 426 MiB disc with firmware plays here now",
+			got.Route, reasonCodes(got))
+	}
+	if got.Core != "psx" {
+		t.Errorf("core=%q, want psx", got.Core)
+	}
+	if got.ROM == nil || got.ROM.Fetch == "" {
+		t.Fatalf("rom=%+v; the direct cross-origin fetch is what makes this possible", got.ROM)
+	}
+	// No fallback, and that is deliberate: 426 MiB through the bridge is exactly
+	// the bill this project cannot pick up.
+	if got.ROM.URL != "" {
+		t.Errorf("rom.url=%q; the relay must not carry a disc image", got.ROM.URL)
+	}
+	if got.BiosNeeded == nil || got.BiosNeeded.Source != biosSourceLibrary {
+		t.Errorf("bios=%+v; the library's copy should be named on the way out", got.BiosNeeded)
+	}
+}
+
+// The same disc with NOBODY's firmware still plays, because pcsx_rearmed carries
+// its own high-level BIOS emulation and builtInFirmware switches it on. This is
+// the path a visitor who has supplied nothing actually takes, so it is the one
+// that decides whether PlayStation is really unlocked or only unlocked for
+// people with a library.
+func TestAPlayStationDiscPlaysForAVisitorWhoSuppliedNothing(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"psx_kasparov": itemJSON(t, map[string]any{
+			"identifier": "psx_kasparov", "emulator": "psx", "emulator_ext": "chd",
+			"collection": []string{"consolelivingroom"},
+		}, []fakeFile{{"playstationdisc.chd", "446954699"}}),
+	})
+
+	got := p.Resolve(context.Background(), "psx_kasparov")
+	if got.Route != routeEmulatorJS {
+		t.Fatalf("route=%q reasons=%v; pcsx_rearmed's HLE BIOS needs no file from anyone",
+			got.Route, reasonCodes(got))
+	}
+	if got.BiosNeeded == nil || got.BiosNeeded.Source != biosSourceBuiltIn {
+		t.Fatalf("bios=%+v, want the built-in replacement", got.BiosNeeded)
+	}
+	if got.BiosNeeded.Options["pcsx_rearmed_bios"] != "HLE" {
+		t.Errorf("options=%v; without this core option the core looks for firmware "+
+			"that is not there and refuses to boot", got.BiosNeeded.Options)
 	}
 }
 

@@ -330,6 +330,91 @@ export function canPlay(verdict) {
   return Boolean(verdict) && verdict.playable === true && verdict.route !== ROUTE.NONE;
 }
 
+// ------------------------------------------------------- can THIS device? --
+
+/**
+ * How much system RAM a ROM needs before it is reasonable to load it here.
+ *
+ * THE SERVER CANNOT ANSWER THIS, WHICH IS WHY IT IS THE THIRD DEVICE FACT IN
+ * THIS FILE alongside touch and cross-origin isolation. play_archive.go stops at
+ * 512 MiB because that is what any browser might hold; whether THIS browser will
+ * hold it is a fact about the handset, and asking the server would mean
+ * answering for the smallest phone on every desktop.
+ *
+ * The multiple is 16 because the ROM is resident three times over. Measured on
+ * 2026-08-10, booting a 411.4 MiB PlayStation disc through this exact path:
+ *
+ *   JS heap  420 MiB   the ArrayBuffer fetchRom awaited
+ *   Blob     411 MiB   off-heap, what was handed to EmulatorJS
+ *   WASM     512 MiB   the core's linear memory, holding the disc
+ *   ------------------
+ *   ~1.31 GiB of real memory for one 411 MiB game -- about 3.3x.
+ *
+ * A browser is not the only thing running, and a tab that is killed mid-game is
+ * a worse outcome than a button that said so, so the rule asks for roughly five
+ * times the live footprint in total RAM. That puts a 450 MB disc on an 8 GiB
+ * machine and refuses it on a 4 GiB one, which matches where such a tab actually
+ * survives.
+ */
+export const RAM_MULTIPLE_PER_ROM = 16;
+
+/**
+ * The device a warning is written for when the browser will not say.
+ *
+ * 4 GiB is the handset this whole question is about: at RAM_MULTIPLE_PER_ROM it
+ * holds 256 MiB, which is every cartridge ever made and no disc at all. So "a
+ * 4 GiB phone would have been refused this" is exactly the line worth mentioning
+ * to somebody whose browser kept the answer to itself.
+ */
+export const LOW_END_DEVICE_GIB = 4;
+
+/**
+ * What the device says it has, in GiB, or 0 for "it did not say".
+ *
+ * `navigator.deviceMemory` is Chromium-only -- Safari and Firefox do not
+ * implement it, which is most of the phones that would be worst affected. Zero
+ * is therefore a genuinely common answer and is treated as UNKNOWN rather than
+ * as small: inventing a refusal out of a missing field would take the Play
+ * button off every desktop Safari, which is a bigger lie than the one it would
+ * prevent. Unknown devices are warned instead -- see playLabel's caveat.
+ */
+export function deviceMemoryGiB(nav = globalThis.navigator) {
+  const n = Number(nav?.deviceMemory);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** The largest ROM worth handing this device, or Infinity when it did not say. */
+export function romBudgetBytes(memoryGiB = deviceMemoryGiB()) {
+  if (!memoryGiB) return Infinity;
+  return Math.floor((memoryGiB * 1024 * 1024 * 1024) / RAM_MULTIPLE_PER_ROM);
+}
+
+/**
+ * Whether this device should be asked to hold this verdict's ROM.
+ *
+ * True when there is no ROM, no size, or no answer from the device: every one of
+ * those is "nothing says no", and only a fact may say no.
+ */
+export function romFitsDevice(verdict, memoryGiB = deviceMemoryGiB()) {
+  const size = Number(verdict?.rom?.sizeBytes);
+  if (!Number.isFinite(size) || size <= 0) return true;
+  return size <= romBudgetBytes(memoryGiB);
+}
+
+/** A size a sentence can carry. Mirrors humanBytes in play_archive.go. */
+export function bytesLabel(n) {
+  const size = Number(n);
+  if (!Number.isFinite(size) || size < 1024) return `${Math.max(0, Math.round(size) || 0)} B`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let value = size / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
+
 /**
  * The words on and under the button.
  *
@@ -346,7 +431,7 @@ export function canPlay(verdict) {
  * archive route is a game you can watch and not play, so the caveat becomes the
  * hint and the button says so.
  */
-export function playLabel(verdict, { touchOnly = false } = {}) {
+export function playLabel(verdict, { touchOnly = false, memoryGiB = deviceMemoryGiB() } = {}) {
   if (!canPlay(verdict)) {
     return {
       label: '',
@@ -356,18 +441,40 @@ export function playLabel(verdict, { touchOnly = false } = {}) {
     };
   }
 
-  if (verdict.route === ROUTE.EMULATORJS) {
+  // A device that answered, and answered no, has already lost this route in
+  // playerOptions -- so the words follow the switch rather than deciding
+  // anything of their own.
+  const ours = playerOptions(verdict, { memoryGiB })
+    .find((o) => o.route === ROUTE.EMULATORJS);
+
+  if (verdict.route === ROUTE.EMULATORJS && ours?.available) {
     return {
       label: 'Play',
       hint: verdict.system ? `Plays here — ${verdict.system}` : 'Plays here',
-      caveat: '',
+      // OFFER IT BUT WARN. Where the browser will not say how much memory it
+      // has -- Safari and Firefox, which is most phones -- there is no fact to
+      // refuse on, and refusing on a guess would take this button off every
+      // desktop that cannot be distinguished from a handset. So the game is
+      // offered and the size is said out loud, which is the honest half of a
+      // question nobody can answer here.
+      caveat: !memoryGiB && !romFitsDevice(verdict, LOW_END_DEVICE_GIB)
+        ? `${bytesLabel(verdict?.rom?.sizeBytes)} has to be held in memory to play. `
+          + 'On a phone this may not fit; the Internet Archive player streams it instead.'
+        : '',
       blocked: false,
     };
   }
 
   // The archive route. It plays; it just plays over there, and on a phone it
   // plays badly. Both of those are said out loud.
-  const why = firstDetail(verdict);
+  //
+  // The server's own sentence first, because it was written against the actual
+  // item -- but when the server offered our player and only THIS DEVICE turned
+  // it down, the server said nothing and `ours.why` is the only true
+  // explanation there is. Falling through with an empty hint would be the
+  // silent version of the dead button: a game that moved players for a reason
+  // nobody was told.
+  const why = firstDetail(verdict) || ours?.why || '';
   const noTouch = 'Their player has no on-screen controls, so it needs a keyboard.';
   return {
     label: 'Play at the Internet Archive',
@@ -434,9 +541,16 @@ function safeStorage() {
  * which was written against the actual item, or -- where the server said nothing
  * because there was nothing to say -- a statement of fact about the route.
  */
-export function playerOptions(verdict) {
+export function playerOptions(verdict, { memoryGiB = deviceMemoryGiB() } = {}) {
   const reason = firstDetail(verdict);
-  const ours = verdict?.route === ROUTE.EMULATORJS;
+  const offered = verdict?.route === ROUTE.EMULATORJS;
+  // The device question is asked HERE and nowhere else, so that every consumer
+  // of the switch inherits it: choosePlayer falls to the Archive, toPlayable
+  // refuses the route it was not offered, solePlayerSentence explains, and
+  // playLabel stops saying "Plays here". A second copy of this test somewhere
+  // downstream is how a button comes back that this one had removed.
+  const fits = romFitsDevice(verdict, memoryGiB);
+  const ours = offered && fits;
 
   return [
     {
@@ -445,7 +559,14 @@ export function playerOptions(verdict) {
       // The reason to want it, in four words.
       note: 'On-screen controls, save states',
       available: ours,
-      why: ours ? '' : (reason || 'This item cannot run in the Yarr.It player.'),
+      why: ours ? '' : (offered && !fits
+        // Said as a fact about this handset rather than about the game, because
+        // the same game plays here perfectly well on a desktop. Naming the size
+        // and the machine is what makes it checkable instead of a shrug.
+        ? `${bytesLabel(verdict?.rom?.sizeBytes)} is more than this device's `
+          + `${memoryGiB} GB will hold while emulating — it would load and then be `
+          + 'killed. The Internet Archive streams it instead.'
+        : (reason || 'This item cannot run in the Yarr.It player.')),
     },
     {
       route: ROUTE.ARCHIVE,
@@ -460,8 +581,8 @@ export function playerOptions(verdict) {
 }
 
 /** Whether there is a real choice to offer, rather than one option and a label. */
-export function canSwitchPlayer(verdict) {
-  return playerOptions(verdict).filter((o) => o.available).length > 1;
+export function canSwitchPlayer(verdict, opts = {}) {
+  return playerOptions(verdict, opts).filter((o) => o.available).length > 1;
 }
 
 /**
@@ -474,8 +595,8 @@ export function canSwitchPlayer(verdict) {
  * a preference for a player that cannot run this item is not a reason to show
  * them nothing.
  */
-export function choosePlayer(verdict, preference = readPlayerPreference()) {
-  const options = playerOptions(verdict);
+export function choosePlayer(verdict, preference = readPlayerPreference(), opts = {}) {
+  const options = playerOptions(verdict, opts);
   const available = options.filter((o) => o.available);
   if (!available.length) return ROUTE.NONE;
 
@@ -491,8 +612,8 @@ export function choosePlayer(verdict, preference = readPlayerPreference()) {
  *
  * '' when both players work, because then the switch speaks for itself.
  */
-export function solePlayerSentence(verdict) {
-  const options = playerOptions(verdict);
+export function solePlayerSentence(verdict, opts = {}) {
+  const options = playerOptions(verdict, opts);
   const available = options.filter((o) => o.available);
   if (available.length !== 1) return '';
   const missing = options.find((o) => !o.available);
@@ -513,6 +634,7 @@ export function solePlayerSentence(verdict) {
  */
 export function toPlayable(verdict, {
   doc = undefined, route = undefined, biosUrl = null, fetchImpl = undefined,
+  memoryGiB = undefined,
 } = {}) {
   if (!canPlay(verdict)) {
     throw new PlaybackError(
@@ -525,7 +647,8 @@ export function toPlayable(verdict, {
   // that playerOptions() says can run this item -- a switch that could ask for
   // an impossible route would be a way to build the dead button by hand.
   const wanted = route ?? verdict.route;
-  const option = playerOptions(verdict).find((o) => o.route === wanted);
+  const option = playerOptions(verdict, memoryGiB === undefined ? {} : { memoryGiB })
+    .find((o) => o.route === wanted);
   if (!option?.available) {
     throw new PlaybackError(
       FAILURE.UNSUPPORTED_CODEC,

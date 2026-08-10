@@ -257,10 +257,19 @@ func TestTheTreeSaysWhatOurPlayerCanRun(t *testing.T) {
 			}
 		}
 	}
-	if !got["games/snes"] {
-		t.Error("SNES should play here")
+	// PlayStation joined this list when ejsCoreFor stopped refusing machines
+	// whose firmware the core already contains. pcsx_rearmed carries its own
+	// high-level BIOS, ResolveWith has always used it, and the shelf was the
+	// last place still saying otherwise.
+	for _, p := range []string{"games/snes", "games/psx"} {
+		if !got[p] {
+			t.Errorf("%s should play here", p)
+		}
 	}
-	for _, p := range []string{"games/intellivision", "games/psx", "games/arcade", "games/dos"} {
+	// Still refused, each for a reason no visitor can lift: no core at all, a
+	// MAME romset, or a threaded core on a page that is not cross-origin
+	// isolated.
+	for _, p := range []string{"games/intellivision", "games/arcade", "games/dos"} {
 		if got[p] {
 			t.Errorf("%s claims to play here and play_archive.go says it cannot", p)
 		}

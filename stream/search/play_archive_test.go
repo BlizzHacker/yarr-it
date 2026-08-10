@@ -217,6 +217,14 @@ var emulatorIDsAheadOfRomHub = map[string]string{
 	"n64": "8 live items, all downloadable, .n64/.z64 payloads of 4-33 MB " +
 		"(measured 2026-08-07). Missed by the plugin's 2,000-item sample of a " +
 		"272,000-item corpus. Worth a row in archive_org/platforms.py.",
+	"nds": "3 live items (0005-wario-ware-touched-u, sonic-rush-2005, " +
+		"123-sesame-street-elmos-a-to-zoo-adventure-the-videogame-2010), items of " +
+		"32-61 MB, measured 2026-08-10. The whole emulated DS corpus is four " +
+		"items across two ids, which is why a 2,000-item sample never saw one. " +
+		"Worth a row in archive_org/platforms.py.",
+	"desmume": "1 live item (open-season-usa-en-fr-es-nl, 32 MB, measured " +
+		"2026-08-10). The Archive's second spelling for the same machine, the way " +
+		"`megadrij` is for the Mega Drive. Worth a row in archive_org/platforms.py.",
 }
 
 // Every id must be one ROM Hub's plugin recognises, and must agree with it about
@@ -834,26 +842,95 @@ func TestAMachineWithNoCoreIsRefusedByName(t *testing.T) {
 	}
 }
 
-// A disc image is past the point where relaying it is worth anything. The
-// ceiling is enforced here so the button is never drawn, not in the browser
-// where it is a message after the click.
-func TestADiscImageIsTooLargeToRelay(t *testing.T) {
+// SOMETHING IS STILL REFUSED, and it is refused for a reason that is still
+// true. The ceiling moved from 48 MiB to 512 MiB when the bytes stopped crossing
+// our relay, but it did not go away: a WASM emulator holds the whole ROM in
+// memory, and past this no browser tab will hold it. Enforced here so the button
+// is never drawn, not in the browser where it is a message after the click.
+func TestAROMTooLargeForAnyBrowserIsRefused(t *testing.T) {
 	p := fakeArchive(t, map[string]string{
-		"big_genesis": itemJSON(t, map[string]any{
-			"identifier": "big_genesis", "emulator": "genesis", "emulator_ext": "bin",
+		"vast_genesis": itemJSON(t, map[string]any{
+			"identifier": "vast_genesis", "emulator": "genesis", "emulator_ext": "bin",
 			"collection": []string{"consolelivingroom"},
-		}, []fakeFile{{"huge.bin", "446954699"}}),
+		}, []fakeFile{{"huge.bin", "805306368"}}), // 768 MiB, past maxDirectROMBytes
 	})
 
-	got := p.Resolve(context.Background(), "big_genesis")
+	got := p.Resolve(context.Background(), "vast_genesis")
 	if got.Route != routeArchive || !hasReason(got, reasonTooLarge) {
 		t.Fatalf("route=%q reasons=%v, want too_large", got.Route, reasonCodes(got))
 	}
 	if !strings.Contains(got.Reasons[0].Detail, "MiB") {
 		t.Errorf("the size should be readable: %q", got.Reasons[0].Detail)
 	}
+	// The refusal must now be about the BROWSER, because that is what is
+	// actually true. Saying "this relay" would be describing a cost nobody pays
+	// on this path any more.
+	if !strings.Contains(got.Reasons[0].Detail, "browser") {
+		t.Errorf("the refusal should name what actually stops it: %q", got.Reasons[0].Detail)
+	}
 	if got.ROM != nil {
 		t.Error("an oversized answer must not hand over a URL to try anyway")
+	}
+}
+
+// THE UNLOCK, stated as the thing it actually is: a file far past what this VPS
+// would ever carry now plays, because the visitor's own browser fetches it from
+// archive.org and no byte of it is ours.
+//
+// 426 MiB is a real PlayStation disc size (psx_kasparov), and under the old
+// single 48 MiB ceiling this exact item was refused `too_large`. It is the
+// difference this change exists to make.
+func TestADiscBiggerThanTheRelayStillPlaysDirectly(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"big_genesis": itemJSON(t, map[string]any{
+			"identifier": "big_genesis", "emulator": "genesis", "emulator_ext": "bin",
+			"collection": []string{"consolelivingroom"},
+		}, []fakeFile{{"huge.bin", "446954699"}}), // 426.2 MiB
+	})
+
+	got := p.Resolve(context.Background(), "big_genesis")
+	if got.Route != routeEmulatorJS {
+		t.Fatalf("route=%q reasons=%v; 426 MiB is under the browser ceiling and "+
+			"costs this VPS nothing", got.Route, reasonCodes(got))
+	}
+	if got.ROM == nil {
+		t.Fatal("playable with no ROM")
+	}
+	if got.ROM.Fetch == "" {
+		t.Error("the direct cross-origin fetch is the whole point and is missing")
+	}
+	// ...and the relay is WITHHELD, because that path really would cost us 426
+	// MiB of an allowance shared with a mail server. This is the half of the old
+	// rule that was correct and is kept.
+	if got.ROM.URL != "" {
+		t.Errorf("rom.url=%q; past %s the relay must not be offered as a fallback",
+			got.ROM.URL, humanBytes(maxRelayROMBytes))
+	}
+}
+
+// The small end is unchanged, and that is worth pinning: a cartridge gets BOTH
+// paths, because the relay can afford to be its fallback. This is the case that
+// must not regress -- the Game Gear fix landed hours before this change.
+func TestACartridgeKeepsBothTheDirectPathAndTheRelay(t *testing.T) {
+	p := fakeArchive(t, map[string]string{
+		"gg_game": itemJSON(t, map[string]any{
+			"identifier": "gg_game", "emulator": "gamegear", "emulator_ext": "bin",
+			"collection": []string{"consolelivingroom"},
+		}, []fakeFile{{"pac.bin", "131072"}}),
+	})
+
+	got := p.Resolve(context.Background(), "gg_game")
+	if got.Route != routeEmulatorJS || got.ROM == nil {
+		t.Fatalf("route=%q rom=%v", got.Route, got.ROM)
+	}
+	if got.ROM.Fetch == "" || got.ROM.URL == "" {
+		t.Errorf("a 128 KiB cartridge must keep both paths: fetch=%q url=%q",
+			got.ROM.Fetch, got.ROM.URL)
+	}
+	// And the Game Gear extension fix is still doing its job on this path.
+	if !strings.HasSuffix(got.ROM.File, ".gg") {
+		t.Errorf("rom.file=%q; a Game Gear ROM called .bin boots as a Master System",
+			got.ROM.File)
 	}
 }
 
@@ -1158,7 +1235,8 @@ func TestTheSystemsEndpointAgreesWithTheResolver(t *testing.T) {
 				Files  []string `json:"files"`
 			} `json:"bios"`
 		} `json:"systems"`
-		MaxRelayBytes int64 `json:"maxRelayBytes"`
+		MaxRelayBytes  int64 `json:"maxRelayBytes"`
+		MaxDirectBytes int64 `json:"maxDirectBytes"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -1166,8 +1244,22 @@ func TestTheSystemsEndpointAgreesWithTheResolver(t *testing.T) {
 	if body.Domain != "game" {
 		t.Errorf("domain=%q", body.Domain)
 	}
+	// BOTH ceilings are published, because a client that knows a file's size
+	// wants two different answers about it: whether it plays here at all, and
+	// whether there is a fallback if archive.org's own endpoint fails for it.
+	if body.MaxDirectBytes != maxDirectROMBytes {
+		t.Errorf("maxDirectBytes=%d, want %d", body.MaxDirectBytes, maxDirectROMBytes)
+	}
 	if body.MaxRelayBytes != maxRelayROMBytes {
-		t.Errorf("maxRelayBytes=%d", body.MaxRelayBytes)
+		t.Errorf("maxRelayBytes=%d, want %d", body.MaxRelayBytes, maxRelayROMBytes)
+	}
+	// The relationship is the part that carries meaning. If these ever became
+	// equal the split would have collapsed back into one number and a bandwidth
+	// budget would silently be deciding which games exist again.
+	if body.MaxRelayBytes >= body.MaxDirectBytes {
+		t.Errorf("maxRelayBytes=%d is not below maxDirectBytes=%d; the two limits "+
+			"protect different things and must stay different",
+			body.MaxRelayBytes, body.MaxDirectBytes)
 	}
 	if len(body.Systems) != len(archivePlaySystems) {
 		t.Fatalf("published %d systems, table has %d", len(body.Systems), len(archivePlaySystems))
@@ -1326,8 +1418,13 @@ func TestHumanBytesReadsLikeASentence(t *testing.T) {
 	}{
 		{512, "512 B"},
 		{24592, "24.0 KiB"},
+		// Both ceilings have to read like a sentence, because both now appear in
+		// one: the relay's in "no fallback past 48.0 MiB", the browser's in the
+		// refusal that replaced it.
 		{maxRelayROMBytes, "48.0 MiB"},
+		{maxDirectROMBytes, "512.0 MiB"},
 		{446954699, "426.2 MiB"}, // a real PlayStation .chd from psx_kasparov
+		{431383880, "411.4 MiB"}, // psx_pkplace1, the disc booted to verify this
 	} {
 		if got := humanBytes(tc.in); got != tc.want {
 			t.Errorf("humanBytes(%d) = %q, want %q", tc.in, got, tc.want)
@@ -1375,5 +1472,73 @@ func TestAListValuedEmulatorStillProducesAVerdict(t *testing.T) {
 	}
 	if got := meta.Metadata.MediaType.String(); got != "software" {
 		t.Fatalf("mediatype = %q", got)
+	}
+}
+
+// THE DISAGREEMENT THAT HID THE WHOLE UNLOCK.
+//
+// There are three places that answer "can our player run this machine", and
+// until now they did not agree. ResolveWith asked firmwareFor, whose last step
+// is builtInFirmware, and therefore played PlayStation. ejsCoreFor -- which
+// decides whether search results, discover rows and the browse shelves offer our
+// player at all -- refused every machine with a blockedSystems entry, full stop.
+//
+// While the size ceiling refused every PlayStation item anyway, nobody could see
+// it. The moment the ceiling rose it would have become the unlock silently not
+// appearing: a correct verdict nobody ever asked for, because no affordance was
+// drawn to ask it. That is the dead button inverted, and it is just as dishonest.
+//
+// So the three are pinned to each other here rather than left to be noticed.
+func TestBrowseAndResolveAgreeAboutWhatPlays(t *testing.T) {
+	for emulator, plat := range archivePlaySystems {
+		if plat.Core == "" {
+			continue
+		}
+		browseSaysPlays := ejsCoreFor(emulator) != ""
+
+		// What ResolveWith would conclude for a visitor who declared nothing:
+		// blocked, unless the block is one the core answers itself.
+		b, blocked := blockedSystems[plat.Core]
+		resolveSaysPlays := !blocked || answeredByTheCore(plat.Core)
+
+		if browseSaysPlays != resolveSaysPlays {
+			t.Errorf("emulator %q (core %q): browse says plays=%v, resolve says plays=%v "+
+				"(block %q). One of them will draw a button the other refuses, or hide "+
+				"a game the other plays.",
+				emulator, plat.Core, browseSaysPlays, resolveSaysPlays, b.Reason)
+		}
+	}
+}
+
+// The exemption is for firmware the CORE contains, and must not quietly become
+// "any firmware block is fine". ColecoVision is the control: there is no free
+// replacement for it, builtInFirmware says so by having no entry, and it must
+// stay refused everywhere.
+func TestOnlyFirmwareTheCoreCarriesLiftsABlock(t *testing.T) {
+	if !answeredByTheCore("psx") {
+		t.Error("psx: pcsx_rearmed carries its own HLE BIOS and this should say so")
+	}
+	if !answeredByTheCore("amiga") {
+		t.Error("amiga: libretro-uae compiles AROS in and this should say so")
+	}
+	if answeredByTheCore("coleco") {
+		t.Error("coleco: no free replacement exists, so nothing here may lift its block")
+	}
+	// A block that is not about firmware is never lifted by this, whatever
+	// builtInFirmware happens to contain.
+	for _, core := range []string{"dos", "psp", "mame", "arcade"} {
+		if answeredByTheCore(core) {
+			t.Errorf("%s is not refused for firmware; this must not touch it", core)
+		}
+	}
+	// And every core it DOES excuse must actually have options to apply --
+	// an empty entry would switch nothing on and boot to a black screen.
+	for core := range builtInFirmware {
+		if !answeredByTheCore(core) {
+			continue
+		}
+		if len(builtInFirmware[core].Options) == 0 {
+			t.Errorf("%s is excused by a built-in replacement that sets no core option", core)
+		}
 	}
 }

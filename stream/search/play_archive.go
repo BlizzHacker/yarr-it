@@ -113,25 +113,82 @@ import (
 // hit after it is instant.
 const playMetadataTimeout = 25 * time.Second
 
-// The largest ROM worth carrying for one game, matching MAX_RELAY_ROM in
-// web/src/resolvers/archive.js. Cartridge games are kilobytes to a few
-// megabytes; anything past this is a disc image, which their own player streams
-// and ours would have to pull in full.
+// TWO CEILINGS, BECAUSE THERE ARE TWO BYTE PATHS AND THEY PROTECT DIFFERENT
+// THINGS.
 //
-// This used to be justified purely by our relay's monthly allowance, which is
-// shared with a mail server. That is now only HALF true: the ROM is normally
-// fetched by the visitor's own browser straight from archive.org (see
-// ROM.Fetch), so those bytes cost us nothing. The ceiling stays because the
-// relay is still the fallback when that fetch fails, and because a WASM
-// emulator holds the whole ROM in memory either way -- but the reason is now
-// "what a browser tab will hold" rather than "what we can afford". Whether it
-// can be raised for the direct path is a real question and a separate one: it
-// would change which items get a Play button on every system at once.
+// There used to be one, and one number was doing both jobs badly. Its comment
+// said why it was 48 MiB: "archive.org sends no Access-Control-Allow-Origin on
+// downloads and a WASM emulator fetches the ROM itself, so every byte crosses
+// our relay -- whose monthly allowance is shared with a mail server."
 //
-// It is enforced HERE as well as in the browser on purpose. Enforced only in the
-// browser it is a message shown after the click, which is the dead button this
-// file exists to remove.
+// That premise is now false on the normal path. ROM bytes come from
+// https://archive.org/cors/<id>/<file>, which answers the visitor's own browser
+// directly with an Access-Control-Allow-Origin (see ROM.Fetch). Verified
+// 287/287 across seven systems, every response matching its declared
+// Content-Length; the relay is kept only for the roughly 1% of storage-node
+// 5xx. On the normal path this VPS now carries ZERO ROM bytes, where the bridge
+// had previously carried 601 MB.
+//
+// So a bandwidth budget was deciding which games existed, and it no longer has
+// any business doing that. What it still legitimately protects is the FALLBACK
+// path and the visitor's own device -- two different things, two numbers.
+//
+// Both are enforced HERE as well as in the browser on purpose. Enforced only in
+// the browser a limit is a message shown after the click, which is the dead
+// button this file exists to remove.
+
+// maxRelayROMBytes is what THIS VPS will carry for one game. It protects Wade's
+// monthly allowance, which is shared with a mail server, and it is unchanged at
+// 48 MiB because the thing it guards has not changed: the fallback still runs
+// through /bridge/iptv and those bytes are still ours to pay for.
+//
+// Past this the relay URL is simply NOT PUBLISHED. That is not a refusal -- the
+// game still plays, by the direct path -- it is a fallback being withheld,
+// which is the honest thing to do about a fallback we cannot afford to offer.
+// A 400 MB disc therefore plays with no safety net: if archive.org's own
+// endpoint fails for it, the client has the Archive's player to fall back to,
+// which is a better answer than silently spending someone else's bandwidth.
 const maxRelayROMBytes = 48 << 20
+
+// maxDirectROMBytes is what a BROWSER will carry, and it is the real ceiling on
+// whether Play is offered at all. Nothing about it is a cost to us.
+//
+// MEASURED RATHER THAN CHOSEN. Booting psx_pkplace1's 411.4 MiB
+// playstationdisc.chd through this project's own player on 2026-08-10 (desktop
+// Chrome, 16 GiB, jsHeapSizeLimit 4096 MiB), the disc is resident THREE TIMES
+// at once, because that is what the pipeline in resolvers/game.js does:
+//
+//	JS heap   420 MiB   the ArrayBuffer fetchRom awaited
+//	Blob      411 MiB   off-heap, what createObjectURL handed EmulatorJS
+//	WASM      512 MiB   the core's linear memory, holding /playstationdisc.chd
+//	                    at exactly 431,383,880 bytes -- the size the Archive
+//	                    declared, under the name the core was told
+//	----------------
+//	total   ~1.31 GiB   for one 411 MiB game, an amplification of ~3.3x
+//
+// 512 MiB is therefore not "48 times ten". It is the number that clears
+// archive.org's actual PlayStation library, measured rather than assumed: a
+// random sample of 376 of the 2,740 `psx` items on 2026-08-10, every one of
+// which had a real payload file, gives
+//
+//	p25 131 MiB   median 239 MiB   p90 402 MiB   p99 494 MiB   max 608 MiB
+//
+// so 512 MiB sits just above the 99th percentile. The worst case it admits
+// costs about 1.7 GiB of real memory, which a desktop tab carries.
+//
+// It deliberately does NOT clear everything, and the tail is where the number
+// earns its keep: roughly 1% of `psx` items are multi-disc compilations past
+// 512 MiB, the largest measured at 608 MiB. Those keep routing to the Archive's
+// own player, which STREAMS the disc instead of loading it whole and is
+// genuinely the better home for them. Moving the ceiling up to catch that 1%
+// would buy about thirty items and widen the window in which a tab dies for
+// everybody else.
+//
+// A phone does not carry 1.7 GiB, and no server-side number can tell a phone
+// from a laptop -- which is why the device question is asked on the device: see
+// romFitsDevice() in web/src/play.js, where a browser that reports too little
+// memory loses the EmulatorJS option and keeps the Archive's player.
+const maxDirectROMBytes = 512 << 20
 
 // --- what the emulator must call the file -----------------------------------
 
@@ -413,6 +470,37 @@ var archivePlaySystems = map[string]archivePlatform{
 	// cannot quietly become a habit.
 	"n64": {Core: "n64", Platform: "n64", Label: "Nintendo 64"},
 
+	// Nintendo DS, and it is here for a reason worth writing down: raising the
+	// size ceiling did NOT bring the DS in, because the DS was never refused for
+	// its size. It was refused for `no_core` -- there was no row -- so the
+	// refusal arrived before any size was looked at.
+	//
+	// Measured against archive.org 2026-08-10: the entire emulated DS corpus is
+	// FOUR items, `nds` (3) and `desmume` (1), of 32-61 MB. Small numbers, but a
+	// machine that was being reported as "no browser emulator core for the
+	// Nintendo DS" when EmulatorJS has had one all along is a wrong answer
+	// regardless of how many items it is wrong about.
+	//
+	// Held to all three of the defences in the header, each re-checked today
+	// rather than assumed:
+	//
+	//   1. `nds` is an EmulatorJS system (melonds), and cdn.emulatorjs.org
+	//      publishes cores/melonds-wasm.data -- the PLAIN build, HTTP 200. That
+	//      is the check that keeps it out of the blockedSystems list below: PSP
+	//      and MS-DOS are refused because their cores are published ONLY as
+	//      -thread-wasm builds (both plain names 404), and melonDS is not.
+	//   2. `nds` is in ROM Hub's playability.EJS_CORES, so it agrees this
+	//      platform plays.
+	//   3. Neither id is in ROM Hub's archive-org plugin, so both are named in
+	//      emulatorIDsAheadOfRomHub with counts anybody can re-measure -- the
+	//      same standing n64 has, for the same reason.
+	//
+	// No firmware entry, and that is checked rather than hoped: melonds's core
+	// info declares eight firmware files and every one is `_opt = "true"`, which
+	// by the rule blockedSystems states means optional. A DS boots without one.
+	"nds":     {Core: "nds", Platform: "nds", Label: "Nintendo DS"},
+	"desmume": {Core: "nds", Platform: "nds", Label: "Nintendo DS"},
+
 	// Sega. `genesis`, `megadriv` and `megadrij` are one machine under the
 	// Archive's export/domestic/Japanese spellings; `sms`, `smsj` and
 	// `sms-phaser` likewise.
@@ -644,6 +732,43 @@ func directIfDownloadable(direct string, streamOnly bool) string {
 		return ""
 	}
 	return direct
+}
+
+// answeredByTheCore reports whether a machine's firmware block is one the core
+// lifts by itself, with a setting rather than a file.
+//
+// The one place this question is phrased, so that ejsCoreFor (which decides
+// whether search, discover and the browse shelves offer our player) and
+// handleSystems (which publishes the same claim) and firmwareFor (which acts on
+// it at resolve time) cannot drift into three different answers about the same
+// machine. They already had drifted: PlayStation resolved to our own player and
+// was advertised everywhere else as needing a BIOS.
+func answeredByTheCore(core string) bool {
+	b, blocked := blockedSystems[core]
+	if !blocked || b.Reason != reasonNeedsBIOS {
+		return false
+	}
+	_, builtIn := builtInFirmware[core]
+	return builtIn
+}
+
+// relayIfAffordable withholds the relay fallback for a file this VPS cannot
+// afford to carry.
+//
+// One line, in one place, for the same reason directIfDownloadable is one line
+// in one place: a limit applied in two places is a limit that will eventually be
+// applied in one and a half. This is the ONLY thing maxRelayROMBytes now
+// decides -- it stopped being the answer to "does this play" the moment the
+// bytes stopped coming through here.
+//
+// An empty string is a real answer and the client already reads it as one:
+// play.js builds its source list as [fetch, url].filter(Boolean), so a withheld
+// relay is a source list of one rather than a broken game.
+func relayIfAffordable(direct string, size int64) string {
+	if size > maxRelayROMBytes {
+		return ""
+	}
+	return "/bridge/iptv?u=" + url.QueryEscape(direct)
 }
 
 // --- archive.org metadata ---------------------------------------------------
@@ -919,9 +1044,11 @@ func newPlayArchive(client *http.Client) *playArchive {
 // what exists on archive.org and reveal nothing about this household, so a
 // television or somebody else's client must be able to read them from another
 // origin. They spend no disk and no relay bandwidth -- resolving costs one
-// metadata request, and the ROM bytes only ever move when a player actually
-// fetches the URL through /bridge/iptv, which has its own budget and its own
-// concurrency gate.
+// metadata request, and on the normal path the ROM bytes never touch this host
+// at all: a browser fetches them from archive.org's own cross-origin endpoint.
+// Only the fallback goes through /bridge/iptv, which has its own budget and its
+// own concurrency gate, and is offered only for files small enough to belong
+// there -- see relayIfAffordable.
 //
 // If the operator wants these behind the same reader gate as /api/pages, wrap
 // them the way main.go wraps that one; nothing here depends on being open.
@@ -1074,7 +1201,12 @@ func (p *playArchive) handleSystems(w http.ResponseWriter, r *http.Request) {
 		case plat.Core == "":
 			v.Reason = reasonNoCore
 			v.Detail = noCoreDetail(plat)
-		case blockedSystems[plat.Core].Reason != "":
+		// A block the core answers itself is not a block. builtInFirmware is a
+		// core OPTION rather than a file -- nobody has to supply anything, so
+		// there is no refusal to report and no invitation to make. Asked here
+		// the same way ejsCoreFor asks it, so this table and the search results
+		// cannot disagree about whether PlayStation plays.
+		case blockedSystems[plat.Core].Reason != "" && !answeredByTheCore(plat.Core):
 			b := blockedSystems[plat.Core]
 			v.Reason, v.Detail = b.Reason, b.Detail
 			switch b.Reason {
@@ -1116,9 +1248,19 @@ func (p *playArchive) handleSystems(w http.ResponseWriter, r *http.Request) {
 		"type":    "release",
 		"systems": out,
 		"bios":    biosList,
-		// The ceiling is part of the contract: a client that knows it can say
-		// "too big to play here" about a file it already has the size of.
-		"maxRelayBytes": maxRelayROMBytes,
+		// Both ceilings are part of the contract, and they are published
+		// separately because they answer different questions about a file whose
+		// size a client already knows:
+		//
+		//   maxDirectBytes  past this, nothing here will play it at all.
+		//   maxRelayBytes   past this it still plays, but with no fallback if
+		//                   archive.org's own endpoint fails for it.
+		//
+		// maxRelayBytes keeps its name and its meaning -- it is still exactly
+		// what this relay will carry -- so a client written against the old
+		// contract stays correct about the thing it was actually asking.
+		"maxDirectBytes": maxDirectROMBytes,
+		"maxRelayBytes":  maxRelayROMBytes,
 	})
 }
 
@@ -1221,13 +1363,19 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 	if b, blocked := blockedSystems[plat.Core]; blocked && !p.unblocked(b, plat.Core, opts, bios != nil) {
 		if need, ok := biosRequirements[plat.Core]; ok && b.Reason == reasonNeedsBIOS {
 			// Named only when firmware really is the last obstacle. See the
-			// field comment: pointing somebody at a 460 MB disc image's BIOS is
-			// a longer route to the same refusal, and the refusal would arrive
-			// after they had gone and found the file.
+			// field comment: sending somebody off to find a BIOS for a game that
+			// will then be refused for its size is a longer route to the same no,
+			// and the no would arrive after they had gone and found the file.
+			//
+			// The size asked about is the BROWSER's ceiling, not the relay's, and
+			// that is the whole change: a 426 MB PlayStation disc used to fail
+			// this test and so was never offered its BIOS, which meant the
+			// firmware path and the size path each pointed at the other. Both
+			// now answer for the same item, and the answer is yes.
 			// Stream-only is no longer part of this: such an item plays here
 			// perfectly well, so firmware really is the last obstacle for it.
 			_, size, hasPayload := meta.payload()
-			if hasPayload && size <= maxRelayROMBytes {
+			if hasPayload && size <= maxDirectROMBytes {
 				answer.BiosNeeded = &need
 			}
 		}
@@ -1268,15 +1416,18 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 		return p.viaArchive(answer, playReason{Code: reasonNoPayload, Detail: detail})
 	}
 
-	// 6. Is it small enough to be worth relaying?
-	if size > maxRelayROMBytes {
+	// 6. Is it small enough for a BROWSER to hold? Not "small enough to relay":
+	//    the bytes normally come straight from archive.org and cost us nothing,
+	//    so the question a refusal here answers is about the visitor's tab. The
+	//    relay ceiling is a separate, smaller number and it decides a different
+	//    thing -- whether there is a fallback -- one field down.
+	if size > maxDirectROMBytes {
 		return p.viaArchive(answer, playReason{
 			Code: reasonTooLarge,
 			Detail: fmt.Sprintf(
-				"%s is %s, past the %s this relay will carry for one game -- a "+
-					"disc image rather than a cartridge. Their player streams it "+
-					"instead.",
-				path.Base(name), humanBytes(size), humanBytes(maxRelayROMBytes)),
+				"%s is %s, past the %s a browser tab will hold for one game. "+
+					"Their player streams it instead of loading it whole.",
+				path.Base(name), humanBytes(size), humanBytes(maxDirectROMBytes)),
 		})
 	}
 
@@ -1312,8 +1463,9 @@ func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptio
 		// Preferred: the visitor's own browser, straight from the Archive, with
 		// their CORS header. No byte of this crosses our relay.
 		Fetch: p.corsBase + escaped,
-		// Fallback, for when that fetch fails.
-		URL: "/bridge/iptv?u=" + url.QueryEscape(direct),
+		// Fallback, for when that fetch fails -- and only where this VPS can
+		// afford to be the fallback. See relayIfAffordable.
+		URL: relayIfAffordable(direct, size),
 		// Direct is the file at archive.org, for a caller that is not a browser
 		// and can skip our relay -- and it is WITHHELD for a stream-only item,
 		// because a direct link is exactly the download the Archive asks us not

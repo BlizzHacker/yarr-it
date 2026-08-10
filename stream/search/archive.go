@@ -528,11 +528,28 @@ func ejsCoreFor(emulator string) string {
 	}
 	// A core existing is not the same as it being runnable here. MS-DOS and PSP
 	// map to real cores that EmulatorJS publishes only as threaded builds, and
-	// threads need a cross-origin-isolated page this site is not; ColecoVision,
-	// PlayStation and Amiga need firmware that is not ours to ship. Each of
-	// those starts, draws its own error screen and never boots the game -- which
-	// looks exactly like it is working.
-	if _, blocked := blockedSystems[p.Core]; blocked {
+	// threads need a cross-origin-isolated page this site is not; ColecoVision
+	// needs firmware that is not ours to ship. Each of those starts, draws its
+	// own error screen and never boots the game -- which looks exactly like it
+	// is working.
+	//
+	// EXCEPT where the core already contains the firmware, which is the case
+	// this used to get wrong. PlayStation and Amiga are in blockedSystems for
+	// `needs_bios`, and builtInFirmware answers that block with a core option
+	// rather than a file -- pcsx_rearmed's HLE BIOS and libretro-uae's AROS.
+	// ResolveWith has always known this (see firmwareFor, whose last step is
+	// exactly this table), so a PlayStation disc has been resolving to our own
+	// player while THIS function told search, discover and the browse shelves
+	// that PlayStation does not play here.
+	//
+	// That disagreement was invisible while the size ceiling refused every
+	// PlayStation item anyway. It stopped being invisible the moment the ceiling
+	// rose, and it would have been the whole unlock quietly not appearing: a
+	// verdict nobody asked for, because no affordance was drawn to ask it.
+	//
+	// Asked through the same table rather than by listing machines, so a fourth
+	// built-in replacement is picked up here without anybody remembering to.
+	if _, blocked := blockedSystems[p.Core]; blocked && !answeredByTheCore(p.Core) {
 		return ""
 	}
 	return p.Core

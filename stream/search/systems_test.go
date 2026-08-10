@@ -33,7 +33,18 @@ func TestEverySystemUsesThePlatformSlugTheServiceAlreadyUses(t *testing.T) {
 // could only drift from the one with the evidence next to it.
 func TestPlayabilityIsAnsweredByThePlayTableAndNotByThisOne(t *testing.T) {
 	// Machines EmulatorJS runs.
-	for _, id := range []string{"snes", "nes", "genesis", "gbc", "c64"} {
+	//
+	// `nds` moved into this list when play_archive.go gained a row for it. It
+	// had been sitting below as a machine we refuse, and that was never a
+	// firmware or a threads decision -- there was simply no row, so the DS was
+	// reported as having no browser core when melonDS has existed all along.
+	// This test is where that showed up, which is what it is for.
+	// `psx` and `amiga` are here because their firmware block is answered by the
+	// core itself -- pcsx_rearmed's HLE BIOS and libretro-uae's AROS, both core
+	// options rather than files. ResolveWith always knew that; ejsCoreFor did
+	// not, so browse, search and discover spent the whole time saying
+	// PlayStation does not play here while the verdict endpoint played it.
+	for _, id := range []string{"snes", "nes", "genesis", "gbc", "c64", "nds", "psx", "amiga"} {
 		if s := systemByID[id]; s == nil || !s.playsHere() {
 			t.Errorf("%s should play here", id)
 		}
@@ -41,9 +52,14 @@ func TestPlayabilityIsAnsweredByThePlayTableAndNotByThisOne(t *testing.T) {
 	// Machines it does not, each for a reason play_archive.go documents:
 	// no core at all, firmware that is not ours to ship, a threaded core on a
 	// page that is not cross-origin isolated, or a MAME romset.
+	//
+	// ColecoVision stays refused and is the one to watch: it is the only machine
+	// left whose firmware nobody can supply but its owner, so it is the control
+	// that proves the built-in-firmware exemption did not become "lift every
+	// firmware block".
 	for _, id := range []string{
 		"intellivision", "atari8bit", "zxs", "appleii", "arcade", "sg1000",
-		"colecovision", "psx", "amiga", "dos", "nds", "flash",
+		"colecovision", "dos", "flash",
 	} {
 		s := systemByID[id]
 		if s == nil {

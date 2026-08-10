@@ -493,7 +493,11 @@ func TestABIOSDoesNotLiftAnyOtherRefusal(t *testing.T) {
 	p := fakeArchive(t, map[string]string{
 		"stream_only_coleco": colecoItem(t,
 			map[string]any{"collection": []string{"consolelivingroom", "stream_only"}}, nil),
-		"huge_coleco": colecoItem(t, nil, []fakeFile{{"dk.col", "99999999"}}),
+		// 768 MiB, past maxDirectROMBytes. This fixture used to be 95 MiB, which
+		// was past the single 48 MiB ceiling of the day; the ceiling that matters
+		// is now what a BROWSER holds rather than what our relay carries, so the
+		// number moved and the point did not.
+		"huge_coleco": colecoItem(t, nil, []fakeFile{{"dk.col", "805306368"}}),
 		"no_payload_coleco": colecoItem(t, nil,
 			[]fakeFile{{"readme.txt", "10"}}),
 		"arcade_item": itemJSON(t, map[string]any{
@@ -530,7 +534,9 @@ func TestABIOSDoesNotLiftAnyOtherRefusal(t *testing.T) {
 // size is a longer route to the same no.
 func TestTheBIOSOfferIsWithheldWhereItWouldNotHelp(t *testing.T) {
 	p := fakeArchive(t, map[string]string{
-		"huge_coleco": colecoItem(t, nil, []fakeFile{{"dk.col", "99999999"}}),
+		// Past what a browser will hold -- see the sibling test for why this is
+		// 768 MiB rather than the 95 MiB it once was.
+		"huge_coleco": colecoItem(t, nil, []fakeFile{{"dk.col", "805306368"}}),
 		"stream_only_coleco": colecoItem(t,
 			map[string]any{"collection": []string{"stream_only"}}, nil),
 	})
@@ -678,6 +684,7 @@ func TestTheSystemsEndpointSaysWhatCanBeUnlocked(t *testing.T) {
 			Emulator   string `json:"emulator"`
 			Reason     string `json:"reason"`
 			Unlockable string `json:"unlockable"`
+			Playable   bool   `json:"playable"`
 		} `json:"systems"`
 		BIOS []playBIOS `json:"bios"`
 	}
@@ -688,14 +695,33 @@ func TestTheSystemsEndpointSaysWhatCanBeUnlocked(t *testing.T) {
 	if len(body.BIOS) != len(biosRequirements) {
 		t.Errorf("published %d BIOS offers, table has %d", len(body.BIOS), len(biosRequirements))
 	}
+	// ColecoVision is the only machine left whose firmware a PERSON has to
+	// supply, and so the only one with anything to unlock.
+	//
+	// PlayStation and Amiga were here and are not any more, and that is a
+	// correction rather than a loss: builtInFirmware answers both with a core
+	// option -- pcsx_rearmed's HLE BIOS, libretro-uae's AROS -- so there is no
+	// file for anybody to go and find. Offering to unlock a machine that is not
+	// locked is its own small dishonesty, and it was sending people after
+	// firmware they never needed.
 	want := map[string]string{
-		"coleco": "bios", "psx": "bios", "sae-a500": "bios",
+		"coleco": "bios", "psx": "", "sae-a500": "",
 		"dosbox": "isolation", "mame": "",
 	}
 	for _, s := range body.Systems {
 		if expect, ok := want[s.Emulator]; ok && s.Unlockable != expect {
 			t.Errorf("%s: unlockable=%q want %q (reason %q)",
 				s.Emulator, s.Unlockable, expect, s.Reason)
+		}
+	}
+	// ...and the two that stopped being locked must now say they PLAY, rather
+	// than falling into some third state that is neither refused nor offered.
+	for _, s := range body.Systems {
+		if s.Emulator == "psx" || s.Emulator == "sae-a500" {
+			if !s.Playable || s.Reason != "" {
+				t.Errorf("%s: playable=%v reason=%q; the core supplies its own firmware",
+					s.Emulator, s.Playable, s.Reason)
+			}
 		}
 	}
 }
