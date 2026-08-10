@@ -186,7 +186,12 @@ func (f filters) apply(cards []card) []card {
 		if f.Source == "instant" && !c.Instant {
 			continue
 		}
-		if f.Source == "swarm" && c.Instant {
+		// "Swarm" means a torrent. A result that lives on somebody else's
+		// website is neither hosted here nor seeded by anyone, so it belongs to
+		// neither chip -- and letting it fall through to "swarm" merely because
+		// it is not Instant would put an off-site link under a filter whose
+		// whole meaning is "things with peers".
+		if f.Source == "swarm" && (c.Instant || c.External != nil) {
 			continue
 		}
 		// The language the item states about itself. A card that states nothing
@@ -203,10 +208,15 @@ func (f filters) apply(cards []card) []card {
 			// neither, so the default "at least 1 seeder" would silently drop
 			// every game -- the most reliable results on the page -- and the
 			// search would look like it found nothing.
-			if !c.Instant {
+			// An off-site catalogue entry has no swarm either, so the seeder
+			// floor is skipped for it for the same reason -- but its size is a
+			// real number Vimm publishes, so that stays filterable.
+			if !c.Instant && c.External == nil {
 				if s.Seeders < f.MinSeeders {
 					continue
 				}
+			}
+			if !c.Instant {
 				sizeMB := s.Size / (1024 * 1024)
 				if f.MinSizeMB > 0 && sizeMB < f.MinSizeMB {
 					continue
@@ -545,8 +555,13 @@ type facets struct {
 	AdultCount int          `json:"adultCount"`
 	// How many results arrive each way, so the source toggle can say so
 	// rather than making you click to find out one of them is empty.
-	InstantCount int   `json:"instantCount"`
-	SwarmCount   int   `json:"swarmCount"`
+	InstantCount int `json:"instantCount"`
+	SwarmCount   int `json:"swarmCount"`
+	// ExternalCount is how many results live on another site entirely -- not
+	// hosted here, not seeded by anyone. A third number rather than a share of
+	// one of the other two, because a chip that says "Backups 40" and delivers
+	// twelve is the kind of quiet lie this file exists to prevent.
+	ExternalCount int   `json:"externalCount,omitempty"`
 	MaxSeed      int   `json:"maxSeeders"`
 	MaxSizeMB    int64 `json:"maxSizeMB"`
 }
@@ -580,9 +595,15 @@ func buildFacets(cards []card) facets {
 		if c.Adult {
 			f.AdultCount++
 		}
-		if c.Instant {
+		switch {
+		case c.External != nil:
+			// Counted apart from both. It is not hosted here and it is not
+			// seeded by anyone, and adding it to either number would make that
+			// chip promise results it does not contain.
+			f.ExternalCount++
+		case c.Instant:
 			f.InstantCount++
-		} else {
+		default:
 			f.SwarmCount++
 		}
 		for _, s := range c.Sources {

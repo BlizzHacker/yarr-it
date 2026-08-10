@@ -255,6 +255,11 @@ export function itemFromCard(card, domain) {
     // that is the details URL the identifier is recovered from. The card key
     // carries the same id and is the fallback when sources are torrents.
     uri: card.sources?.[card.best ?? 0]?.magnet || card.key || '',
+    // The site this actually lives on, when it is not this one. Carried rather
+    // than sniffed out of the URI: the tile's WORDING depends on it, and a
+    // client that had to recognise hostnames to find out would get it wrong for
+    // exactly one source and print "Play" over a link to somebody else's site.
+    external: card.external || null,
     card,
   };
 }
@@ -271,6 +276,59 @@ export function itemFromCard(card, domain) {
  */
 export function domainOfItem(item) {
   return canonicalDomain(item?.mediaType) || item?.domain || '';
+}
+
+/**
+ * Where a result came from, and whether it will just work.
+ *
+ * ONE BADGE FOR BOTH, deliberately. Those are two questions but they have one
+ * answer per class of result, and splitting them across two pieces of chrome
+ * put the same fact on a tile twice while leaving the more useful half unsaid:
+ * a grid of "INSTANT", "0▲" and "812▲" told you how confident to be and never
+ * told you who you were dealing with, and every card in it looked like every
+ * other one.
+ *
+ * So the badge NAMES the place, and is coloured by what that place means:
+ *
+ *   archive.org   solid accent   hosted, always up, plays in our own player
+ *   Vimm's Lair   outlined       a real catalogue, on somebody else's website
+ *   YTS 812▲      accent count   a swarm; the number is the confidence
+ *   1337x 0▲      dead           a swarm with nobody in it
+ *
+ * The seeder count stays welded to the indexer name rather than moving
+ * somewhere else, because for a torrent "who" and "will it work" genuinely are
+ * one fact — an indexer's name means nothing without it.
+ *
+ * The name itself is never inferred here. `card.origin` is the server saying
+ * where a whole card comes from; where it is absent the card is an aggregate
+ * of releases and the honest answer is the indexer behind the row a click
+ * would actually use, which is re-read after every re-rank. See the Origin
+ * field in search/main.go.
+ */
+export function sourceBadge(card) {
+  const named = card.origin || card.sources?.[card.best ?? 0]?.indexer || '';
+  if (card.external) {
+    return {
+      text: named || card.external.name,
+      cls: 'badge src offsite',
+      hint: `Catalogued on ${card.external.name} — opens ${card.external.host}`,
+    };
+  }
+  if (card.instant) {
+    return {
+      text: named || 'hosted',
+      cls: 'badge src instant',
+      hint: `Hosted by ${named || 'the host'} — plays here, nothing to download`,
+    };
+  }
+  const seeds = `${card.seeders ?? 0}▲`;
+  return {
+    text: named ? `${named} ${seeds}` : seeds,
+    cls: card.seeders > 0 ? 'badge src' : 'badge src dead',
+    hint: named
+      ? `From ${named} — ${card.seeders ?? 0} seeders, so it needs a swarm`
+      : `${card.seeders ?? 0} seeders`,
+  };
 }
 
 /**
@@ -302,6 +360,24 @@ export function tileAction(item) {
     // "we have not checked" is not a reason to withhold something; it is a
     // reason not to oversell it.
     return { kind: 'search', label: 'Find' };
+  }
+  if (item.external?.short) {
+    // It lives on somebody else's website. Whatever the domain's verb is, this
+    // client cannot honour it: the thing is not hosted here, does not stream
+    // here and does not boot in our player, and every source on the card is a
+    // link that leaves.
+    //
+    // So the tile is labelled with WHERE it goes rather than with what we wish
+    // it did. "Play" over a link to vimm.net would be the same defect as the
+    // TMDB tiles that said "Watch" over a search — a word that describes an
+    // intention instead of an outcome — and it would be worse here, because
+    // the outcome is a different website. The arrow is the second half of the
+    // message: this is an outbound link.
+    return {
+      kind: 'open',
+      label: `${item.external.short} ↗`,
+      external: item.external,
+    };
   }
   if (verb === 'play') {
     return canPlay(item)

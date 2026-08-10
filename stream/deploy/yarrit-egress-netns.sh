@@ -51,8 +51,13 @@ BLOCKED=(
 up() {
   [ -n "$UPLINK" ] || { echo "cannot detect the uplink interface; set UPLINK=" >&2; exit 1; }
 
-  ip netns add "$NS" 2>/dev/null || echo "namespace $NS already exists, reconfiguring"
-  ip link del "$HOST_IF" 2>/dev/null || true
+  # Start from nothing every time. Reconfiguring a half-built namespace in place
+  # meant a restart could fail with "File exists" against a namespace that was
+  # confining traffic perfectly well -- and a unit that will not restart is one
+  # somebody eventually disables. `down` is already idempotent and silent.
+  down >/dev/null 2>&1 || true
+
+  ip netns add "$NS"
   ip link add "$HOST_IF" type veth peer name "$NS_IF"
   ip link set "$NS_IF" netns "$NS"
 

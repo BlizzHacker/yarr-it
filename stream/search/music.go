@@ -761,6 +761,7 @@ func musicCards(docs []musicDoc) []card {
 			Year:     archiveYear(d.Year),
 			Kind:     domainMusic,
 			Instant:  true,
+			Origin:   archiveOrigin,
 			Popular:  d.Downloads,
 			Platform: facts.Artist,
 			// "music" is what categoryGroups calls this bucket, so the Music

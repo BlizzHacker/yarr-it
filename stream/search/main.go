@@ -63,6 +63,41 @@ type source struct {
 	Group     string `json:"group"`
 	WebSafe   bool   `json:"webSafe"`
 	Published string `json:"published"`
+
+	// Offsite marks a source whose target is another website. Following it
+	// leaves this site: it does not stream here, it does not play here, and a
+	// client must not route it into the player. Absent -- and so omitted from
+	// the wire entirely -- on every source this site can actually serve.
+	Offsite bool `json:"offsite,omitempty"`
+	// Action is what following this source DOES, in one word: "play" or
+	// "download". It exists because those are separate facts about the same
+	// entry and a catalogue can publish either, both or neither -- Vimm's Lair
+	// holds 5,586 downloadable entries of which 4,470 are also playable in
+	// their own browser player. Collapsing them into one row would hide from a
+	// person which of the two they were about to get.
+	Action string `json:"action,omitempty"`
+}
+
+// externalSite names the site a result actually lives on, when that is not this
+// one.
+//
+// Its presence on a card is a statement with teeth: this site hosts none of it,
+// cannot play it, and every source on the card leads away. That is why it is
+// not simply inferred from a URL at render time -- the tile's own wording
+// depends on it, and a client that had to parse hostnames to find out would
+// get it wrong for exactly one source and put the word "Play" over a link to
+// somebody else's website.
+type externalSite struct {
+	// Name is the site as a person would write it: "Vimm's Lair".
+	Name string `json:"name"`
+	// Short is the same thing at badge length: "Vimm".
+	Short string `json:"short"`
+	// Host is where a click actually goes, so a client can say so without
+	// parsing a URL.
+	Host string `json:"host"`
+	// Page is the item's own page on that site, when there is one. Not a
+	// source: it is neither a download nor a player, it is the thing's address.
+	Page string `json:"page,omitempty"`
 }
 
 // card is a single work (a film, or one episode) with every torrent for it.
@@ -95,6 +130,29 @@ type card struct {
 	// Platform is for eyes and can be reworded; this is what the system filter,
 	// the facet and a /browse URL are keyed on, so it must not.
 	System string `json:"system,omitempty"`
+
+	// Origin names where the whole card comes from, for a person to read:
+	// "archive.org", "Vimm's Lair".
+	//
+	// Set only where the card has ONE origin and the source you would click
+	// does not name it. An archive.org game's best source is labelled
+	// "EmulatorJS" or "Ruffle" -- those are players, not places, and a tile
+	// that said "EmulatorJS" would answer a question nobody asked.
+	//
+	// Deliberately EMPTY for torrents, and that is not an omission. A torrent
+	// card is an aggregate of releases from several indexers, so it has no
+	// single origin -- and its sources are re-ranked by the device profile and
+	// the filters after this is built, so a name frozen here would drift from
+	// the row a click actually uses. Those cards are labelled from
+	// Sources[Best].Indexer instead, which is re-read after every re-rank and
+	// is therefore always the place the thing you would get comes from.
+	Origin string `json:"origin,omitempty"`
+
+	// External is set when this result lives on somebody else's site. It is
+	// the counterweight to Instant: Instant promises this site will serve it,
+	// this says plainly that it will not, and a card may never carry both. See
+	// externalSite above and vimm.go, which is the only thing that sets it.
+	External *externalSite `json:"external,omitempty"`
 
 	// Music is the part of a result that only means anything for music: the
 	// artist, the venue, the date of the show. One optional object rather than
@@ -155,6 +213,11 @@ type server struct {
 	// Per-user watchlist and resume points.
 	library *libraryStore
 
+	// Vimm's Lair, imported to disk and held in memory. Nil is a valid state
+	// and means nothing has been imported, which is how every instance but
+	// Wade's starts; see vimm.go, where every read tolerates it.
+	vimm *vimmStore
+
 	tmdb     *tmdbClient
 	igdb     *igdbClient
 	discover discoverCache
@@ -195,10 +258,28 @@ func main() {
 	// guard's proxy and nothing else -- no Prowlarr, no library, no routes.
 	egressOnly := flag.String("egress-proxy", "",
 		"internal: run only the guarded egress proxy on this address")
+	// Import mode. Merges a Vimm's Lair export into the catalogue and exits
+	// without starting a server, so it can be run against a live deployment:
+	// the write is atomic and the running process keeps serving its loaded copy
+	// until it is restarted. See vimm_import.go.
+	importVimmPath := flag.String("import-vimm", "",
+		"import a Vimm's Lair catalogue export (JSON) into VIMM_PATH and exit")
 	flag.Parse()
 
 	if *egressOnly != "" {
 		runEgressProxyOnly(*egressOnly)
+		return
+	}
+
+	if *importVimmPath != "" {
+		rep, err := importVimm(*importVimmPath, vimmCataloguePath())
+		if rep != nil {
+			fmt.Print(rep)
+		}
+		if err != nil {
+			log.Fatalf("import: %v", err)
+		}
+		log.Printf("catalogue written to %s", vimmCataloguePath())
 		return
 	}
 
@@ -241,6 +322,23 @@ func main() {
 		log.Printf("LIBRARY_PATH not set; watchlist and resume are in-memory only")
 	}
 	go lib.flushLoop()
+
+	// Read once, here, and never again on a request path. The whole point of
+	// importing to a reduced file is that this is a small parse at startup
+	// rather than a 9 MB one during somebody's search.
+	vimm, err := loadVimmStore(vimmCataloguePath())
+	if err != nil {
+		// Same judgement as the library: a catalogue that cannot be read is a
+		// data problem to look at, not a reason to serve a broken one.
+		log.Fatalf("vimm catalogue: %v", err)
+	}
+	s.vimm = vimm
+	if n := vimm.count(); n > 0 {
+		log.Printf("Vimm's Lair: %d entries from %s", n, vimmCataloguePath())
+	} else {
+		log.Printf("Vimm's Lair: nothing imported (%s); run with -import-vimm <export.json> to add it",
+			vimmCataloguePath())
+	}
 
 	s.warm = newWarmer(s)
 	// archive.org answers the first paint of every search, so its connection is
@@ -663,6 +761,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"prowlarr":      "not-configured",
 			"cachedQueries": n,
 			"owner":         owner,
+			"vimm":          s.vimm.stats(),
 			"detail":        "PROWLARR_API_KEY is not set; torrent search is disabled",
 		})
 		return
@@ -680,7 +779,11 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			status = "ok"
 		}
 	}
-	body := map[string]any{"prowlarr": status, "cachedQueries": n, "owner": owner}
+	// How much of the local catalogue is loaded, and when it was scraped. A
+	// catalogue that failed to import shows up here as zero entries rather than
+	// as games that quietly stopped appearing in search.
+	body := map[string]any{"prowlarr": status, "cachedQueries": n, "owner": owner,
+		"vimm": s.vimm.stats()}
 	// Whether searches are currently skipping the indexers on purpose. Without
 	// this, a breaker that has tripped looks exactly like an index with nothing
 	// in it -- results simply stop arriving and nothing says why.
@@ -821,10 +924,16 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	_, wantArchive := scopeFor(kind)
 
 	// Nothing on this instance could ever answer this: no indexer is
-	// configured and the kind has no archive.org scope. Waiting does not fix
-	// that, so say which of the two problems it is rather than offering a
-	// retry that can only fail again.
-	if s.apiKey == "" && !wantArchive {
+	// configured, the kind has no archive.org scope, and no local catalogue
+	// holds anything. Waiting does not fix that, so say which of the problems
+	// it is rather than offering a retry that can only fail again.
+	//
+	// The catalogue has to be in that condition or the sentence stops being
+	// true. An instance with Vimm's Lair imported and no Prowlarr key can
+	// answer a game search perfectly well, and refusing it with "no torrent
+	// indexer is configured" would be this handler declining to look at the one
+	// source that was going to answer.
+	if s.apiKey == "" && !wantArchive && s.vimm.count() == 0 {
 		if stale, ok := s.getAny(cacheKey); ok {
 			respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, kind, f, stale), searchState{cache: "STALE", stale: true}, ownerView)
 			return

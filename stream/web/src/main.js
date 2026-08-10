@@ -35,6 +35,7 @@ import { PlaybackError } from './failures.js';
 import { api, apiFetch, getServer, setServer, probeServer } from './server.js';
 import {
   renderHome, itemFromCard, itemFromDiscover, tileAction, tile as homeTile, domainSentence,
+  sourceBadge,
 } from './home.js';
 import { mountBrowse, systemChips, systemFilterHost, routeOf } from './browse.js';
 import { mountLinear, linearResolver, linearURI } from './linear.js';
@@ -721,11 +722,10 @@ function tile(card) {
   // served by a host that is always up there is nothing to guess, so showing
   // "0▲" there would read as broken when it is the most reliable card on the
   // page.
-  if (card.instant) {
-    p.append(el('span', 'badge instant', 'INSTANT'));
-  } else {
-    p.append(el('span', card.seeders > 0 ? 'badge' : 'badge dead', `${card.seeders}▲`));
-  }
+  const src = sourceBadge(card);
+  const badge = el('span', src.cls, src.text);
+  badge.title = src.hint;
+  p.append(badge);
   if (card.art?.rating) p.append(el('span', 'rating', card.art.rating.toFixed(1)));
   const bq = card.platform || card.sources[card.best]?.quality;
   if (bq) p.append(el('span', 'best-q', bq));
@@ -740,7 +740,14 @@ function tile(card) {
   if (card.year) bits.push(card.year);
   if (card.isSeries) bits.push(`S${card.season}E${card.episode}`);
   bits.push(...musicBits(card));
-  if (card.instant) {
+  if (card.external) {
+    bits.push(`on ${card.external.name}`);
+    // What is actually on offer over there, in the site's own two words. An
+    // entry can be downloadable, playable in their player, or both, and those
+    // are different enough that a person wants to know before they leave.
+    const what = offsiteOffers(card);
+    if (what) bits.push(what);
+  } else if (card.instant) {
     bits.push('plays instantly');
   } else {
     bits.push(`${card.sources.length} source${card.sources.length === 1 ? '' : 's'}`);
@@ -1077,7 +1084,16 @@ function openDetail(card) {
   // Venue and date, for a card whose title is a sentence and whose identity is
   // a place and a day. See musicBits.
   sub.push(...musicBits(card));
-  sub.push(card.instant ? 'Plays instantly — no download' : `${card.seeders} seeders`);
+  // Where it came from, then what that means for getting hold of it — the same
+  // two facts the tile's badge carried, with room here to say them in words.
+  const named = card.origin || card.sources?.[card.best ?? 0]?.indexer || '';
+  if (card.external) {
+    sub.push(`Catalogued on ${card.external.name}`);
+  } else if (card.instant) {
+    sub.push(`${named || 'Hosted'} — plays instantly, no download`);
+  } else {
+    sub.push(named ? `${named} · ${card.seeders} seeders` : `${card.seeders} seeders`);
+  }
   $('#d-sub').textContent = sub.join('  ·  ');
 
   $('#d-overview').textContent = card.art?.overview || '';
@@ -1087,9 +1103,18 @@ function openDetail(card) {
   g.replaceChildren();
   for (const name of card.art?.genres || []) g.append(el('span', 'chip', name));
 
-  $('#d-srch').textContent = card.instant
-    ? 'Hosted by archive.org — press play'
-    : `${card.sources.length} source${card.sources.length === 1 ? '' : 's'} — pick one to stream`;
+  // What the rows below will actually do, said before any of them is clicked.
+  // An off-site card gets its own sentence because both of the others are
+  // untrue of it: nothing here is pressed, and nothing here streams.
+  if (card.external) {
+    $('#d-srch').textContent =
+      `${card.sources.length} link${card.sources.length === 1 ? '' : 's'} on `
+      + `${card.external.name} — each one opens ${card.external.host} in a new tab`;
+  } else {
+    $('#d-srch').textContent = card.instant
+      ? 'Hosted by archive.org — press play'
+      : `${card.sources.length} source${card.sources.length === 1 ? '' : 's'} — pick one to stream`;
+  }
 
   const list = $('#d-sources');
   list.replaceChildren();
@@ -1140,7 +1165,35 @@ async function renderSaveButton(card) {
   };
 }
 
+/**
+ * What an off-site card is actually offering, in the site's own words.
+ *
+ * `downloadable` and `playable` are separate facts on the far side and the
+ * server keeps them separate — one source row each — so this reads them back
+ * off the rows rather than guessing from the card.
+ */
+function offsiteOffers(card) {
+  const has = new Set((card.sources || []).map((s) => s.action).filter(Boolean));
+  if (has.has('play') && has.has('download')) return 'play or download there';
+  if (has.has('play')) return 'plays there';
+  if (has.has('download')) return 'download';
+  return '';
+}
+
+/**
+ * One row of the source list.
+ *
+ * An off-site source is an <a>, not a <button>, and that is the whole point
+ * rather than a styling choice. This site does not host it, cannot stream it
+ * and cannot boot it in our player, so the only honest thing a click can do is
+ * leave — and an anchor is the one control that both SAYS so before it is
+ * pressed (the browser shows the destination on hover, middle-click and
+ * ctrl-click work, a screen reader announces a link) and cannot accidentally be
+ * routed into the player, because there is no handler to route.
+ */
 function sourceRow(card, s, isBest) {
+  if (s.offsite) return offsiteSourceRow(card, s, isBest);
+
   const row = el('button', isBest ? 'source best' : 'source');
   row.type = 'button';
 
@@ -1174,6 +1227,46 @@ function sourceRow(card, s, isBest) {
   row.append(r);
 
   row.addEventListener('click', () => play(card, s));
+  return row;
+}
+
+/**
+ * A source that lives on another website.
+ *
+ * Every torrent word is wrong here and so is every hosted-result word. There is
+ * no quality, no codec, no seeder count and no "INSTANT" — there is a verb, a
+ * filename, a size and the name of the site it is on. The verb is the server's
+ * `action`, which is the distinction between the two things Vimm publishes
+ * about an entry: their in-browser player, and the file itself.
+ */
+function offsiteSourceRow(card, s, isBest) {
+  const row = el('a', isBest ? 'source best offsite' : 'source offsite');
+  row.href = s.magnet ?? s.uri ?? '';
+  row.target = '_blank';
+  // noopener is the one that matters: without it the opened page gets a handle
+  // on this window and can navigate it. noreferrer keeps the search terms in
+  // the URL from travelling with the click.
+  row.rel = 'noopener noreferrer';
+
+  const verb = s.action === 'play' ? 'PLAY THERE' : 'DOWNLOAD';
+  row.setAttribute('aria-label',
+    `${verb === 'PLAY THERE' ? 'Play' : 'Download'} ${s.title} on ${card.external?.name || s.indexer}`
+    + ' (opens in a new tab)');
+  row.title = row.getAttribute('aria-label');
+
+  const l = el('div', 'sl');
+  l.append(el('span', 'q', verb));
+  // Deliberately the warning colour rather than the ok one. It is not a fault,
+  // it is a departure, and the row should not look like the ones that play here.
+  l.append(el('span', 'tag warn', 'leaves this site'));
+  if (s.source) l.append(el('span', 'tag', s.source));
+  l.append(el('span', 'name', s.title));
+  row.append(l);
+
+  const r = el('div', 'sr');
+  if (s.size) r.append(el('span', null, s.sizeHuman));
+  r.append(el('span', null, `${s.indexer} ↗`));
+  row.append(r);
   return row;
 }
 

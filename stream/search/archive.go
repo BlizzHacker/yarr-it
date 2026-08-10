@@ -181,7 +181,13 @@ func (s *server) deepenBySystem(ctx context.Context, q, kind string, f filters, 
 			cards = append(cards, c)
 		}
 	}
-	return cards
+	// The local catalogue is deepened for the same reason and at the same
+	// moment. It is a different source with the same shape of problem -- a
+	// capped slice of a larger catalogue, narrowed to one machine -- and doing
+	// it here means every one of the four response paths gets it, rather than
+	// three of them getting it and the fourth quietly returning less. Unlike
+	// the call above it touches no network. See vimmDeepen in vimm.go.
+	return s.vimmDeepen(q, kind, f, cards)
 }
 
 // What counts as a playable game.
@@ -195,6 +201,11 @@ func (s *server) deepenBySystem(ctx context.Context, q, kind string, f filters, 
 // in a browser -- that field is the definition, not a proxy for it. Pairing it
 // with mediatype:software keeps out anything that is not a program.
 const archiveScope = `emulator:[* TO *] AND mediatype:(software)`
+
+// archiveOrigin is what a person is told about where an archive.org result
+// comes from. One spelling, so a games card and a music card do not label
+// themselves "archive.org" and "Archive.org" in the same grid.
+const archiveOrigin = "archive.org"
 
 // Scopes for the other kinds. Each is the narrowest query that returns only
 // things of that kind, for the same reason archiveScope uses `emulator`: a
@@ -692,6 +703,10 @@ func archiveCards(docs []archiveDoc, kind string) []card {
 			Year:     archiveYear(d.Year),
 			Kind:     kind,
 			Instant:  true,
+			// Named on the card, because the source a click uses is labelled
+			// with the PLAYER -- "EmulatorJS", "Ruffle" -- and a person
+			// scanning a grid wants to know the place, not the runtime.
+			Origin: archiveOrigin,
 			Seeders:  0,
 			Popular:  d.Downloads,
 			Platform: system,

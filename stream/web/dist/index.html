@@ -9,14 +9,128 @@
 <link rel="manifest" href="/manifest.webmanifest" />
 <link rel="apple-touch-icon" href="/icon-192.6c78c24c11e6.png" />
 <link rel="icon" href="/icon-192.6c78c24c11e6.png" />
+<!--
+  The theme, before the first paint.
+
+  app.js is a module and therefore deferred, so anything it does happens after
+  the page has already been drawn. Setting the theme there means a light-theme
+  visitor sees a full dark page flash past on every single navigation, which
+  reads as the site loading twice.
+
+  This is the ONE place outside src/prefs.js that knows the storage key, and it
+  deliberately validates nothing: an unrecognised value simply matches no
+  attribute selector and the default theme applies, which is the same outcome
+  prefs.js reaches by checking. Anything that throws leaves the page exactly as
+  the stylesheet drew it.
+-->
+<script>
+  try {
+    var a = (JSON.parse(localStorage.getItem('yarrit.prefs') || '{}') || {}).appearance || {};
+    var r = document.documentElement;
+    if (a.theme) r.setAttribute('data-theme', a.theme);
+    if (a.covers) r.setAttribute('data-covers', a.covers);
+    if (a.motion) r.setAttribute('data-motion', a.motion);
+  } catch (e) { /* private mode, or no storage at all */ }
+</script>
 <style>
+  /* ---------- palette ----------
+     Every colour that changes between themes is a variable; the ones that do
+     not are literals on purpose. See --art-* below: a badge that sits on a
+     photograph is dark in every theme because the thing behind it is a
+     photograph, and theming it would make it unreadable on half the posters. */
   :root {
     --bg:#0b0d11; --bg-2:#0e1116; --panel:#151a22; --panel-2:#1c232d; --line:#252d3a;
     --fg:#e9edf3; --muted:#8b96a8; --dim:#5d6879;
     --accent:#5eead4; --accent-dim:#2dd4bf; --accent-ink:#04211d;
-    --warn:#fbbf24; --danger:#f87171; --dead:#5a6675;
+    --warn:#fbbf24; --danger:#f87171; --danger-ink:#1b0505; --dead:#5a6675;
     --r:12px; --shadow:0 8px 28px rgba(0,0,0,.45);
+
+    /* Tints of the three signal colours. Named rather than written inline so a
+       theme can restate them: the same 16% teal that reads as a highlight on a
+       near-black panel is invisible on a white one. */
+    --accent-soft:rgba(94,234,212,.16);
+    --accent-softer:rgba(94,234,212,.11);
+    --accent-faint:rgba(94,234,212,.07);
+    --warn-soft:rgba(251,191,36,.15);
+    --danger-soft:rgba(248,113,113,.16);
+
+    /* Surfaces that are not simply --panel: the translucent header, the
+       gradient over a hero image, and the amber notice's text. */
+    --header:rgba(11,13,17,.94);
+    --hero-mid:rgba(21,26,34,.35);
+    --notice-fg:#d8cfae;
+    --notice-line:rgba(251,191,36,.28);
+
+    /* Two health pills whose colours are their whole point -- purple for a
+       rejected key, orange for an incompatible version -- and which therefore
+       need a darker mix on a light background rather than the same one. */
+    --hp-auth:#c084fc; --hp-auth-soft:rgba(192,132,252,.15);
+    --hp-incompat:#fb923c; --hp-incompat-soft:rgba(251,146,60,.15);
+
+    /* On artwork. Constant across every theme by design. */
+    --art-scrim:rgba(4,6,9,.82);
+    --art-accent:#5eead4;
+
+    /* How big a cover is. One value, read by both the search grid and the
+       discover rails, so "bigger covers" means the same thing in both. */
+    --cover:168px; --cover-rail:150px;
   }
+
+  /* Deeper than dark, for the OLED phones and televisions this actually runs
+     on. Only the surfaces move -- text and signal colours are already correct
+     against black. */
+  :root[data-theme="midnight"] {
+    --bg:#000000; --bg-2:#05070a; --panel:#0d1116; --panel-2:#151b23; --line:#1f2733;
+    --header:rgba(0,0,0,.94); --hero-mid:rgba(13,17,22,.35);
+  }
+
+  /* The player and the reader stay dark in every theme, and that is deliberate
+     rather than an oversight: a white surround changes how the picture inside
+     it is perceived, which is why every cinema is painted black. */
+  :root[data-theme="light"] {
+    --bg:#f5f7fa; --bg-2:#eceff4; --panel:#ffffff; --panel-2:#eef1f6; --line:#d5dbe4;
+    --fg:#111722; --muted:#4e5867; --dim:#6a7484;
+    --accent:#0d7a70; --accent-dim:#0b6a61; --accent-ink:#ffffff;
+    --warn:#8a5a06; --danger:#b3261e; --danger-ink:#ffffff; --dead:#8b95a3;
+    --shadow:0 8px 28px rgba(15,23,42,.14);
+    --accent-soft:rgba(13,122,112,.13);
+    --accent-softer:rgba(13,122,112,.09);
+    --accent-faint:rgba(13,122,112,.06);
+    --warn-soft:rgba(138,90,6,.12);
+    --danger-soft:rgba(179,38,30,.12);
+    --header:rgba(245,247,250,.94);
+    --hero-mid:rgba(255,255,255,.35);
+    --notice-fg:#6b4e0a;
+    --notice-line:rgba(138,90,6,.32);
+    --hp-auth:#7028b8; --hp-auth-soft:rgba(112,40,184,.11);
+    --hp-incompat:#9a4a06; --hp-incompat-soft:rgba(154,74,6,.12);
+  }
+
+  /* Cover size. Restated inside the phone breakpoint rather than scaled from
+     it: 210px covers on a 375px screen is one and a half tiles per row, which
+     is not "large", it is broken. */
+  :root[data-covers="small"] { --cover:132px; --cover-rail:116px; }
+  :root[data-covers="large"] { --cover:214px; --cover-rail:196px; }
+  @media (max-width:720px) {
+    :root { --cover:132px; --cover-rail:118px; }
+    :root[data-covers="small"] { --cover:104px; --cover-rail:96px; }
+    :root[data-covers="large"] { --cover:168px; --cover-rail:150px; }
+  }
+
+  /* The same thing the OS-level reduced-motion switch does, for the people
+     whose OS has no such switch -- which includes most televisions. */
+  :root[data-motion="reduced"] *,
+  :root[data-motion="reduced"] *::before,
+  :root[data-motion="reduced"] *::after {
+    animation-duration:.001s !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001s !important;
+    scroll-behavior:auto !important;
+  }
+  :root[data-motion="reduced"] .tile:hover .poster,
+  :root[data-motion="reduced"] .tile:focus-visible .poster,
+  :root[data-motion="reduced"] .dl:hover,
+  :root[data-motion="reduced"] .tv-card.live:hover { transform:none; }
   * { box-sizing:border-box; }
   /* An explicit display: in author CSS beats the UA rule behind `hidden`,
      which once left the player overlay painted across the whole page. */
@@ -32,20 +146,20 @@
 
   /* ---------- privacy banner ---------- */
   #privacy {
-    background:linear-gradient(90deg,rgba(251,191,36,.14),rgba(251,191,36,.05));
-    border-bottom:1px solid rgba(251,191,36,.28);
+    background:linear-gradient(90deg,var(--warn-soft),transparent);
+    border-bottom:1px solid var(--notice-line);
     font-size:13.5px; padding:10px 0;
   }
   #privacy .wrap { display:flex; gap:14px; align-items:flex-start; }
   #privacy b { color:var(--warn); }
-  #privacy p { margin:0; color:#d8cfae; }
+  #privacy p { margin:0; color:var(--notice-fg); }
   #privacy button {
-    margin-left:auto; background:transparent; border:1px solid rgba(251,191,36,.4);
+    margin-left:auto; background:transparent; border:1px solid var(--notice-line);
     color:var(--warn); border-radius:8px; padding:4px 12px; cursor:pointer; white-space:nowrap;
   }
 
   /* ---------- header ---------- */
-  header { position:sticky; top:0; z-index:30; background:rgba(11,13,17,.94); backdrop-filter:blur(12px); border-bottom:1px solid var(--line); }
+  header { position:sticky; top:0; z-index:30; background:var(--header); backdrop-filter:blur(12px); border-bottom:1px solid var(--line); }
   .bar { display:flex; align-items:center; gap:16px; padding:14px 0; }
   .brand { font-size:19px; font-weight:700; letter-spacing:-.02em; white-space:nowrap; display:flex; align-items:center; gap:9px; }
   .brandmark { width:30px; height:30px; border-radius:7px; }
@@ -70,7 +184,7 @@
     display:flex; align-items:baseline; gap:10px; justify-content:space-between;
     padding:9px 11px; border-radius:calc(var(--r) - 3px); cursor:pointer;
   }
-  .sg.on, .sg:hover { background:rgba(94,234,212,.12); }
+  .sg.on, .sg:hover { background:var(--accent-softer); }
   .sg-title { color:var(--fg); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sg-hint { color:var(--muted); font-size:12px; white-space:nowrap; flex:none; }
   /* Progress lives on the result bar's own line. A note that appears below it
@@ -94,7 +208,7 @@
   .btn { padding:11px 20px; background:var(--accent); color:var(--accent-ink); font-weight:650; border:0; border-radius:var(--r); cursor:pointer; }
   .btn:hover { background:var(--accent-dim); }
   .btn-ghost { background:transparent; color:var(--accent); border:1px solid var(--accent-dim); }
-  .btn-ghost:hover { background:rgba(94,234,212,.1); }
+  .btn-ghost:hover { background:var(--accent-softer); }
   #settings-open {
     flex:none; display:grid; place-items:center; width:43px; height:43px;
     background:var(--panel); border:1px solid var(--line); color:var(--muted);
@@ -116,9 +230,9 @@
     border:1px solid var(--line); color:var(--muted); cursor:pointer; user-select:none;
   }
   .chip:hover { border-color:var(--accent-dim); color:var(--fg); }
-  .chip.on { background:rgba(94,234,212,.16); border-color:var(--accent-dim); color:var(--accent); }
+  .chip.on { background:var(--accent-soft); border-color:var(--accent-dim); color:var(--accent); }
   .chip.adult { border-style:dashed; }
-  .chip.adult.on { background:rgba(248,113,113,.16); border-color:var(--danger); color:var(--danger); border-style:solid; }
+  .chip.adult.on { background:var(--danger-soft); border-color:var(--danger); color:var(--danger); border-style:solid; }
   .fcats { flex-wrap:wrap; gap:6px; min-width:0; }
   /* The category chips have to be their own flex container or they cannot
      wrap: as one inline span they are a single unshrinkable flex item, and
@@ -134,6 +248,16 @@
      quieter state rather than hidden outright. */
   #filters.awaiting { opacity:.72; }
   #filter-reset { margin-left:auto; background:none; border:0; color:var(--dim); cursor:pointer; font-size:12.5px; text-decoration:underline; }
+  #filter-reset:hover { color:var(--fg); }
+  /* With filters on, this stops being a footnote and becomes the answer to
+     "why am I seeing so little" -- so it is drawn as a control rather than as
+     a link, and it says how many. */
+  #filter-reset.armed {
+    text-decoration:none; color:var(--accent); border:1px solid var(--accent-dim);
+    background:var(--accent-softer); border-radius:999px; padding:4px 12px; font-weight:600;
+  }
+  #filter-reset.armed:hover { background:var(--accent-soft); color:var(--accent); }
+  #filter-reset:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
   /* ---------- results ---------- */
   main { padding:24px 0 70px; }
@@ -143,7 +267,7 @@
   .resultbar { display:flex; align-items:baseline; gap:10px; margin:0 0 16px; color:var(--muted); font-size:13px; }
   .resultbar b { color:var(--fg); font-size:15px; }
 
-  #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:20px 16px; }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(var(--cover),1fr)); gap:20px 16px; }
   .tile { cursor:pointer; border:0; background:none; padding:0; text-align:left; color:inherit; }
   .poster {
     position:relative; aspect-ratio:2/3; border-radius:var(--r); overflow:hidden;
@@ -161,7 +285,7 @@
   }
   .badge {
     position:absolute; top:8px; left:8px; font-size:11px; font-weight:650;
-    padding:3px 8px; border-radius:6px; background:rgba(4,6,9,.82); color:var(--accent);
+    padding:3px 8px; border-radius:6px; background:var(--art-scrim); color:var(--art-accent);
     backdrop-filter:blur(4px);
   }
   .badge.dead { color:var(--dead); }
@@ -186,9 +310,9 @@
 
   .rating {
     position:absolute; top:8px; right:8px; font-size:11px; font-weight:650;
-    padding:3px 7px; border-radius:6px; background:rgba(4,6,9,.82); color:var(--warn);
+    padding:3px 7px; border-radius:6px; background:var(--art-scrim); color:var(--warn);
   }
-  .best-q { position:absolute; bottom:8px; left:8px; font-size:11px; font-weight:650; padding:3px 8px; border-radius:6px; background:rgba(4,6,9,.82); color:var(--fg); }
+  .best-q { position:absolute; bottom:8px; left:8px; font-size:11px; font-weight:650; padding:3px 8px; border-radius:6px; background:var(--art-scrim); color:#e9edf3; }
   .tname { margin:9px 2px 0; font-size:13.5px; font-weight:600; line-height:1.3;
            display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .tmeta { margin:2px 2px 0; font-size:12px; color:var(--dim); }
@@ -204,7 +328,7 @@
   #detail { position:fixed; inset:0; z-index:40; background:rgba(4,6,9,.82); backdrop-filter:blur(6px); overflow-y:auto; }
   .sheet { max-width:960px; margin:38px auto; background:var(--panel); border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:var(--shadow); }
   .hero { position:relative; aspect-ratio:16/7; background:var(--panel-2) center/cover no-repeat; }
-  .hero::after { content:''; position:absolute; inset:0; background:linear-gradient(to top,var(--panel) 4%,rgba(21,26,34,.35) 60%,transparent); }
+  .hero::after { content:''; position:absolute; inset:0; background:linear-gradient(to top,var(--panel) 4%,var(--hero-mid) 60%,transparent); }
   .hero-in { position:absolute; inset:auto 0 0 0; padding:22px 26px; display:flex; gap:18px; align-items:flex-end; z-index:1; }
   .hero-poster { width:104px; aspect-ratio:2/3; border-radius:9px; background:var(--panel-2) center/cover no-repeat; border:1px solid var(--line); flex:none; }
   .hero-txt h2 { margin:0 0 5px; font-size:25px; letter-spacing:-.02em; }
@@ -219,13 +343,13 @@
             background:transparent; border:0; border-bottom:1px solid var(--line); color:var(--fg); cursor:pointer; }
   .source:last-child { border-bottom:0; }
   .source:hover { background:var(--panel-2); }
-  .source.best { background:rgba(94,234,212,.07); }
+  .source.best { background:var(--accent-faint); }
   .sl { display:flex; align-items:center; gap:9px; min-width:0; flex:1; }
   .sr { display:flex; align-items:center; gap:13px; font-size:12px; color:var(--muted); white-space:nowrap; }
   .q { font-weight:650; min-width:46px; font-size:13px; }
   .tag { font-size:11px; padding:2px 7px; border-radius:5px; background:var(--panel-2); color:var(--muted); }
-  .tag.ok { background:rgba(94,234,212,.15); color:var(--accent); }
-  .tag.warn { background:rgba(251,191,36,.15); color:var(--warn); }
+  .tag.ok { background:var(--accent-soft); color:var(--accent); }
+  .tag.warn { background:var(--warn-soft); color:var(--warn); }
   .name { font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .seeds { color:var(--accent); font-weight:600; }
   .seeds.dead { color:var(--dead); }
@@ -234,9 +358,85 @@
   /* Above the detail sheet, below the player: settings can be opened from on
      top of a detail sheet, but nothing should ever cover playback. */
   #settings { position:fixed; inset:0; z-index:45; background:rgba(4,6,9,.82); backdrop-filter:blur(6px); overflow-y:auto; }
-  .set-sheet { max-width:560px; margin:60px auto; padding:22px 24px 22px; background:var(--panel);
+  .set-sheet { max-width:640px; margin:60px auto; padding:20px 24px 22px; background:var(--panel);
                border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); }
-  .set-sheet h2 { margin:0 0 18px; font-size:21px; letter-spacing:-.02em; }
+  .set-sheet h2 { margin:0; font-size:21px; letter-spacing:-.02em; }
+  .set-head { display:flex; align-items:center; gap:12px; margin:0 0 14px; }
+  .set-x {
+    margin-left:auto; flex:none; width:34px; height:34px; display:grid; place-items:center;
+    background:transparent; border:1px solid var(--line); color:var(--muted);
+    border-radius:9px; cursor:pointer; font-size:14px; line-height:1;
+  }
+  .set-x:hover { border-color:var(--accent-dim); color:var(--accent); }
+
+  /* Six sections, one press apart. The same chips as the filter bar, because
+     this is a panel on Yarr.It rather than a settings page bolted to it. The
+     row scrolls sideways on a phone rather than wrapping into three lines that
+     push the first control below the fold. */
+  .set-tabs {
+    display:flex; gap:7px; margin:0 0 20px; padding:0 0 10px;
+    border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:none;
+  }
+  .set-tabs::-webkit-scrollbar { display:none; }
+  .set-tabs .chip { flex:none; font-size:12.5px; padding:6px 13px; }
+  .set-pane[hidden] { display:none; }
+
+  /* A row of mutually exclusive chips. Buttons rather than a <select> because
+     three short words side by side can be read at a glance and compared, which
+     is the whole question being asked; a closed dropdown shows one of them. */
+  .set-choice { gap:7px; }
+  .set-choice .chip { padding:6px 14px; font-size:13px; }
+  .set-wide { width:100%; max-width:340px; padding:9px 12px; font-size:14px; }
+
+  /* A tickbox with its reason next to it. The reason is the point: half of
+     these change something a person cannot see the effect of until much later,
+     and an unexplained switch gets left alone. */
+  .set-check {
+    display:flex; align-items:flex-start; gap:11px; margin:0 0 14px; cursor:pointer;
+  }
+  .set-check input { flex:none; width:17px; height:17px; margin:2px 0 0; accent-color:var(--accent-dim); }
+  .set-check b { display:block; font-size:14px; font-weight:600; color:var(--fg); }
+  .set-check em { display:block; font-style:normal; font-size:12.5px; color:var(--muted);
+                  margin-top:3px; max-width:56ch; line-height:1.45; }
+  .set-check:hover b { color:var(--accent); }
+
+  /* One saved thing, and the way to unsave it. */
+  .set-item {
+    display:flex; align-items:center; gap:12px; padding:10px 13px; margin:0 0 8px;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:var(--r);
+  }
+  .set-item-txt { min-width:0; flex:1; }
+  .set-item-name { font-size:13.5px; }
+  .set-item-sub { font-size:12px; color:var(--dim); margin-top:2px; }
+  .set-item button {
+    flex:none; background:none; border:1px solid var(--line); color:var(--muted);
+    border-radius:7px; padding:4px 11px; font-size:12px; cursor:pointer;
+  }
+  .set-item button:hover { border-color:var(--danger); color:var(--danger); }
+  .set-none { color:var(--dim); font-size:13px; margin:0 0 10px; }
+
+  /* Both of these were in the markup with no rule anywhere. An unstyled <pre>
+     in a fixed-width sheet does not wrap, so the vpn-killswitch command --
+     which is 62 characters -- pushed the whole panel sideways. */
+  .set-cmd {
+    margin:0 0 4px; padding:10px 12px; overflow-x:auto;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:9px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+    color:var(--fg); white-space:pre-wrap; word-break:break-word;
+  }
+  .set-who { align-self:center; color:var(--muted); font-size:13.5px; }
+
+  @media (max-width:720px) {
+    /* The panel IS the screen on a phone; a 60px margin over a scrim just
+       makes a small sheet you scroll inside another thing you scroll. */
+    .set-sheet { margin:0; border-radius:0; min-height:100vh; max-width:none; padding:16px 16px 24px; }
+    .set-check em { max-width:none; }
+    /* Wrapped, not scrolled. Measured at 375px the strip is 493px wide inside a
+       341px box, so "Account" and "Your data" sat off the edge behind a
+       scrollbar that is deliberately hidden -- two sections a phone user would
+       have no reason to believe existed. Two rows of three fit whole. */
+    .set-tabs { flex-wrap:wrap; overflow-x:visible; }
+  }
   .set-label { font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 6px; }
   .set-lede { color:var(--muted); font-size:13px; margin:0 0 13px; max-width:56ch; }
   .set-row { display:flex; gap:8px; flex-wrap:wrap; }
@@ -271,11 +471,11 @@
 
   .hp { font-size:11px; font-weight:650; padding:2px 8px; border-radius:999px;
         border:1px solid currentColor; white-space:nowrap; }
-  .hp-healthy        { color:var(--accent); background:rgba(94,234,212,.14); }
-  .hp-degraded       { color:var(--warn);   background:rgba(251,191,36,.14); }
-  .hp-auth_failed    { color:#c084fc;       background:rgba(192,132,252,.15); }
-  .hp-incompatible   { color:#fb923c;       background:rgba(251,146,60,.15); }
-  .hp-unreachable    { color:var(--danger); background:rgba(248,113,113,.14); }
+  .hp-healthy        { color:var(--accent); background:var(--accent-soft); }
+  .hp-degraded       { color:var(--warn);   background:var(--warn-soft); }
+  .hp-auth_failed    { color:var(--hp-auth); background:var(--hp-auth-soft); }
+  .hp-incompatible   { color:var(--hp-incompat); background:var(--hp-incompat-soft); }
+  .hp-unreachable    { color:var(--danger); background:var(--danger-soft); }
   .hp-not_configured { color:var(--dim);    background:rgba(93,104,121,.16); }
   .hp-untested       { color:var(--dim);    background:none; border-style:dashed; }
   .hp-testing        { color:var(--muted);  background:none; border-style:dashed; }
@@ -313,7 +513,7 @@
   #svc-editor .svc-check input { width:auto; flex:none; margin:0; }
 
   .set-foot { display:flex; align-items:center; gap:14px; margin-top:20px; padding-top:16px; border-top:1px solid var(--line); }
-  #set-reset { background:none; border:0; padding:0; color:var(--dim); cursor:pointer; font-size:12.5px; text-decoration:underline; }
+  #set-reset { align-self:center; background:none; border:0; padding:0; color:var(--dim); cursor:pointer; font-size:12.5px; text-decoration:underline; }
   #set-reset:hover { color:var(--fg); }
   #settings-close { margin-left:auto; }
 
@@ -324,7 +524,21 @@
   #player-sub { color:var(--dim); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #player-close { margin-left:auto; background:var(--panel-2); border:1px solid var(--line); color:var(--fg); padding:7px 14px; border-radius:9px; cursor:pointer; }
   .stage { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; padding:10px; }
-  video,#image { max-width:100%; max-height:100%; background:#000; border-radius:9px; }
+  /* max-* caps a picture and never lifts one, which is why a 320x240 Nostalgia
+     TV file played at 320x240 in the middle of a 1920x1080 screen -- about 3%
+     of the frame -- from the day the channel strip became the first thing on
+     the page. The real size is computed in src/videofit.js and set inline,
+     because how far a picture is worth magnifying depends on how big it
+     actually is, which is a fact CSS cannot see. These stay as the floor: they
+     are what contains an oversized source, and what applies for the moment
+     before metadata has loaded.
+
+     object-fit:contain is the safety net for the inline size: if the two ever
+     disagree about the aspect ratio, the picture letterboxes rather than
+     stretching, and a stretched face is far more obviously broken than a
+     black bar. */
+  video,#image { max-width:100%; max-height:100%; background:#000; border-radius:9px;
+                 object-fit:contain; }
   #embed { width:100%; height:100%; border:0; border-radius:9px; background:#000; display:block; }
   /* The frame their player runs in: a centred 4:3 box on a clean backdrop
      rather than a small canvas against a wall of black. Sized in JS from the
@@ -515,7 +729,7 @@
   }
   .tv-live {
     position:absolute; top:6px; left:6px; font-size:9.5px; font-weight:800; letter-spacing:.09em;
-    padding:2px 6px; border-radius:5px; background:var(--danger); color:#1b0505;
+    padding:2px 6px; border-radius:5px; background:var(--danger); color:var(--danger-ink);
   }
   .tv-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
   .tv-chan { display:flex; align-items:baseline; gap:8px; font-size:11px; }
@@ -552,7 +766,7 @@
   .shelf { margin-bottom:30px; }
   .shelf h3 { font-size:16px; margin:0 0 12px; letter-spacing:-.01em; }
   .rail {
-    display:grid; grid-auto-flow:column; grid-auto-columns:150px; gap:14px;
+    display:grid; grid-auto-flow:column; grid-auto-columns:var(--cover-rail); gap:14px;
     overflow-x:auto; overflow-y:hidden; padding-bottom:8px; scroll-snap-type:x proximity;
     scrollbar-width:thin; scrollbar-color:var(--line) transparent;
   }
@@ -589,7 +803,7 @@
   .verb {
     position:absolute; bottom:8px; right:8px; font-size:10.5px; font-weight:700;
     letter-spacing:.06em; text-transform:uppercase; padding:3px 8px; border-radius:6px;
-    background:rgba(4,6,9,.84); color:var(--accent); backdrop-filter:blur(4px);
+    background:var(--art-scrim); color:var(--art-accent); backdrop-filter:blur(4px);
   }
 
   /* A missing cover is the normal case outside film and TV: comics, games and
@@ -601,7 +815,7 @@
     position:absolute; inset:0; display:flex; flex-direction:column; gap:8px;
     align-items:center; justify-content:center; padding:14px; text-align:center;
     background:
-      radial-gradient(120% 80% at 50% 0%, rgba(94,234,212,.09), transparent 70%),
+      radial-gradient(120% 80% at 50% 0%, var(--accent-faint), transparent 70%),
       var(--panel-2);
   }
   .noart-kind { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-dim); }
@@ -727,7 +941,7 @@
     #settings-open { position:absolute; top:14px; right:0; width:44px; height:44px; }
     #magnet-row { padding-bottom:12px; }
 
-    #grid { grid-template-columns:repeat(auto-fill,minmax(132px,1fr)); gap:16px 12px; }
+    #grid { gap:16px 12px; }
     .hero-in { flex-direction:column; align-items:flex-start; gap:12px; padding:16px; }
     .hero-poster { width:74px; }
     .sheet { margin:0; border-radius:0; min-height:100vh; }
@@ -737,7 +951,7 @@
        stack into three lines. Narrower tracks and a tighter head keep one row
        of the page scrolling vertically and the rails horizontally, which is
        the whole reason they are rails. */
-    .rail { grid-auto-columns:118px; gap:10px; }
+    .rail { gap:10px; }
     .domain { margin-bottom:20px; }
     .domain-head { margin-bottom:11px; gap:8px; flex-wrap:wrap; }
     .domain-head h2 { font-size:17px; }
@@ -810,7 +1024,10 @@
         <button class="btn" type="submit">Search</button>
       </form>
       <button class="btn btn-ghost hdr-btn" id="settings-open" type="button">
-          <span class="hdr-ico" aria-hidden="true">⚙</span><span class="hdr-label">Your services</span>
+          <!-- It said "Your services" when a service list was most of what was
+               behind it. It is a settings panel now, and calling it after one
+               of its six sections sends people looking elsewhere for the rest. -->
+          <span class="hdr-ico" aria-hidden="true">⚙</span><span class="hdr-label">Settings</span>
         </button>
         <button class="btn btn-ghost hdr-btn" id="signin-btn" type="button" hidden>
           <span class="hdr-label">Sign in</span>
@@ -851,6 +1068,15 @@
       <span class="chip" id="f-instant" title="Hosted backups — always up, always play">Backups</span>
       <span class="chip" id="f-swarm" title="Torrents — depend on who is seeding">Torrents</span>
     </div>
+    <!-- The language filter. Hidden until there is something for it to act on:
+         the server publishes a `languages` facet only when the results carry
+         language facts at all, which today means music. Shipped without any
+         control at all, the music domain quietly defaulted to English and the
+         only way to see everything was to hand-edit the URL. -->
+    <div class="fgroup" id="f-lang-group" hidden>
+      <span class="flabel"><label for="f-lang">Language</label></span>
+      <select class="fsel" id="f-lang"></select>
+    </div>
     <div class="fgroup">
       <span class="flabel">Sort</span>
       <select class="fsel" id="f-sort">
@@ -862,6 +1088,10 @@
         <option value="title">A–Z</option>
       </select>
     </div>
+    <!-- These filters are remembered between visits, so this button has to say
+         whether any are set. A permanent grey "Reset" next to a bar of controls
+         answers no question anybody has; a filter somebody set last week and
+         cannot see is how a working site starts looking broken. -->
     <button id="filter-reset" type="button">Reset</button>
   </div>
 </section>
@@ -977,46 +1207,198 @@
   </div>
 </div>
 
-<div id="settings" hidden>
-  <div class="set-sheet">
-    <h2>Settings</h2>
+<!--
+  Settings.
 
-      <p class="set-label">Account</p>
+  It used to be three things in one column: sign in, one server address, and a
+  form for adding a service. Everything else a person might reasonably want to
+  change either did not exist or was reachable only by editing localStorage in a
+  console -- including the language filter the search API had just started
+  applying by default.
+
+  Panes rather than one long scroll. Nine sections in a 560px modal is a page
+  somebody scrolls past looking for the one thing they came for; five named
+  groups is a place where the thing they came for is one press away. The
+  vocabulary is the site's own -- the same chips, the same labels, the same
+  ledes -- because this is a panel on Yarr.It, not a settings page bolted to it.
+-->
+<div id="settings" hidden>
+  <div class="set-sheet" role="dialog" aria-modal="true" aria-labelledby="set-heading">
+    <div class="set-head">
+      <h2 id="set-heading">Settings</h2>
+      <button class="set-x" id="settings-x" type="button" aria-label="Close settings">✕</button>
+    </div>
+
+    <div class="set-tabs" role="tablist" aria-label="Settings sections">
+      <button class="chip on" role="tab" type="button" data-pane="look" aria-selected="true">Look &amp; feel</button>
+      <button class="chip" role="tab" type="button" data-pane="watch" aria-selected="false">Playback</button>
+      <button class="chip" role="tab" type="button" data-pane="find" aria-selected="false">Search</button>
+      <button class="chip" role="tab" type="button" data-pane="services" aria-selected="false">Services</button>
+      <button class="chip" role="tab" type="button" data-pane="account" aria-selected="false">Account</button>
+      <button class="chip" role="tab" type="button" data-pane="data" aria-selected="false">Your data</button>
+    </div>
+
+    <!-- ---------------------------------------------------------- look -->
+    <div class="set-pane" id="pane-look" role="tabpanel">
+      <p class="set-label">Theme</p>
       <p class="set-lede">
-        Optional. Your services below work signed out and always will — this is
-        only for a shelf that follows you between devices, and for pairing a TV.
+        Applied before the page is drawn, so switching costs no flash of the
+        other one. The player and the page reader stay dark in every theme on
+        purpose — a bright surround changes how the picture inside it looks,
+        which is why cinemas are painted black.
       </p>
-      <div class="set-row">
-        <span id="acct-who" class="set-who">Not signed in</span>
-        <button class="btn" id="acct-signin" type="button">Sign in</button>
-        <button class="btn btn-ghost" id="acct-signout" type="button" hidden>Sign out</button>
+      <div class="set-row set-choice" id="set-theme" role="radiogroup" aria-label="Theme">
+        <button class="chip" type="button" data-value="dark">Dark</button>
+        <button class="chip" type="button" data-value="midnight">Midnight</button>
+        <button class="chip" type="button" data-value="light">Light</button>
       </div>
 
       <div class="set-sep"></div>
 
-      <p class="set-label">Network protection</p>
-      <p class="set-lede" id="vpn-lede"></p>
-      <pre class="set-cmd" id="vpn-cmd"></pre>
-      <p class="set-result" id="vpn-status" hidden></p>
+      <p class="set-label">Cover size</p>
+      <p class="set-lede">
+        How big the artwork is, in the search grid and in every discover row.
+        Large is for a television across a room; small fits more of the
+        catalogue on screen at once.
+      </p>
+      <div class="set-row set-choice" id="set-covers" role="radiogroup" aria-label="Cover size">
+        <button class="chip" type="button" data-value="small">Small</button>
+        <button class="chip" type="button" data-value="medium">Medium</button>
+        <button class="chip" type="button" data-value="large">Large</button>
+      </div>
 
       <div class="set-sep"></div>
 
-    <p class="set-label">Server</p>
-    <p class="set-lede">
-      Leave this blank to use whichever server delivered this page — which is why a copy you host
-      yourself needs no setting up at all.
-    </p>
-    <div class="set-row">
-      <input id="set-server" placeholder="this site" autocomplete="off" spellcheck="false"
-             inputmode="url" />
-      <button class="btn btn-ghost" id="set-test" type="button">Test</button>
-      <button class="btn" id="set-save" type="button">Save</button>
+      <p class="set-label">Motion</p>
+      <label class="set-check">
+        <input id="set-motion" type="checkbox" />
+        <span>
+          <b>Reduce motion</b>
+          <em>Turns off the tile lift, the loading shimmer and the progress
+              pulse. Your system setting already does this where you have one —
+              most televisions do not.</em>
+        </span>
+      </label>
     </div>
-    <p class="set-result" id="set-result" hidden></p>
 
-    <div class="set-sep"></div>
+    <!-- ------------------------------------------------------- playback -->
+    <div class="set-pane" id="pane-watch" role="tabpanel" hidden>
+      <p class="set-label">Picture</p>
+      <p class="set-lede">
+        Nostalgia TV and most of archive.org is 320×240 to 496×368 — old
+        television, at the size it was broadcast. Filling scales it up to a
+        whole-number multiple and asks for crisp edges rather than a smeared
+        one; it never crops, and it never touches a source that is already
+        large.
+      </p>
+      <div class="set-row set-choice" id="set-upscale" role="radiogroup" aria-label="Small video">
+        <button class="chip" type="button" data-value="fill">Fill the screen</button>
+        <button class="chip" type="button" data-value="natural">Keep original size</button>
+      </div>
 
-    <p class="set-label">Add-ons</p>
+      <div class="set-sep"></div>
+
+      <p class="set-label">Behaviour</p>
+      <label class="set-check">
+        <input id="set-autoplay" type="checkbox" />
+        <span>
+          <b>Start playing as soon as it can</b>
+          <em>Off means the picture waits for you to press play. A channel you
+              tuned into is always live either way — it does not start from the
+              beginning.</em>
+        </span>
+      </label>
+      <label class="set-check">
+        <input id="set-subtitles" type="checkbox" />
+        <span>
+          <b>Turn on subtitles when the release has them</b>
+          <em>Most video torrents carry .srt files next to the video. Yarr.It
+              converts them in the page; this decides whether one comes up by
+              itself, preferring the language chosen under Search.</em>
+        </span>
+      </label>
+
+      <div class="set-sep"></div>
+
+      <p class="set-label">Game player</p>
+      <p class="set-lede">
+        Which player an archive.org game starts in, when both can run it. You
+        can still switch mid-game from the bar above the picture.
+      </p>
+      <div class="set-row set-choice" id="set-gameplayer" role="radiogroup" aria-label="Game player">
+        <button class="chip" type="button" data-value="emulatorjs">Yarr.It player</button>
+        <button class="chip" type="button" data-value="archive">Internet Archive</button>
+      </div>
+    </div>
+
+    <!-- --------------------------------------------------------- search -->
+    <div class="set-pane" id="pane-find" role="tabpanel" hidden>
+      <p class="set-label">Language</p>
+      <p class="set-lede">
+        Music results are filtered to English unless you say otherwise — that is
+        the server's default, and this is where it is stated rather than
+        implied. An item that says nothing about its language is always kept:
+        most of the Live Music Archive never filled the field in. This also
+        picks which subtitle track comes up first.
+      </p>
+      <div class="set-row">
+        <select class="fsel set-wide" id="set-lang" aria-label="Preferred language"></select>
+      </div>
+
+      <div class="set-sep"></div>
+
+      <p class="set-label">Results</p>
+      <label class="set-check">
+        <input id="set-adult" type="checkbox" />
+        <span>
+          <b>Show adult results</b>
+          <em>Off by default and excluded by the server, not merely hidden here.
+              Ticking a category never turns this on.</em>
+        </span>
+      </label>
+      <label class="set-check">
+        <input id="set-websafe" type="checkbox" />
+        <span>
+          <b>Only sources my browser can play</b>
+          <em>Hides releases that need an external player — mostly x265 and
+              MKV. Fewer results, all of which will start.</em>
+        </span>
+      </label>
+
+      <div class="set-sep"></div>
+
+      <p class="set-label">Saved filters</p>
+      <p class="set-lede">
+        Sort order, minimum seeders, size, quality and codec are remembered per
+        category, because "at least 40 seeders" is a sentence about a swarm and
+        means nothing about an archive.org concert. This is everything this
+        browser is currently holding.
+      </p>
+      <div id="set-filters"></div>
+    </div>
+
+    <!-- ------------------------------------------------------- services -->
+    <div class="set-pane" id="pane-services" role="tabpanel" hidden>
+      <p class="set-label">Server</p>
+      <p class="set-lede">
+        Leave this blank to use whichever server delivered this page — which is why a copy you host
+        yourself needs no setting up at all.
+      </p>
+      <div class="set-row">
+        <input id="set-server" placeholder="this site" autocomplete="off" spellcheck="false"
+               inputmode="url" />
+        <button class="btn btn-ghost" id="set-test" type="button">Test</button>
+        <button class="btn" id="set-save" type="button">Save</button>
+        <!-- Beside the field it undoes. In the panel's footer it sat under
+             every section, including three that have nothing to do with which
+             server this client talks to. -->
+        <button id="set-reset" type="button">Use this site</button>
+      </div>
+      <p class="set-result" id="set-result" hidden></p>
+
+      <div class="set-sep"></div>
+
+      <p class="set-label">Add-ons</p>
       <p class="set-lede">
         Yarr.It speaks the Stremio add-on protocol, so add-ons written for Stremio
         work here — in a browser, with nothing to install. Paste an add-on's
@@ -1033,26 +1415,26 @@
       <div class="set-sep"></div>
 
       <p class="set-label">Your services</p>
-    <p class="set-lede">
-      Connect the Radarr, Jellyfin, Plex, Komga or RomM you run yourself. No account, ever —
-      this list lives in this browser and nowhere else, so a machine you have never signed in
-      on still reaches your own setup.
-    </p>
+      <p class="set-lede">
+        Connect the Radarr, Jellyfin, Plex, Komga or RomM you run yourself. No account, ever —
+        this list lives in this browser and nowhere else, so a machine you have never signed in
+        on still reaches your own setup.
+      </p>
 
-    <div id="svc-list"></div>
-    <div id="svc-advice" hidden></div>
+      <div id="svc-list"></div>
+      <div id="svc-advice" hidden></div>
 
-    <div class="set-row" id="svc-buttons">
-      <button class="btn" id="svc-add" type="button">Add a service</button>
-      <button class="btn btn-ghost" id="svc-test-all" type="button">Test all</button>
-    </div>
+      <div class="set-row" id="svc-buttons">
+        <button class="btn" id="svc-add" type="button">Add a service</button>
+        <button class="btn btn-ghost" id="svc-test-all" type="button">Test all</button>
+      </div>
 
-    <p class="svc-keynote">
-      A key or token you type here is saved in <b>this browser's own storage</b> and sent only to
-      the address you gave. It is never sent to yarrit.com, and it is never written into a link.
-    </p>
+      <p class="svc-keynote">
+        A key or token you type here is saved in <b>this browser's own storage</b> and sent only to
+        the address you gave. It is never sent to yarrit.com, and it is never written into a link.
+      </p>
 
-    <form id="svc-editor" hidden autocomplete="off">
+      <form id="svc-editor" hidden autocomplete="off">
       <div class="svc-field">
         <label class="set-label" for="svc-type">What is it</label>
         <select id="svc-type"></select>
@@ -1081,10 +1463,53 @@
         <button class="btn btn-ghost" id="svc-test-one" type="button">Test</button>
         <button class="btn btn-ghost" id="svc-cancel" type="button">Cancel</button>
       </div>
-    </form>
+      </form>
+    </div>
+
+    <!-- -------------------------------------------------------- account -->
+    <div class="set-pane" id="pane-account" role="tabpanel" hidden>
+      <p class="set-label">Account</p>
+      <p class="set-lede">
+        Optional. Everything else in here works signed out and always will — this is
+        only for a shelf that follows you between devices, and for pairing a TV.
+      </p>
+      <div class="set-row">
+        <span id="acct-who" class="set-who">Not signed in</span>
+        <button class="btn" id="acct-signin" type="button">Sign in</button>
+        <button class="btn btn-ghost" id="acct-signout" type="button" hidden>Sign out</button>
+      </div>
+
+      <div class="set-sep"></div>
+
+      <p class="set-label">Network protection</p>
+      <p class="set-lede" id="vpn-lede"></p>
+      <pre class="set-cmd" id="vpn-cmd"></pre>
+      <p class="set-result" id="vpn-status" hidden></p>
+    </div>
+
+    <!-- ------------------------------------------------------ your data -->
+    <div class="set-pane" id="pane-data" role="tabpanel" hidden>
+      <p class="set-label">What this browser is holding</p>
+      <p class="set-lede">
+        All of it is local. Nothing here has ever been sent to yarrit.com, there
+        is no account behind any of it, and clearing your browser's site data
+        removes the lot. Listed so that "it remembers things" is something you
+        can check rather than something you have to take on trust.
+      </p>
+      <div id="set-storage"></div>
+      <p class="set-result" id="set-storage-result" hidden></p>
+
+      <div class="set-sep"></div>
+
+      <p class="set-label">Elsewhere</p>
+      <p class="set-lede" id="set-idb">
+        Firmware you supplied and any offline sources are kept in this browser's
+        database rather than in the list above; your browser's own "clear site
+        data" is what removes those.
+      </p>
+    </div>
 
     <div class="set-foot">
-      <button id="set-reset" type="button">Use this site</button>
       <button class="btn btn-ghost" id="settings-close" type="button">Close</button>
     </div>
   </div>
@@ -1167,6 +1592,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=81250fc27ff0"></script>
+<script type="module" src="/app.js?v=bef727789daf"></script>
 </body>
 </html>

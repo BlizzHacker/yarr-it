@@ -318,6 +318,19 @@ func (j *searchJob) run(s *server) {
 
 	var wg sync.WaitGroup
 
+	// The local catalogue, first and synchronously.
+	//
+	// It is the only source on this box that answers from memory, so it is the
+	// only one that can be certain of reaching the first paint -- and running
+	// it HERE, before any goroutine is started, is what makes that certain
+	// rather than likely. firstWave is released by whichever fast source
+	// finishes first, including a failed one; anything that adds cards after
+	// that release has missed the paint it was meant to be part of. A scan of a
+	// few thousand pre-lowercased titles costs a fraction of a millisecond, so
+	// there is nothing to gain by moving it off this goroutine and a real
+	// property to lose. See vimm.go.
+	j.vimmStage(s)
+
 	// archive.org is the fast half and the only thing the first paint waits
 	// for. It is a public metadata query with no queue behind it: measured
 	// 120-250ms from the VPS on a warm connection, against 3-30s for the
@@ -406,6 +419,38 @@ func (j *searchJob) enrichArt(ctx context.Context, s *server) {
 	}
 	j.rev++
 	j.mu.Unlock()
+}
+
+// vimmStage adds whatever the imported Vimm's Lair catalogue holds for this
+// query, and says what it did in the same vocabulary as every other source.
+//
+// "not-configured" rather than "none" for an instance with nothing imported:
+// it is a source that exists and could answer, which is exactly the distinction
+// the health endpoint already makes for Prowlarr, and it is actionable -- the
+// fix is to run the importer.
+func (j *searchJob) vimmStage(s *server) {
+	// Games and nothing else. "none" rather than "ok" for a film search, the
+	// same word archive.go's stage uses for a kind it has no scope for: this
+	// source did not answer, it did not apply, and reporting it as a source
+	// that looked and found nothing would misdescribe an empty film search.
+	if j.kind != "" && !sameDomain(j.kind, domainGame) {
+		j.mark("vimm", stageNone)
+		return
+	}
+	if s == nil || s.vimm == nil || s.vimm.count() == 0 {
+		j.mark("vimm", stageNotConfigured)
+		return
+	}
+	cards := s.vimm.search(j.query, j.kind, nil, vimmCardLimit)
+	if len(cards) == 0 {
+		// Asked, answered, holds nothing for this. Distinct from "not
+		// configured" and from "failed", both of which mean the question was
+		// never really put.
+		j.mark("vimm", stageOK)
+		return
+	}
+	j.add(cards)
+	j.mark("vimm", stageOK)
 }
 
 // indexerStage runs the torrent fan-out and records what happened to it, in

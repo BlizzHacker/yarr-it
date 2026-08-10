@@ -52,7 +52,10 @@ done
 
 # ENETUNREACH specifically, not a timeout. A timeout would mean the packet left
 # and nothing answered; unreachable means it was never built.
-err=$(ip netns exec "$NS" curl -s -m 5 "$PROWLARR" 2>&1 || true)
+# -sS, not -s: plain -s silences the very message this check then tries to
+# match, so err came back empty and the check failed against a namespace
+# that was in fact confining everything correctly.
+err=$(ip netns exec "$NS" curl -sS -m 5 "$PROWLARR" 2>&1 || true)
 case "$err" in
   *"Network is unreachable"*|*"Could not connect"*|*"Failed to connect"*)
     ok "the failure is a routing failure, not a timeout: ${err:0:60}" ;;
