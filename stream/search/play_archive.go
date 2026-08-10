@@ -98,6 +98,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -838,6 +839,23 @@ func parseArchiveSize(raw string) int64 {
 // playArchive answers "can this be played, and how".
 type playArchive struct {
 	client *http.Client
+
+	// Item metadata, kept. archive.org answers this in about 200ms when it is
+	// well and has been measured at 18 seconds when it is not -- past the
+	// 12-second deadline below, which turns every Play button on the site into
+	// "the Internet Archive did not answer". What is cached (the file list, the
+	// emulator id) describes a fixed item and effectively never changes, so the
+	// slowness costs the first viewer rather than every one of them.
+	//
+	// Failures are cached too, briefly, because without that an outage makes
+	// every request pay the full deadline again -- which is how a slow upstream
+	// becomes a slow site.
+	metaMu    sync.Mutex
+	metaCache map[string]playMetaEntry
+	// metaFlight collapses concurrent lookups of one item onto a single
+	// request, so ten people opening the same game during an outage cost one
+	// timeout rather than ten.
+	metaFlight map[string]chan struct{}
 	// metadataBase is where item metadata is read from. A field so a test can
 	// point it at a local server; there is no other reason to change it.
 	metadataBase string
@@ -1111,7 +1129,7 @@ func (p *playArchive) Resolve(ctx context.Context, id string) playAnswer {
 func (p *playArchive) ResolveWith(ctx context.Context, id string, opts playOptions) playAnswer {
 	answer := playAnswer{ID: id, Domain: "game", Type: "release", Route: routeNone}
 
-	meta, err := p.metadata(ctx, id)
+	meta, err := p.metadataCached(ctx, id)
 	if err != nil {
 		answer.Reasons = append(answer.Reasons, playReason{
 			Code:   reasonUpstream,
@@ -1352,6 +1370,59 @@ func noCoreDetail(plat archivePlatform) string {
 		"there is no browser emulator core for the %s, and no other machine's "+
 			"core will run its software. The Internet Archive's own player will "+
 			"run it.", name)
+}
+
+const (
+	playMetaTTL     = 6 * time.Hour
+	playMetaFailTTL = 90 * time.Second
+)
+
+type playMetaEntry struct {
+	meta    *playItemMetadata
+	err     error
+	expires time.Time
+}
+
+// metadataCached is metadata with the answer kept and concurrent callers
+// collapsed onto one request.
+func (p *playArchive) metadataCached(ctx context.Context, id string) (*playItemMetadata, error) {
+	for {
+		p.metaMu.Lock()
+		if p.metaCache == nil {
+			p.metaCache = make(map[string]playMetaEntry)
+			p.metaFlight = make(map[string]chan struct{})
+		}
+		if e, ok := p.metaCache[id]; ok && time.Now().Before(e.expires) {
+			p.metaMu.Unlock()
+			return e.meta, e.err
+		}
+		wait, running := p.metaFlight[id]
+		if !running {
+			done := make(chan struct{})
+			p.metaFlight[id] = done
+			p.metaMu.Unlock()
+
+			meta, err := p.metadata(ctx, id)
+			ttl := playMetaTTL
+			if err != nil {
+				ttl = playMetaFailTTL
+			}
+			p.metaMu.Lock()
+			p.metaCache[id] = playMetaEntry{meta: meta, err: err, expires: time.Now().Add(ttl)}
+			delete(p.metaFlight, id)
+			p.metaMu.Unlock()
+			close(done)
+			return meta, err
+		}
+		p.metaMu.Unlock()
+		// Somebody else is already asking. Wait for them rather than asking
+		// again -- but never outlive this request's own context.
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 }
 
 // metadata fetches one item.
