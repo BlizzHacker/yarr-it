@@ -1004,6 +1004,22 @@
     #signin-btn, #signout-btn { font-size: 13px; padding: 6px 10px; }
   }
 
+  /* The settings button rendered as an empty square at every width above a
+     phone. It is a 43px grid box, so its two children become two grid ROWS:
+     with 21px of content height between the paddings, the gear sat half out of
+     the box and the word "Settings" entirely below it, and the button's own
+     overflow:hidden cut both off. Nothing was visible but the border.
+
+     The label is the button's accessible name, so it is hidden the way the
+     narrow-viewport rule above hides it -- clipped, not removed -- rather than
+     display:none, which would take it from a screen reader too. */
+  #settings-open { padding: 0; }
+  #settings-open .hdr-label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  #settings-open .hdr-ico { font-size: 19px; line-height: 1; }
+
   /* The wordmark is the way back to the home page. It was a <div>, so clicking
      it did nothing at all -- the most obvious control on the page, inert. */
   a.brand { text-decoration: none; color: inherit; cursor: pointer; }
