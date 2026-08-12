@@ -64,7 +64,18 @@ if (!url) {
 const seconds = Number(flag('seconds', 12));
 const shot = flag('shot', '');
 
-const browser = await chromium.launch();
+// --gpu asks for the machine's real graphics rather than the software renderer
+// headless Chromium falls back to. It matters for exactly one core so far:
+// EmulatorJS gates ppsspp on WebGL2, and PPSSPP renders black under SwiftShader
+// while reporting itself started -- which is indistinguishable, from here, from
+// a game that does not work. Off by default so the common case stays
+// reproducible on a machine with no GPU at all.
+const browser = await chromium.launch(args.includes('--gpu') ? {
+  args: [
+    '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader',
+    '--use-angle=default', '--enable-features=Vulkan',
+  ],
+} : {});
 // A real viewport, because EmulatorJS sizes its canvas from one and a 0x0
 // window is its own way of producing a canvas that never grows.
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
@@ -83,22 +94,39 @@ await page.goto(url, { waitUntil: 'domcontentloaded' });
 
 // Isolation is checked before anything else, because it is the one failure that
 // explains every later one and is invisible in all of them.
-const isolated = await page.evaluate(() => ({
-  crossOriginIsolated: self.crossOriginIsolated === true,
-  sharedArrayBuffer: typeof SharedArrayBuffer === 'function',
-}));
+// WebGL2 is reported alongside isolation because it is the second capability a
+// core can silently need: EmulatorJS gates ppsspp on it specifically
+// (`requiresWebGL2`). A browser without a real one still answers with a
+// software renderer, so the RENDERER STRING is worth carrying -- a black PSP
+// screen under SwiftShader is a fact about the test machine, not about the site.
+const isolated = await page.evaluate(() => {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  const info = gl?.getExtension('WEBGL_debug_renderer_info');
+  return {
+    crossOriginIsolated: self.crossOriginIsolated === true,
+    sharedArrayBuffer: typeof SharedArrayBuffer === 'function',
+    webgl2: Boolean(gl),
+    renderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : (gl ? 'unknown' : 'none'),
+  };
+});
 
 // The start button is deliberate: autoplay policy holds a WASM emulator's run
 // loop until the page has had a real gesture, leaving the core loaded, the ROM
 // written into its filesystem, `started` true and the frame counter at zero.
-const start = page.locator('button.canvas-start');
-try {
-  await start.waitFor({ state: 'visible', timeout: 30_000 });
-} catch {
-  const note = await page.locator('#note').textContent().catch(() => '');
-  await fail('no start button appeared', { isolated, note: (note || '').trim() });
+// Our own page hangs the boot off this button. Another EmulatorJS page -- the
+// vault's, which is the control this script gets pointed at when the question
+// is "is it us or is it the core" -- may start on its own or use EmulatorJS's
+// own overlay. So the button is taken when it is there and its absence is not
+// itself a failure; a page that never draws is caught by the frame tests below,
+// which is where that finding belongs.
+for (const selector of ['button.canvas-start', '.ejs_start_button']) {
+  const start = page.locator(selector).first();
+  try {
+    await start.waitFor({ state: 'visible', timeout: 30_000 });
+    await start.click();
+    break;
+  } catch { /* try the next, then run without one */ }
 }
-await start.click();
 
 // The picture is sampled with a SCREENSHOT of the canvas element, not by
 // reading the canvas back from script. That is not fussiness -- it is the
@@ -143,12 +171,21 @@ const sample = async () => {
 /** A frame this small is a flat fill; a drawn one does not compress that far. */
 const FLAT_PNG_BYTES = 3000;
 
-// Long enough for a DOS game to get through its own boot and title screen; a
-// cartridge system is drawing well before this.
-await page.waitForTimeout(Math.round(seconds * 1000 * 0.6));
-const first = await sample();
-await page.waitForTimeout(Math.round(seconds * 1000 * 0.4));
-const second = await sample();
+// FOUR samples across the window, not two, and the reason is a real failure
+// this script let through: a PSP title drew a loading screen, went black, and
+// stayed black. Two samples straddled that transition, saw the picture "change"
+// and passed it. A game is not something that changed once -- it is something
+// still drawing at the END, so the last frame is judged on its own and the
+// movement test is applied to the late samples where a booted game must still
+// be moving.
+const SAMPLES = 4;
+const shots = [];
+for (let i = 0; i < SAMPLES; i += 1) {
+  await page.waitForTimeout(Math.round((seconds * 1000) / SAMPLES));
+  shots.push(await sample());
+}
+const first = shots[0];
+const second = shots[shots.length - 1];
 
 if (shot) await page.screenshot({ path: shot });
 
@@ -205,20 +242,31 @@ if (second.width <= 300 && second.height <= 150) {
   await fail('the canvas never grew past its default size, so no frame was drawn',
     { isolated, first: seen(first), second: seen(second) });
 }
+const frames = shots.map((s) => s.bytes);
+
+// The LAST frame, not any frame. A game that drew a loading screen and then
+// went black is not a game that runs, and judging the first sample would call
+// it one.
 if (second.bytes < FLAT_PNG_BYTES) {
-  await fail('the canvas is a flat fill -- a blank screen that reports itself running',
-    { isolated, first: seen(first), second: seen(second) });
+  await fail('the last frame is a flat fill -- it drew something and then went blank',
+    { isolated, frames, first: seen(first), second: seen(second) });
 }
-if (first.png && second.png && first.png.equals(second.png)) {
-  await fail('the picture did not change between samples -- a static screen, not a running game',
-    { isolated, first: seen(first), second: seen(second) });
+
+// Movement at the END, between the last two samples. Not "changed at some
+// point": a core that draws a loading screen and then goes black has changed,
+// and it is exactly the thing this must not pass. A game that is running is
+// still drawing when the clock runs out.
+const [before, last] = shots.slice(-2);
+if (before.png && last.png && before.png.equals(last.png)) {
+  await fail('the picture stopped changing -- a static screen, not a running game',
+    { isolated, frames, first: seen(first), second: seen(second) });
 }
 
 console.log(JSON.stringify({
   url, ok: true, isolated,
   core: second.core, threads: second.threads,
   resolution: `${second.width}x${second.height}`,
-  frameBytes: `${first.bytes} -> ${second.bytes}`,
+  frames,
   notes,
 }, null, 2));
 await browser.close();
