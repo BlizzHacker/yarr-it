@@ -230,8 +230,28 @@ type vimmEntry struct {
 	Core string `json:"core,omitempty"`
 }
 
-// vaultable reports whether this entry can be played here rather than linked.
-func (e vimmEntry) vaultable() bool { return e.Core != "" }
+// vimmThreadCores are the cores EmulatorJS will only start in a cross-origin
+// isolated context, because they want SharedArrayBuffer.
+//
+// This site is not one. It sends COOP but not COEP, and it cannot send COEP:
+// a document with one may only embed a cross-origin iframe that sends COEP
+// back, archive.org's player does not, and isolating this origin would
+// therefore trade every Internet Archive game for the PSP ones. The vault's
+// own pages ARE isolated, so those entries are offered there instead.
+//
+// Getting this wrong is not a slow player, it is a dead one: EmulatorJS
+// refuses to boot and writes "Error for site owner" over the canvas.
+var vimmThreadCores = map[string]bool{"psp": true, "dos": true}
+
+// vaultable reports whether this entry can be played HERE rather than linked.
+func (e vimmEntry) vaultable() bool {
+	return e.Core != "" && !vimmThreadCores[e.Core]
+}
+
+// vaultElsewhere reports an entry the vault can play but this origin cannot.
+func (e vimmEntry) vaultElsewhere() bool {
+	return e.Core != "" && vimmThreadCores[e.Core]
+}
 
 // playable and downloadable are derived from whether a verified target
 // survived the import, never from the export's own boolean. The two agreed on
@@ -674,6 +694,22 @@ func vimmCard(key string, entries []vimmEntry) (card, bool) {
 		if vault != "" && e.vaultable() {
 			sources = append(sources, vimmVaultSource(e, label, vault))
 			vaulted = true
+		}
+		// A PSP disc. The vault can run it and this origin cannot, so the offer
+		// is its player rather than ours -- an honest "play there" instead of a
+		// PLAY button that reaches a refusal to boot.
+		if vault != "" && e.vaultElsewhere() {
+			sources = append(sources, source{
+				Title:     label,
+				Indexer:   vimmSiteName,
+				Size:      e.Size,
+				SizeHuman: humanSize(e.Size),
+				Magnet:    vault + "/play/" + e.VaultID,
+				Source:    e.Platform,
+				WebSafe:   false,
+				Offsite:   true,
+				Action:    "play",
+			})
 		}
 		// Playing and downloading are separate offers because they are separate
 		// facts about the entry, and because they land in different places:

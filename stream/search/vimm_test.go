@@ -875,3 +875,34 @@ func TestWithNoVaultConfiguredNothingChanges(t *testing.T) {
 		}
 	}
 }
+
+// A core that needs threads cannot run on this origin, which sends COOP but
+// not COEP and cannot send COEP without blocking archive.org's own player.
+// Promising PLAY on one reaches EmulatorJS refusing to boot -- the exact
+// failure the vault's headers were added to fix, reintroduced one layer up.
+func TestAThreadOnlyCoreIsNotPromisedHere(t *testing.T) {
+	t.Setenv("VIMM_VAULT", "https://vimm.example")
+
+	e := vaultEntry()
+	e.Core = "psp"
+	e.Platform, e.System = "PS Portable", ""
+
+	c := storeWith(t, e).search("10-Yard Fight", "game", nil, 10)[0]
+	if c.Instant {
+		t.Error("Instant on a PSP entry; ppsspp needs SharedArrayBuffer and this origin has none")
+	}
+	for _, s := range c.Sources {
+		if s.WebSafe && !s.Offsite {
+			t.Errorf("source %q offers to play here, which cannot work", s.Magnet)
+		}
+	}
+	var toVault bool
+	for _, s := range c.Sources {
+		if strings.Contains(s.Magnet, "vimm.example/play/") && s.Action == "play" && s.Offsite {
+			toVault = true
+		}
+	}
+	if !toVault {
+		t.Error("no offer of the vault's own player, which IS isolated and can run it")
+	}
+}
