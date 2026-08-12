@@ -328,6 +328,27 @@ const (
 // -- `gbc`, `pcecd`, `vice_x64`, `mame2003` -- are not in this list, and a
 // table that used one of them would browse normally and fail only when somebody
 // pressed Play.
+//
+// FIRMWARE AUDIT of the four disc machines here that have no archivePlaySystems
+// row, done 2026-08-12 by the method that cleared melonDS: read the core's
+// published info at
+// raw.githubusercontent.com/libretro/libretro-super/master/dist/info/ and count
+// how many firmware entries are marked `_opt = "false"`, which means REQUIRED.
+//
+//	genesis_plus_gx (segaCD)      12 firmware entries, 0 required
+//	yabause         (segaSaturn)   1 firmware entry,   0 required
+//	opera           (3do)         13 firmware entries, 0 required
+//	mednafen_pcfx   (pcfx)         1 firmware entry,   1 REQUIRED (pcfx.rom)
+//
+// Three of the four need no firmware at all, which is worth writing down
+// because "it is a disc system, so it must need a BIOS" would have blocked all
+// four. Only the PC-FX needs one, and it is the one nobody would have guessed.
+//
+// None of the four is reachable today -- each is an EmulatorJS system with no
+// archive.org emulator id, which is exactly what makes them gaps. If content
+// for one ever arrives, segaCD, segaSaturn and 3do need only a row; PC-FX needs
+// a row, a blockedSystems entry AND a biosRequirements entry, in that order,
+// because the last two derive from the first.
 var emulatorJSSystems = map[string]string{
 	"3do": "opera", "amiga": "puae", "arcade": "fbneo",
 	"atari2600": "stella2014", "atari5200": "a5200", "atari7800": "prosystem",
@@ -382,6 +403,14 @@ var blockedSystems = map[string]blockedSystem{
 		Detail: "Amiga software needs a Kickstart ROM, which puae's core info " +
 			"marks as required and which is not ours to ship.",
 	},
+	// PC-FX is NOT here, and the reason is a rule this map cannot express on its
+	// own. mednafen_pcfx does mark pcfx.rom required, so a block looks right --
+	// but a `needs_bios` block must come with an offer in biosRequirements, and
+	// an offer must derive both an archive.org emulator id and a library
+	// platform slug from archivePlaySystems. The PC-FX has no row there, so an
+	// entry would be a refusal with no way out and four tests say so. See the
+	// firmware audit above emulatorJSSystems for what to add, and in what order,
+	// if PC-FX content ever becomes reachable.
 	"dos": {
 		Reason: reasonNeedsIsolation,
 		Detail: "MS-DOS runs on dosbox_pure, which EmulatorJS publishes only " +

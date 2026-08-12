@@ -417,6 +417,21 @@ var biosRequirements = map[string]playBIOS{
 		Detail: "puae marks the A500 (v1.3) and A1200 (v3.1) Kickstart ROMs as " +
 			"required firmware. Supply your own copy and Amiga software runs here.",
 	},
+	// PC-FX is deliberately NOT here, though mednafen_pcfx does mark pcfx.rom
+	// required and it IS in blockedSystems for that reason.
+	//
+	// This map is the OFFER -- "supply this file and the machine plays" -- and
+	// two tests hold the invariant that makes an offer honest: every core in it
+	// must derive an archive.org emulator id (so the Archive's own firmware can
+	// be relayed) and a library platform slug (so a household's own copy can be
+	// found). Both derive from archivePlaySystems, and the PC-FX has no row
+	// there, so both walks come back empty.
+	//
+	// Adding it anyway would draw an "add your PC-FX BIOS" screen that could
+	// never find a file from either source and would never turn into a game --
+	// the refusal dressed up as an invitation. The block is enough until there
+	// is content to play, and if a row is ever added this map is where the
+	// second half of that work goes.
 }
 
 // --- the guide ---------------------------------------------------------------
