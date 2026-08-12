@@ -211,7 +211,27 @@ type vimmEntry struct {
 	Play     string `json:"play,omitempty"`
 	Download string `json:"download,omitempty"`
 	Size     int64  `json:"size,omitempty"`
+
+	// Core is the EmulatorJS system the vault will serve this entry as, or
+	// empty for the half of the Vault no browser can run -- Xbox 360, PS3,
+	// Wii, GameCube, PS2, Dreamcast, CD-i.
+	//
+	// It is COPIED FROM THE VAULT, never worked out here. The vault reads
+	// EJS_core off vimm.net's own player page and checks it against the core
+	// list of the EmulatorJS release it serves, so it is the only thing that
+	// knows both halves of the answer. Deriving it a second time in this
+	// process would be a copy of that truth that drifts from it, and the way
+	// it would drift is silent: a name this side invented 404s at the core
+	// download, behind a loading bar that never finishes.
+	//
+	// An import from a plain export file leaves this empty, and a card with no
+	// core is exactly the external link-out it has always been. See
+	// vimmVaultBase.
+	Core string `json:"core,omitempty"`
 }
+
+// vaultable reports whether this entry can be played here rather than linked.
+func (e vimmEntry) vaultable() bool { return e.Core != "" }
 
 // playable and downloadable are derived from whether a verified target
 // survived the import, never from the export's own boolean. The two agreed on
@@ -407,6 +427,22 @@ type vimmStore struct {
 	// changes on import, so paying that once at load is strictly better. See
 	// vimmSystemCounts.
 	systemCounts map[string]int
+}
+
+// vimmVaultBase is the origin of the Vimm vault, or empty when there is none.
+//
+// THIS FLAG IS WHAT TURNS A LINK INTO A GAME. The vault holds the ROMs behind
+// an origin that answers CORS and always up, which is the one thing this site
+// never had for Vimm: until it existed, a Vimm result could only ever be a link
+// to somebody else's website, and vimm.go says so at length. With it, an entry
+// the vault can serve is played here like any archive.org ROM.
+//
+// Empty by default and empty for every self-host, so nothing changes for an
+// instance that has no vault: those cards stay external, exactly as before. It
+// is deliberately not a compiled-in constant -- a self-hoster runs their own
+// vault at their own hostname, and this site's is not special.
+func vimmVaultBase() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("VIMM_VAULT")), "/")
 }
 
 // vimmCataloguePath is where the imported catalogue lives.
@@ -623,11 +659,21 @@ func vimmCard(key string, entries []vimmEntry) (card, bool) {
 		}
 	}
 
-	sources := make([]source, 0, len(entries)*2)
+	vault := vimmVaultBase()
+
+	sources := make([]source, 0, len(entries)*3)
+	vaulted := false
 	for _, e := range entries {
 		label := e.File
 		if strings.TrimSpace(label) == "" {
 			label = e.Title
+		}
+		// The vault's row goes FIRST, because Best is index 0 and the first
+		// row is the one a click gets. A card that can be played here must
+		// offer that before it offers a trip to another website.
+		if vault != "" && e.vaultable() {
+			sources = append(sources, vimmVaultSource(e, label, vault))
+			vaulted = true
 		}
 		// Playing and downloading are separate offers because they are separate
 		// facts about the entry, and because they land in different places:
@@ -647,13 +693,10 @@ func vimmCard(key string, entries []vimmEntry) (card, bool) {
 		return card{}, false
 	}
 
-	return card{
+	c := card{
 		Key:   "vimm:" + strings.ReplaceAll(key, "\x00", ":"),
 		Title: title,
 		Kind:  domainGame,
-		// NOT Instant. See the file comment: that flag is the promise this
-		// site hosts it and can play it, and neither is true.
-		Instant: false,
 		// The place, for the tile's source label. Every source row on this card
 		// is labelled with the same name, but a tile shows no rows.
 		Origin:   vimmSiteName,
@@ -661,7 +704,14 @@ func vimmCard(key string, entries []vimmEntry) (card, bool) {
 		System:   head.System,
 		Groups:   []string{"games"},
 		Adult:    isAdultItem(title, "", nil),
-		External: &externalSite{
+		Sources:  sources,
+	}
+
+	if !vaulted {
+		// Nothing here can be played on this site, so the card says so in the
+		// one way the client understands. See the file comment: External and
+		// Instant are opposites and a card may never carry both.
+		c.External = &externalSite{
 			Name:  vimmSiteName,
 			Short: vimmShortName,
 			Host:  vimmHost,
@@ -669,9 +719,49 @@ func vimmCard(key string, entries []vimmEntry) (card, bool) {
 			// thing itself rather than to one of its files has an address for
 			// it that is not a download.
 			Page: head.Page,
-		},
-		Sources: sources,
-	}, true
+		}
+		return c, true
+	}
+
+	// The vault serves this one. Instant is now the truth rather than the lie
+	// it would have been before the vault existed: the ROM comes over HTTP
+	// from a host that is always up, and it plays in this site's own player.
+	// External is therefore absent -- not forgotten. Origin still names Vimm's
+	// Lair, which is where the game really comes from and what the tile shows.
+	c.Instant = true
+	// The vault proxies box art from vimm.net, which is the only reason there
+	// is any: hotlinking it fails (they require their own Referer) and
+	// guessing a URL from a vault id put a broken image in a 2:3 box, which is
+	// why this card carried no artwork at all until now.
+	c.Art = artwork{Poster: vault + "/api/art/" + head.VaultID, Found: true}
+	return c, true
+}
+
+// vimmVaultSource is the row that plays here.
+func vimmVaultSource(e vimmEntry, label, vault string) source {
+	return source{
+		Title:     label,
+		Indexer:   vimmSiteName,
+		Size:      e.Size,
+		SizeHuman: humanSize(e.Size),
+		// The core travels with the URI in the fragment, the same shape
+		// archive.go uses for its `#ejs`. It must never be inferred at the
+		// other end from a file extension: `.bin` is Colecovision, Atari 2600
+		// and Mega Drive at once, and the wrong core boots successfully and
+		// then runs a black screen with no error at all.
+		// The name rides along because the URI has nothing else to offer one:
+		// its last path segment is the vault id, and a player that named the
+		// game from the URL would put "Play 3" on the button.
+		Magnet: vault + "/api/rom/" + e.VaultID +
+			"#ejs=" + url.QueryEscape(e.Core) + "&name=" + url.QueryEscape(label),
+		Source:  e.Platform,
+		Quality: "TOUCH",
+		// Plays in this site's player, so it must survive the webSafe filter
+		// and must NOT be marked offsite -- both of those are what route a
+		// source into the player rather than into a new tab.
+		WebSafe: true,
+		Action:  "play",
+	}
 }
 
 func vimmSource(e vimmEntry, label, action, target string) source {

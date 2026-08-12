@@ -76,6 +76,22 @@ type vimmExport struct {
 		Playable     bool   `json:"playable"`
 		Downloadable bool   `json:"downloadable"`
 		SizeBytes    int64  `json:"size_bytes"`
+
+		// EJS is the EmulatorJS system the vault resolved for this entry, and
+		// the ONLY field this importer will accept as a core.
+		//
+		// The vault also publishes a raw `core` -- what vimm.net's player
+		// declared -- and this deliberately does not read it. That value is
+		// not always an EmulatorJS id: Vimm writes Sega CD as "segacd" where
+		// EmulatorJS wants "segaCD", and it names machines EmulatorJS has no
+		// core for at all. Resolving it needs the core list of the release
+		// being served, which lives at the vault and not here. Reading `core`
+		// would be this process guessing, and a guessed core 404s at the core
+		// download behind a loading bar that never ends.
+		//
+		// So: a plain extension export has no `ejs`, gets no core, and its
+		// entries stay external link-outs, which is exactly what they were.
+		EJS string `json:"ejs"`
 	} `json:"items"`
 }
 
@@ -98,6 +114,7 @@ type vimmImportReport struct {
 	// Not skips: things worth knowing about the input.
 	RejectedURLs   int            // a URL that was not https on vimm.net
 	UnknownExt     int            // a filename ending in a dotted suffix we do not strip
+	Playable       int            // rows the vault can play here, rather than link to
 	TitlesFromPage int            // published rows named by the page
 	TitlesFromFile int            // published rows named by their filename
 	NoSlug         int            // published rows on a machine this site has no slug for
@@ -226,6 +243,13 @@ func importVimm(exportPath, catalogPath string) (*vimmImportReport, error) {
 		}
 		if file != "" {
 			next.File = file
+		}
+		// Same one-way ratchet as the title, for the same reason: importing an
+		// older export -- or a plain extension export, which carries no `ejs`
+		// at all -- must not take playability away from an entry that has it.
+		if ejs := strings.TrimSpace(it.EJS); ejs != "" {
+			next.Core = ejs
+			rep.Playable++
 		}
 		// A real page title is kept; furniture is not, and never displaces one
 		// already held. This is the one-way ratchet described at the top.
@@ -385,6 +409,12 @@ func (r *vimmImportReport) String() string {
 	if r.UnknownExt > 0 {
 		fmt.Fprintf(&b, "  %6d  filenames ending in a suffix that was left alone\n", r.UnknownExt)
 	}
+	// Stated even when zero, because zero is the interesting case: it means
+	// the input carried no `ejs` field, which is the difference between a
+	// catalogue that plays here and one that only links away, and it is
+	// otherwise invisible until somebody notices no tile says PLAY.
+	fmt.Fprintf(&b, "playable in this site's player: %d (the rest link to %s)\n",
+		r.Playable, vimmHost)
 	b.WriteString("platforms published:\n")
 	type kv struct {
 		k string

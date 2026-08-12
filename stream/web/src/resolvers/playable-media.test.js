@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { flashResolver, isSwf } from './flash.js';
-import { gameResolver, coreFor, isRom, bootEmulator } from './game.js';
+import { gameResolver, coreFor, isRom, bootEmulator, declared } from './game.js';
 import { RENDER } from '../source.js';
 
 // --- claiming -------------------------------------------------------------
@@ -100,4 +100,34 @@ test('bootEmulator sets every global the loader reads BEFORE injecting it', () =
   assert.equal(appended[0].playerIsSelector, true);
   assert.equal(appended[0].player, `#${el.id}`);
   assert.ok(el.id, 'bootEmulator must give the host an id to select');
+});
+
+// --- a core declared on the URI -------------------------------------------
+
+test('a URI may declare its own core, and that beats the extension', () => {
+  // The Vimm vault serves /api/rom/<id> with no extension at all, so without
+  // this the resolver could not claim it -- and inferring a core from a
+  // missing extension is exactly the guess that boots a black screen.
+  const uri = 'https://vimm.example/api/rom/3#ejs=segaMD&name=Sonic';
+  assert.equal(gameResolver.canHandle(uri), true);
+  assert.deepEqual(declared(uri), { core: 'segaMD', name: 'Sonic' });
+});
+
+test('a declared core overrides one the filename would have implied', () => {
+  // `.bin` is Colecovision, Atari 2600 and Mega Drive at once. A catalogue
+  // that knows which must be believed over the extension.
+  const uri = 'https://x/roms/dk.bin#ejs=coleco&name=Donkey%20Kong';
+  assert.equal(declared(uri).core, 'coleco');
+  assert.equal(coreFor('/roms/dk.bin'), null);
+});
+
+test('a URI that declares nothing is unchanged', () => {
+  assert.deepEqual(declared('https://x/roms/Zelda.nes'), { core: null, name: null });
+  assert.deepEqual(declared('not a url'), { core: null, name: null });
+  assert.equal(gameResolver.canHandle('https://x/a.mp4'), false);
+});
+
+test('declared() never throws on junk', () => {
+  for (const bad of [null, 42, '', undefined, 'http://['])
+    assert.doesNotThrow(() => declared(bad));
 });

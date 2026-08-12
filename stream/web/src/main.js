@@ -35,7 +35,7 @@ import { PlaybackError } from './failures.js';
 import { api, apiFetch, getServer, setServer, probeServer } from './server.js';
 import {
   renderHome, itemFromCard, itemFromDiscover, tileAction, tile as homeTile, domainSentence,
-  sourceBadge,
+  sourceBadge, setPlayProbe,
 } from './home.js';
 import { mountBrowse, systemChips, systemFilterHost, routeOf } from './browse.js';
 import { mountLinear, linearResolver, linearURI } from './linear.js';
@@ -1111,8 +1111,13 @@ function openDetail(card) {
       `${card.sources.length} link${card.sources.length === 1 ? '' : 's'} on `
       + `${card.external.name} — each one opens ${card.external.host} in a new tab`;
   } else {
+    // Named from the card rather than spelled here. archive.org was the only
+    // instant source when this line was written, so its name was written into
+    // it; the Vimm vault is a second one, and a Zelda cartridge from Vimm
+    // announcing itself as "Hosted by archive.org" is a plain falsehood on the
+    // one line that is supposed to say where the thing comes from.
     $('#d-srch').textContent = card.instant
-      ? 'Hosted by archive.org — press play'
+      ? `Hosted by ${card.origin || 'this site'} — press play`
       : `${card.sources.length} source${card.sources.length === 1 ? '' : 's'} — pick one to stream`;
   }
 
@@ -1840,6 +1845,38 @@ function buildRegistry() {
   window.__registry = registry; // diagnostics
   return registry;
 }
+
+/**
+ * Teach the tiles which games this client can actually launch.
+ *
+ * home.js ships a default that recognises archive.org and nothing else, and
+ * says why: the button should appear the moment a backend exists that can
+ * honour it, and not one commit before. The Vimm vault is that backend. It
+ * serves ROMs over HTTP from an origin that answers CORS and declares the core
+ * on the URI, so a vault card is exactly as launchable as an archive.org one
+ * and there is no longer any reason for the tile to say "Open" over a game
+ * that plays.
+ *
+ * Asked of the resolvers themselves rather than of the registry, because the
+ * registry is built on the first play -- it needs the torrent engine -- and a
+ * label is needed before that, on the first paint. These three are plain
+ * objects with no such dependency.
+ *
+ * Only the resolvers that boot something IN THE PAGE are consulted. The
+ * torrent resolver claims a magnet, but a ROM set to download is not a thing
+ * to press play on, and refusing to say so is the promise this keeps.
+ */
+const PLAYS_IN_PAGE = [archiveResolver, gameResolver, flashResolver];
+setPlayProbe((item) => {
+  const uri = item?.uri ?? '';
+  return PLAYS_IN_PAGE.some((r) => {
+    try {
+      return r.canHandle(uri);
+    } catch {
+      return false;
+    }
+  });
+});
 
 /**
  * Best-effort filename for a resolved Playable, so needsWebCodecs can look at

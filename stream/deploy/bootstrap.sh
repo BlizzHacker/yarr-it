@@ -128,6 +128,12 @@ SESSION_SECRET=
 #   all - everybody signs in, browsers included
 #   off - nobody does
 AUTH_SCOPE=tv
+
+# Origin of a Vimm vault, if there is one. Blank means every Vimm result stays
+# an external link to vimm.net, which is what a deployment without a vault can
+# honestly offer. Set it and the entries the vault can serve play here instead,
+# with its box art. See vimmVaultBase in search/vimm.go.
+VIMM_VAULT=
 EOF
   chmod 0640 /etc/mw-search.env
   chown root:mw-search /etc/mw-search.env

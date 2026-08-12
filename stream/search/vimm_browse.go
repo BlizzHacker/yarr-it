@@ -42,6 +42,7 @@ package main
 // to matter, so the server states it instead -- see `more` in handleRows.
 
 import (
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -77,6 +78,12 @@ func vimmShareOf(limit int) int {
 type vimmWork struct {
 	Title string
 	Page  string
+	// VaultID and Core are what the vault needs to serve this work: the id
+	// addresses the ROM and the artwork, the core tells the player which
+	// machine to be. Core is empty for a work the vault cannot play, which is
+	// how a browse tile knows to stay an outbound link.
+	VaultID string
+	Core    string
 	// Sort is the head entry's vault id, zero-padded so a numeric id orders
 	// numerically. The order has to be stable across requests or paging
 	// repeats and skips items; map iteration is not.
@@ -178,12 +185,26 @@ func vimmWorkFrom(entries []vimmEntry) (vimmWork, bool) {
 	if !found {
 		return vimmWork{}, false
 	}
+	// The head is chosen for having a vault page, which is not the same as
+	// being the disc the vault can play -- so the core is taken from the first
+	// entry that HAS one rather than from the head. A work is playable if any
+	// of its rows is.
+	core, vaultID := "", strings.TrimSpace(head.VaultID)
+	for _, e := range entries {
+		if e.vaultable() {
+			core, vaultID = e.Core, e.VaultID
+			break
+		}
+	}
+
 	return vimmWork{
 		Title: title,
 		// The vault page, not a download and not their player: it is the
 		// thing's own address, and it is the one URL that is right to put
 		// behind a tile whose label already says the click leaves.
-		Page:  strings.TrimSpace(head.Page),
+		Page:    strings.TrimSpace(head.Page),
+		VaultID: vaultID,
+		Core:    core,
 		// Left-padded to a fixed width so "10" sorts after "9" rather than
 		// before it. Ids longer than the pad are rare and simply sort late,
 		// which is fine: this is a tie-break, not the ordering.
@@ -218,9 +239,11 @@ func (s *vimmStore) vimmBrowseItems(system string, offset, limit int) []discover
 	if end > len(works) {
 		end = len(works)
 	}
+	vault := vimmVaultBase()
+
 	out := make([]discoverItm, 0, end-offset)
 	for _, w := range works[offset:end] {
-		out = append(out, discoverItm{
+		it := discoverItm{
 			Title:     w.Title,
 			MediaType: "game",
 			// The vault page. A click opens it on their site.
@@ -228,21 +251,36 @@ func (s *vimmStore) vimmBrowseItems(system string, offset, limit int) []discover
 			// Who this came from, so a row that mixes two catalogues can say
 			// which tile is which without the client parsing a hostname.
 			Source: vimmSiteName,
-			// What makes the tile say "Vimm ↗" instead of "Play". See the
-			// field comment on discoverItm.External, and tileAction in
-			// web/src/home.js, which has held the rule since before there was
-			// anything on a browse page that needed it.
-			External: &externalSite{
-				Name:  vimmSiteName,
-				Short: vimmShortName,
-				Host:  vimmHost,
-				Page:  w.Page,
-			},
-			// No Poster, deliberately. Vimm has box art and this export does
-			// not address it; guessing a URL from a vault id would put a broken
-			// image in a 2:3 box on every one of these tiles. The placeholder
-			// the client already draws says "no cover" properly.
-		})
+		}
+
+		if vault != "" && w.Core != "" {
+			// The vault holds this one, so the tile plays it here rather than
+			// sending somebody to vimm.net. Same URI shape the search cards
+			// use, and for the same reason: the core travels with it because
+			// inferring one from a file extension boots the wrong machine and
+			// runs a black screen with no error.
+			it.Play = vault + "/api/rom/" + w.VaultID +
+				"#ejs=" + url.QueryEscape(w.Core) + "&name=" + url.QueryEscape(w.Title)
+			// Artwork at last. There was none here because nothing addressed
+			// Vimm's box art and guessing a URL from a vault id put a broken
+			// image in a 2:3 box; the vault proxies it, with the Referer
+			// vimm.net requires, so there is now a real URL to use.
+			it.Poster = vault + "/api/art/" + w.VaultID
+			out = append(out, it)
+			continue
+		}
+
+		// Nothing here can play it, so the tile says where it goes instead.
+		// This is what makes the tile read "Vimm ↗" rather than "Play" -- see
+		// the field comment on discoverItm.External, and tileAction in
+		// web/src/home.js.
+		it.External = &externalSite{
+			Name:  vimmSiteName,
+			Short: vimmShortName,
+			Host:  vimmHost,
+			Page:  w.Page,
+		}
+		out = append(out, it)
 	}
 	return out
 }

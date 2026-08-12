@@ -284,15 +284,44 @@ export function mountEmulator(el, url, {
   };
 }
 
+/**
+ * A core and a name declared ON the URI, as `#ejs=<core>&name=<title>`.
+ *
+ * A catalogue that KNOWS the system must be able to say so, because the
+ * alternative here is inference from a file extension and that is the one
+ * thing rom-core.js exists to avoid. The Vimm vault serves its ROMs from
+ * `/api/rom/<vault id>` -- no extension to read at all, and a last path
+ * segment that would name the game "3" -- while knowing the exact core,
+ * because vimm.net's own player declares it and the vault checks it against
+ * the EmulatorJS release it serves.
+ *
+ * Returns nulls for a URI that declares nothing, which is every other ROM URL.
+ */
+export function declared(uri) {
+  try {
+    const hash = new URL(uri).hash;
+    if (!hash) return { core: null, name: null };
+    const params = new URLSearchParams(hash.slice(1));
+    return { core: params.get('ejs') || null, name: params.get('name') || null };
+  } catch {
+    return { core: null, name: null };
+  }
+}
+
 export const gameResolver = {
   name: 'game',
   canHandle(input) {
-    return typeof input === 'string' && /^https?:\/\//i.test(input) && isRom(input);
+    if (typeof input !== 'string' || !/^https?:\/\//i.test(input)) return false;
+    return Boolean(declared(input).core) || isRom(input);
   },
   async resolve(source) {
-    const path = new URL(source.uri).pathname;
-    const core = coreFor(path);
-    const name = decodeURIComponent(path.split('/').pop() || 'game');
+    const url = new URL(source.uri);
+    const path = url.pathname;
+    const said = declared(source.uri);
+    // A declared core always wins. It came from a catalogue that knows the
+    // machine; the extension is at best a good guess about it.
+    const core = said.core ?? coreFor(path);
+    const name = said.name ?? decodeURIComponent(path.split('/').pop() || 'game');
     let handle = null;
 
     return makePlayable({

@@ -730,3 +730,148 @@ func storeWith(t *testing.T, entries ...vimmEntry) *vimmStore {
 	s.replace(vimmCatalogue{Version: vimmCatalogueVersion, Entries: entries})
 	return s
 }
+
+// ------------------------------------------------------- the vault --------
+
+// vaultEntry is the same row as the external tests use, plus the one field
+// that changes everything: the core the vault resolved for it.
+func vaultEntry() vimmEntry {
+	return vimmEntry{
+		VaultID: "3", Title: "10-Yard Fight", Platform: "Nintendo", System: "nes",
+		Page:     "https://vimm.net/vault/3",
+		Play:     "https://vimm.net/vault/?p=play&mediaId=3",
+		Download: "https://dl3.vimm.net/?mediaId=3", Size: 16384,
+		Core: "nes",
+	}
+}
+
+// A vault entry is the one case where Instant is TRUE for Vimm, and it is only
+// true because the vault exists: the ROM comes over HTTP from a host that is
+// always up and plays in this site's own player.
+func TestAVaultedVimmCardPlaysHere(t *testing.T) {
+	t.Setenv("VIMM_VAULT", "https://vimm.example/")
+
+	store := storeWith(t, vaultEntry())
+	cards := store.search("10-Yard Fight", "game", nil, 10)
+	if len(cards) != 1 {
+		t.Fatalf("got %d cards", len(cards))
+	}
+	c := cards[0]
+
+	if !c.Instant {
+		t.Error("Instant is not set; the vault serves this and the player runs it")
+	}
+	if c.External != nil {
+		t.Error("External is set alongside Instant; a card may never carry both")
+	}
+	if c.Origin != vimmSiteName {
+		t.Errorf("Origin=%q; the game still comes from Vimm and the tile says so", c.Origin)
+	}
+	if c.Art.Poster != "https://vimm.example/api/art/3" || !c.Art.Found {
+		t.Errorf("no vault artwork: %+v", c.Art)
+	}
+}
+
+// Best is index 0, so the row a click gets must be the one that plays here.
+func TestTheVaultRowComesFirst(t *testing.T) {
+	t.Setenv("VIMM_VAULT", "https://vimm.example")
+
+	cards := storeWith(t, vaultEntry()).search("10-Yard Fight", "game", nil, 10)
+	first := cards[0].Sources[0]
+
+	if !strings.HasPrefix(first.Magnet, "https://vimm.example/api/rom/3#ejs=nes") {
+		t.Errorf("first source is %q, not the vault ROM", first.Magnet)
+	}
+	// The name rides along because the URI's last path segment is the vault
+	// id, and a player naming the game from the URL would say "Play 3".
+	if !strings.Contains(first.Magnet, "name=10-Yard+Fight") {
+		t.Errorf("no name on the URI: %q", first.Magnet)
+	}
+	if first.Action != "play" {
+		t.Errorf("first source action=%q, want play", first.Action)
+	}
+	if !first.WebSafe {
+		t.Error("the vault row is not webSafe, so the webSafe filter would drop the only playable row")
+	}
+	if first.Offsite {
+		t.Error("the vault row is marked offsite, which routes it to a new tab instead of the player")
+	}
+}
+
+// The core must travel with the URI. Inferring it at the other end from a file
+// extension is how a Colecovision game got booted as an NES: the wrong core
+// starts cleanly and then runs a black screen with no error.
+func TestTheVaultRowCarriesTheCore(t *testing.T) {
+	t.Setenv("VIMM_VAULT", "https://vimm.example")
+
+	e := vaultEntry()
+	e.Core = "segaMD"
+	e.Platform, e.System = "Genesis", "genesis"
+
+	cards := storeWith(t, e).search("10-Yard Fight", "game", nil, 10)
+	if got := cards[0].Sources[0].Magnet; !strings.Contains(got, "#ejs=segaMD&") {
+		t.Errorf("core lost from the URI: %q", got)
+	}
+}
+
+// Vimm's own player and download host are still offered underneath. They are
+// separate facts about the entry and the vault does not replace them.
+func TestVimmsOwnRowsSurviveAlongsideTheVault(t *testing.T) {
+	t.Setenv("VIMM_VAULT", "https://vimm.example")
+
+	cards := storeWith(t, vaultEntry()).search("10-Yard Fight", "game", nil, 10)
+	var offsite, here int
+	for _, s := range cards[0].Sources {
+		if s.Offsite {
+			offsite++
+		} else {
+			here++
+		}
+	}
+	if here != 1 {
+		t.Errorf("%d rows play here, want exactly 1", here)
+	}
+	if offsite != 2 {
+		t.Errorf("%d offsite rows, want 2 (their player and their download)", offsite)
+	}
+}
+
+// Half the Vault is Xbox 360, PS3, Wii, GameCube, PS2, Dreamcast and CD-i. The
+// vault resolves no core for those, and they must stay exactly what they were.
+func TestAnEntryTheVaultCannotPlayStaysExternal(t *testing.T) {
+	t.Setenv("VIMM_VAULT", "https://vimm.example")
+
+	e := vaultEntry()
+	e.Core = ""
+	e.Platform, e.System = "PlayStation 2", ""
+
+	c := storeWith(t, e).search("10-Yard Fight", "game", nil, 10)[0]
+	if c.Instant {
+		t.Error("Instant on an entry with no core; nothing can play it here")
+	}
+	if c.External == nil {
+		t.Fatal("External missing; nothing tells a client this leaves the site")
+	}
+	if c.Art.Poster != "" {
+		t.Errorf("artwork %q on a card the vault does not hold", c.Art.Poster)
+	}
+}
+
+// A self-host with no vault must be unaffected, which is what makes shipping
+// this safe: the flag is empty everywhere it has not been set on purpose.
+func TestWithNoVaultConfiguredNothingChanges(t *testing.T) {
+	t.Setenv("VIMM_VAULT", "")
+
+	c := storeWith(t, vaultEntry()).search("10-Yard Fight", "game", nil, 10)[0]
+	if c.Instant {
+		t.Error("Instant with no vault configured; there is nowhere to play it")
+	}
+	if c.External == nil {
+		t.Error("External missing with no vault configured")
+	}
+	for _, s := range c.Sources {
+		if !s.Offsite {
+			t.Errorf("source %q is not offsite, but there is no vault", s.Title)
+		}
+	}
+}
