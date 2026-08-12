@@ -548,6 +548,18 @@ func (s *vimmStore) stats() map[string]any {
 	if s.imported != "" {
 		out["importedAt"] = s.imported
 	}
+	// The vault's origin, so the isolated player can decide whether a ROM URL
+	// is one it may fetch. It discloses nothing: every vault-backed card
+	// already carries this origin in the URL it links to.
+	//
+	// Published rather than compiled into the page because a self-hosted
+	// instance has a different vault or none, and a page that had yarrit.com's
+	// baked in would either fetch from a vault its operator does not run or
+	// refuse the one they do. Empty means "this server has no vault", which
+	// the player reads as "allow no vault at all" rather than as a default.
+	if base := vimmVaultBase(); base != "" {
+		out["vault"] = base
+	}
 	return out
 }
 
@@ -695,21 +707,21 @@ func vimmCard(key string, entries []vimmEntry) (card, bool) {
 			sources = append(sources, vimmVaultSource(e, label, vault))
 			vaulted = true
 		}
-		// A PSP disc. The vault can run it and this origin cannot, so the offer
-		// is its player rather than ours -- an honest "play there" instead of a
-		// PLAY button that reaches a refusal to boot.
+		// A threaded core plays on this site too, one document over. `vaulted`
+		// is the flag that decides Instant-versus-External, and the question it
+		// asks is "can this be played here" -- which for a PSP disc is now yes.
+		// Leaving it false would mark a card External while it carried a row
+		// that plays here, which is exactly the pair the file comment forbids.
+		// A PSP disc. It needs a threaded core, so it cannot run in the in-page
+		// player -- but it no longer has to leave, either. `/play/` is this
+		// site's own cross-origin-isolated document and the bytes still come
+		// from the vault; only the page holding the emulator has changed.
+		//
+		// This used to send people to the vault's own player and say "play
+		// there", which was honest at the time and is not any more.
 		if vault != "" && e.vaultElsewhere() {
-			sources = append(sources, source{
-				Title:     label,
-				Indexer:   vimmSiteName,
-				Size:      e.Size,
-				SizeHuman: humanSize(e.Size),
-				Magnet:    vault + "/play/" + e.VaultID,
-				Source:    e.Platform,
-				WebSafe:   false,
-				Offsite:   true,
-				Action:    "play",
-			})
+			sources = append(sources, vimmIsolatedSource(e, label))
+			vaulted = true
 		}
 		// Playing and downloading are separate offers because they are separate
 		// facts about the entry, and because they land in different places:
@@ -796,6 +808,41 @@ func vimmVaultSource(e vimmEntry, label, vault string) source {
 		// and must NOT be marked offsite -- both of those are what route a
 		// source into the player rather than into a new tab.
 		WebSafe: true,
+		Action:  "play",
+	}
+}
+
+// vimmIsolatedSource is a row that opens this site's own isolated player.
+//
+// The address is OURS and relative, never the vault's. The vault serves the
+// bytes and the isolated page fetches them, but the page a person lands on is
+// this site's -- which is the entire difference between this and the offsite
+// row it replaced, and the reason it must not be marked Offsite.
+//
+// Relative rather than absolute because there is no one right absolute form:
+// the API is reached from yarrit.com, from a self-hoster's own hostname, and
+// from four wrapper clients whose page origin is none of those. A path resolves
+// correctly against every one of them.
+func vimmIsolatedSource(e vimmEntry, label string) source {
+	return source{
+		Title:     label,
+		Indexer:   vimmSiteName,
+		Size:      e.Size,
+		SizeHuman: humanSize(e.Size),
+		// Same `#ejs=<core>&name=<title>` shape vimmVaultSource uses, and for
+		// the same two reasons: the core must never be inferred from a file
+		// extension at the other end, and the URI's last segment is a vault id,
+		// so a player that named the game from the URL would put "Play 3" on
+		// the button.
+		Magnet: "/play/vimm/" + url.PathEscape(e.VaultID) +
+			"#ejs=" + url.QueryEscape(e.Core) + "&name=" + url.QueryEscape(label),
+		Source:  e.Platform,
+		Quality: "TOUCH",
+		// Not webSafe: the in-page player genuinely cannot run a threaded core,
+		// and routing it there is the dead button this whole area exists to
+		// prevent. Not offsite either: it does not leave.
+		WebSafe: false,
+		OnSite:  true,
 		Action:  "play",
 	}
 }

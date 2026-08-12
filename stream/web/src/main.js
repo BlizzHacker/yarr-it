@@ -16,7 +16,7 @@ import { whoAmI, displayName, signInURL, signOutURL, vpnGuidance, egressStatus }
 import { createAddonAPI, renderAddons, normaliseAddonURL, moveAddon } from './addons.js';
 import { keepShaped } from './embedfit.js';
 import {
-  ROUTE, BIOS_SOURCE, fetchVerdict, toPlayable, canPlay, playerOptions, canSwitchPlayer,
+  ROUTE, BIOS_SOURCE, fetchVerdict, toPlayable, canPlay, playerOptions, canSwitchPlayer, isolatedHref,
   choosePlayer, solePlayerSentence, readPlayerPreference, writePlayerPreference,
 } from './play.js';
 import { renderGuide, hasGuide } from './guide.js';
@@ -1197,6 +1197,7 @@ function offsiteOffers(card) {
  * routed into the player, because there is no handler to route.
  */
 function sourceRow(card, s, isBest) {
+  if (s.onSite) return isolatedSourceRow(s, isBest);
   if (s.offsite) return offsiteSourceRow(card, s, isBest);
 
   const row = el('button', isBest ? 'source best' : 'source');
@@ -1244,6 +1245,44 @@ function sourceRow(card, s, isBest) {
  * `action`, which is the distinction between the two things Vimm publishes
  * about an entry: their in-browser player, and the file itself.
  */
+/**
+ * A row that opens this site's own isolated player.
+ *
+ * It looks like an offsite row because it is a navigation rather than a play,
+ * and it must not look like the in-page rows or somebody will expect the game
+ * to appear where they are standing. But every word that says "leaves this
+ * site" is wrong: it does not. The bytes come from the same vault they always
+ * did; the only thing that changed is which of OUR documents holds the
+ * emulator, and it changed because that one can be cross-origin isolated and
+ * this one cannot.
+ *
+ * Same tab, deliberately, unlike the offsite row. There is nothing to protect
+ * this window from -- it is our own page -- and the back button then returns
+ * somebody to their search results, which a new tab does not.
+ */
+function isolatedSourceRow(s, isBest) {
+  const row = el('a', isBest ? 'source best offsite' : 'source offsite');
+  row.href = s.magnet ?? s.uri ?? '';
+  row.setAttribute('aria-label', `Play ${s.title} in the Yarr.It player`);
+  row.title = row.getAttribute('aria-label');
+
+  const l = el('div', 'sl');
+  l.append(el('span', 'q', 'PLAY'));
+  // Not the warning colour: this is not a departure. It is the same tag the
+  // vault rows carry, because it is the same promise -- our player, our
+  // on-screen controls.
+  l.append(el('span', 'tag', 'our player'));
+  if (s.source) l.append(el('span', 'tag', s.source));
+  l.append(el('span', 'name', s.title));
+  row.append(l);
+
+  const r = el('div', 'sr');
+  if (s.size) r.append(el('span', null, s.sizeHuman));
+  r.append(el('span', null, 'opens the player'));
+  row.append(r);
+  return row;
+}
+
 function offsiteSourceRow(card, s, isBest) {
   const row = el('a', isBest ? 'source best offsite' : 'source offsite');
   row.href = s.magnet ?? s.uri ?? '';
@@ -1648,6 +1687,38 @@ function renderPlayerSwitch(verdict, route) {
   // wondering about it.
   if (verdict.biosNeeded && route !== ROUTE.EMULATORJS) bar.append(biosOffer(verdict));
   if (verdict.biosNeeded && route === ROUTE.EMULATORJS) bar.append(biosInUse(verdict));
+
+  // Isolation is the other refusal a visitor can lift, and it is the cheaper of
+  // the two: no file to find, just a different page on this same site. Offered
+  // in the same place and for the same reason as the firmware offer above.
+  const isolated = isolatedHref(verdict);
+  if (isolated) bar.append(isolationOffer(isolated));
+}
+
+/**
+ * "This one plays in our player over here."
+ *
+ * MS-DOS and PSP run on threaded cores, threads need a cross-origin-isolated
+ * document, and this app cannot be one without giving up the Internet Archive's
+ * iframe player. `/play/` is a document that embeds nothing and therefore can
+ * be. See isolatedHref and stream/Caddyfile.
+ *
+ * A plain link, not a button that navigates: it is a different DOCUMENT, and it
+ * has to be -- the whole point is the headers it is served with. A link is also
+ * the thing a person can middle-click, which is what somebody who does not want
+ * to lose their search results will do.
+ */
+function isolationOffer(href) {
+  const box = el('div', 'bios-offer');
+  box.append(el('p', 'bios-why',
+    'This machine needs a threaded emulator, which only runs on an isolated '
+    + 'page. We have one.'));
+  const link = el('a', 'switch-btn');
+  link.href = href;
+  link.append(el('span', 'switch-name', 'Open in the Yarr.It player'));
+  link.append(el('span', 'switch-sub', 'On-screen controls, save states'));
+  box.append(link);
+  return box;
 }
 
 /**

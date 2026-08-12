@@ -44,6 +44,7 @@ import { makePlayable, RENDER } from './source.js';
 import { mountEmulator } from './resolvers/game.js';
 import { PlaybackError, FAILURE } from './failures.js';
 import { serverBase } from './server.js';
+import { targetPath, SOURCE } from './play-target.js';
 
 /** The three routes the server can return. Mirrors play_archive.go. */
 export const ROUTE = {
@@ -724,6 +725,36 @@ export function toPlayable(verdict, {
       handle = null;
     },
   });
+}
+
+/**
+ * Where this item WOULD play, when the only thing stopping it is this document.
+ *
+ * `needs_isolation` is the one refusal that is not about the item, the core, or
+ * anything the visitor owns. It is about the page they happen to be standing
+ * on: MS-DOS and PSP run on cores EmulatorJS publishes only as threaded builds,
+ * threads need SharedArrayBuffer, and SharedArrayBuffer exists only on a
+ * cross-origin-isolated document. This app cannot be one -- it embeds the
+ * Internet Archive's player, and a COEP document may only embed a cross-origin
+ * iframe that sends COEP back. `/play/` is a document that embeds nothing, so
+ * it can be.
+ *
+ * So the refusal is answered with an address rather than an apology. Same shape
+ * as the firmware offer next to it in the player switch: name the one thing
+ * that would lift the block, next to the thing it unlocks.
+ *
+ * Returns '' when there is nothing to offer -- including, importantly, when the
+ * caller IS already isolated. Offering the isolated page to a page that is
+ * isolated would be a link to itself, and it would appear at exactly the moment
+ * the block had already been lifted.
+ */
+export function isolatedHref(verdict, {
+  isolated = globalThis.crossOriginIsolated === true,
+} = {}) {
+  if (isolated || !verdict?.id) return '';
+  const blocked = verdict.reasons?.some((r) => r?.code === REASON.NEEDS_ISOLATION);
+  if (!blocked) return '';
+  return targetPath({ source: SOURCE.ARCHIVE, id: verdict.id });
 }
 
 /**

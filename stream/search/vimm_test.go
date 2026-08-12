@@ -876,11 +876,17 @@ func TestWithNoVaultConfiguredNothingChanges(t *testing.T) {
 	}
 }
 
-// A core that needs threads cannot run on this origin, which sends COOP but
-// not COEP and cannot send COEP without blocking archive.org's own player.
-// Promising PLAY on one reaches EmulatorJS refusing to boot -- the exact
-// failure the vault's headers were added to fix, reintroduced one layer up.
-func TestAThreadOnlyCoreIsNotPromisedHere(t *testing.T) {
+// A core that needs threads still cannot run in the IN-PAGE player: the app
+// sends COOP but not COEP, and it cannot send COEP without blocking
+// archive.org's own iframe player. Promising PLAY on one there reaches
+// EmulatorJS refusing to boot.
+//
+// What changed is where it is offered instead. This used to send people to the
+// vault's own site, and that was honest while /play/ did not exist. It does
+// now: one document on THIS site, isolated by Caddy, embedding nothing. So the
+// row is ours, the card is Instant again, and neither of those is a promise
+// this origin cannot keep.
+func TestAThreadOnlyCorePlaysOnTheIsolatedPage(t *testing.T) {
 	t.Setenv("VIMM_VAULT", "https://vimm.example")
 
 	e := vaultEntry()
@@ -888,21 +894,41 @@ func TestAThreadOnlyCoreIsNotPromisedHere(t *testing.T) {
 	e.Platform, e.System = "PS Portable", ""
 
 	c := storeWith(t, e).search("10-Yard Fight", "game", nil, 10)[0]
-	if c.Instant {
-		t.Error("Instant on a PSP entry; ppsspp needs SharedArrayBuffer and this origin has none")
+	if !c.Instant {
+		t.Error("not Instant; a PSP entry plays on this site's own isolated page")
 	}
+	if c.External != nil {
+		t.Error("External on a card that plays here; the two are opposites")
+	}
+
 	for _, s := range c.Sources {
+		// The in-page player is the one thing that must never be offered: a
+		// threaded core routed there loads, throws inside itself, and reports
+		// itself started over a black rectangle.
 		if s.WebSafe && !s.Offsite {
-			t.Errorf("source %q offers to play here, which cannot work", s.Magnet)
+			t.Errorf("source %q offers the in-page player, which cannot work", s.Magnet)
+		}
+		// And it must not claim to leave, because it does not.
+		if s.OnSite && s.Offsite {
+			t.Errorf("source %q is marked both on-site and offsite", s.Magnet)
 		}
 	}
-	var toVault bool
+
+	var ours bool
 	for _, s := range c.Sources {
-		if strings.Contains(s.Magnet, "vimm.example/play/") && s.Action == "play" && s.Offsite {
-			toVault = true
+		if s.OnSite && s.Action == "play" {
+			ours = true
+			if got, want := s.Magnet, "/play/vimm/"; !strings.HasPrefix(got, want) {
+				t.Errorf("isolated row is %q, want a %q path on this site", got, want)
+			}
+			// The core must travel with the URI. Inferring it at the other end
+			// from a file extension is what boots a Colecovision game as an NES.
+			if !strings.Contains(s.Magnet, "ejs=psp") {
+				t.Errorf("isolated row %q does not carry its core", s.Magnet)
+			}
 		}
 	}
-	if !toVault {
-		t.Error("no offer of the vault's own player, which IS isolated and can run it")
+	if !ours {
+		t.Error("no offer of this site's isolated player, which can run it")
 	}
 }

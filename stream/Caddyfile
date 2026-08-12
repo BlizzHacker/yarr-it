@@ -44,6 +44,46 @@ yarrit.com, www.yarrit.com {
 		reverse_proxy 127.0.0.1:8802
 	}
 
+	# The isolated player.
+	#
+	# Two EmulatorJS cores -- ppsspp (PSP) and dosbox_pure (MS-DOS) -- are
+	# published ONLY as threaded builds; the plain `-wasm.data` names 404 on the
+	# CDN, checked rather than assumed. Threads need SharedArrayBuffer, which a
+	# browser creates only on a cross-origin-isolated document, which needs COOP
+	# *and* COEP.
+	#
+	# The site as a whole cannot send COEP. A COEP document may only embed a
+	# cross-origin iframe that sends COEP back, and the Internet Archive's own
+	# Emularity player does not -- so isolating this origin would trade every
+	# Archive game for the PSP ones.
+	#
+	# Isolation is a property of a DOCUMENT, though, not of an origin. /play/ is
+	# one page that embeds nothing at all, so it can be isolated while the rest
+	# of the site is not. That is the whole trick and this block is all of it.
+	#
+	# require-corp rather than credentialless, because everything this page
+	# loads does send Cross-Origin-Resource-Policy: cdn.emulatorjs.org and the
+	# vault both answer `cross-origin`, measured. require-corp is the stricter
+	# of the two AND the more portable -- Safari has never implemented
+	# credentialless, so the vault's own pages do not isolate there and its PSP
+	# entries do not play. This one does.
+	#
+	# Placed before the file_server handler because `try_files` would otherwise
+	# answer /play/archive/<id> with index.html and the app would render a
+	# search page where a game should be.
+	handle /play/* {
+		header {
+			Cross-Origin-Opener-Policy "same-origin"
+			Cross-Origin-Embedder-Policy "require-corp"
+			# Same reason index.html is not cached: the script URL inside
+			# carries a build hash, so a stale copy pins the previous build.
+			Cache-Control "no-cache, must-revalidate"
+		}
+		root * /srv/stream/www
+		rewrite * /play.html
+		file_server
+	}
+
 	# No gate here: the site is open. TV clients are required to sign in by
 	# mw-search, which can tell a TV from a browser. Set AUTH_SCOPE=all in
 	# /etc/mw-search-sso.env to put the whole site back behind sign-in.
@@ -53,9 +93,9 @@ yarrit.com, www.yarrit.com {
 	@html path / /index.html
 	header @html Cache-Control "no-cache, must-revalidate"
 
-	# Only app.js carries a content hash in its URL, so only it is safe to cache
-	# hard. Caching the other modules pinned stale copies for a week.
-	@hashed path /app.js
+	# Only these carry a content hash in their URL, so only they are safe to
+	# cache hard. Caching the other modules pinned stale copies for a week.
+	@hashed path /app.js /play-page.js
 	header @hashed Cache-Control "public, max-age=604800, immutable"
 
 	@images path *.png *.svg *.webmanifest

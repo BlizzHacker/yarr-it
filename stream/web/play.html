@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Yarr.It player</title>
+<meta name="theme-color" content="#0b0d11" />
+<!--
+  THE ISOLATED PLAYER. Read play-target.js for why this document exists at all;
+  the short version is that two EmulatorJS cores (ppsspp and dosbox_pure) are
+  published only as threaded builds, threads need SharedArrayBuffer,
+  SharedArrayBuffer needs a cross-origin-isolated document, and the app cannot
+  be one without giving up the Internet Archive's iframe player.
+
+  So: THIS PAGE EMBEDS NOTHING. No iframe, no cross-origin image, no font, no
+  analytics. Everything it loads is either same-origin or comes from a host that
+  sends Cross-Origin-Resource-Policy -- which cdn.emulatorjs.org does, checked
+  rather than assumed. That is the entire reason the page is this bare, and it
+  is a constraint rather than a style: one cross-origin <img> without CORP and
+  COEP blocks it, which under require-corp costs the isolation, which costs the
+  threads, which costs the game.
+
+  The isolation headers themselves are Caddy's -- see stream/Caddyfile, the
+  /play* handler. If they ever stop arriving, play-page.js says so in a sentence
+  instead of letting the core throw into a black rectangle.
+-->
+<style>
+  :root {
+    --bg: #0b0d11;
+    --fg: #e8ecf2;
+    --dim: #98a2b3;
+    --line: #1e242e;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  header a {
+    color: var(--dim);
+    text-decoration: none;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  header a:hover { color: var(--fg); }
+  h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  main {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  /* The emulator's canvas fills what is left. min-height:0 above is what stops
+     a flex child from refusing to shrink and pushing the canvas off-screen. */
+  .stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .stage > * { max-width: 100%; }
+  /* Matches the app's own start button, because it is the same button: the
+     boot is hung off a real click or autoplay policy holds the run loop with
+     the core loaded, `started` true and the frame counter pinned at zero. */
+  .canvas-start {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: #131820;
+    color: var(--fg);
+    font: inherit;
+    font-weight: 600;
+    padding: 14px 22px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .canvas-start:hover { background: #182029; }
+  #note {
+    padding: 16px;
+    color: var(--dim);
+    max-width: 60ch;
+    margin: 0 auto;
+    text-align: center;
+  }
+  #note:empty { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← Yarr.It</a>
+  <h1 id="title"></h1>
+</header>
+<main>
+  <div class="stage" id="stage"></div>
+  <p id="note">Loading…</p>
+</main>
+<script type="module" src="/play-page.js?v=__BUILD__"></script>
+</body>
+</html>

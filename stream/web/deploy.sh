@@ -20,11 +20,21 @@ echo "==> bundling"
 "$ESBUILD" src/main.js --bundle --format=esm --outfile=dist/app.js \
   --define:global=globalThis --external:./webtorrent.min.js --minify
 
+# The isolated player is a SEPARATE bundle and a separate document on purpose
+# -- see stream/Caddyfile's /play* block. Bundling it into app.js would not work
+# even if it were tidier: the page has to be a different document to carry
+# different headers, and a document that loads app.js would pull in the search
+# UI, the torrent engine and every cross-origin image the app shows, each of
+# which is blocked under require-corp.
+"$ESBUILD" src/play-page.js --bundle --format=esm --outfile=dist/play-page.js \
+  --define:global=globalThis --minify
+
 cp -f node_modules/webtorrent/dist/webtorrent.min.js dist/
 cp -f node_modules/webtorrent/dist/sw.min.js dist/
 
 HASH=$(sha256sum dist/app.js | cut -c1-12)
-echo "==> build $HASH"
+PLAYHASH=$(sha256sum dist/play-page.js | cut -c1-12)
+echo "==> build $HASH (player $PLAYHASH)"
 
 # Icons need the same treatment as app.js and for the same reason. They sit on
 # stable URLs behind `Cache-Control: max-age=86400`, so after a rebrand both
@@ -35,6 +45,10 @@ echo "==> icons $ICONHASH"
 
 sed -e "s/__BUILD__/$HASH/g" -e "s/__ICON__/$ICONHASH/g" index.html > dist/index.html
 sed -e "s/__ICON__/$ICONHASH/g" manifest.webmanifest > dist/manifest.webmanifest
+# Its OWN hash, not app.js's: stamping the app's hash here would leave a
+# returning visitor on the previous player whenever only the player changed,
+# which is the exact failure this stamping exists to prevent.
+sed -e "s/__BUILD__/$PLAYHASH/g" play.html > dist/play.html
 
 push() {
   ssh "$JUMP" "ssh -i $KEY -o BatchMode=yes $VPS 'cat > $WWW/$1'" < "$2"
@@ -52,6 +66,8 @@ pushdir() {
 echo "==> deploying"
 push "index.html"          dist/index.html
 push "app.js"              dist/app.js
+push "play.html"           dist/play.html
+push "play-page.js"        dist/play-page.js
 push "webtorrent.min.js"   dist/webtorrent.min.js
 push "sw.min.js"           dist/sw.min.js
 push "manifest.webmanifest" dist/manifest.webmanifest

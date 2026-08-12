@@ -69,6 +69,23 @@ type source struct {
 	// client must not route it into the player. Absent -- and so omitted from
 	// the wire entirely -- on every source this site can actually serve.
 	Offsite bool `json:"offsite,omitempty"`
+	// OnSite marks a source that opens ANOTHER PAGE OF THIS SITE. It is not
+	// offsite -- following it does not leave -- and it is not webSafe either,
+	// because the in-page player cannot run it.
+	//
+	// One machine needs this and the need is real rather than tidy. PSP runs on
+	// ppsspp, which EmulatorJS publishes only as a threaded build; threads need
+	// SharedArrayBuffer; SharedArrayBuffer needs a cross-origin-isolated
+	// document; and the app cannot be one, because a COEP document may only
+	// embed a cross-origin iframe that sends COEP back and the Internet
+	// Archive's player does not. `/play/` is a document that embeds nothing, so
+	// it can be isolated, and 619 PSP entries play there.
+	//
+	// Marked rather than inferred from the URL. A client that decided "is this
+	// my own origin" by comparing hostnames would get it wrong on every
+	// self-hosted deployment and on every wrapper client, whose page origin is
+	// not the API's. The server knows; it says so.
+	OnSite bool `json:"onSite,omitempty"`
 	// Action is what following this source DOES, in one word: "play" or
 	// "download". It exists because those are separate facts about the same
 	// entry and a catalogue can publish either, both or neither -- Vimm's Lair
