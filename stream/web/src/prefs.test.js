@@ -79,7 +79,7 @@ test('everything written comes back after a reload', () => {
   const storage = fakeStorage();
   const first = createPrefs(storage);
   first.setShared({ groups: ['music'], adult: true, lang: 'any' });
-  first.setDomain('music', { sort: 'recent', quality: ['flac'], source: 'instant' });
+  first.setDomain('music', { sort: 'recent', quality: ['flac'], source: 'instant', provider: 'archive.org' });
   first.setAppearance({ theme: 'midnight', covers: 'large' });
   first.setPlayback({ autoplay: false, subtitles: 'on' });
 
@@ -91,6 +91,7 @@ test('everything written comes back after a reload', () => {
   assert.equal(second.domain('music').sort, 'recent');
   assert.deepEqual(second.domain('music').quality, ['flac']);
   assert.equal(second.domain('music').source, 'instant');
+  assert.equal(second.domain('music').provider, 'archive.org');
   assert.equal(second.appearance().theme, 'midnight');
   assert.equal(second.playback().autoplay, false);
   assert.equal(second.playback().subtitles, 'on');

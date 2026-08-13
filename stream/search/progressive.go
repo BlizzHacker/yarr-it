@@ -330,6 +330,7 @@ func (j *searchJob) run(s *server) {
 	// there is nothing to gain by moving it off this goroutine and a real
 	// property to lose. See vimm.go.
 	j.vimmStage(s)
+	j.depotStage(s)
 
 	// archive.org is the fast half and the only thing the first paint waits
 	// for. It is a public metadata query with no queue behind it: measured
@@ -373,11 +374,24 @@ func (j *searchJob) run(s *server) {
 	j.enrichArt(ctx, s)
 
 	// Cache the whole set under the key the handler and the warmer read, so the
-	// next search for this is a straight hit.
+	// next search for this is a straight hit. A degraded answer is deliberately
+	// not cached: local catalogues can still paint while Archive.org or the
+	// indexers are down, but turning that temporary outage into the next 45
+	// minutes' canonical answer makes a provider appear to have vanished.
 	snap := j.snapshot()
-	if len(snap.cards) > 0 {
+	if len(snap.cards) > 0 && cacheableSearchSources(snap.sources) {
 		s.putCached(j.key, snap.cards)
 	}
+}
+
+func cacheableSearchSources(sources map[string]string) bool {
+	for _, state := range sources {
+		switch state {
+		case stageFailed, stageUnavailable, stagePending:
+			return false
+		}
+	}
+	return true
 }
 
 // enrichArt fills in TMDB posters for the leading cards.
@@ -451,6 +465,25 @@ func (j *searchJob) vimmStage(s *server) {
 	}
 	j.add(cards)
 	j.mark("vimm", stageOK)
+}
+
+// depotStage adds The ROM Depot's captured directory beside Vimm in the
+// first paint. Both are local memory scans; neither belongs behind a network
+// request or an indexer timeout.
+func (j *searchJob) depotStage(s *server) {
+	if j.kind != "" && !sameDomain(j.kind, domainGame) {
+		j.mark("theromdepot", stageNone)
+		return
+	}
+	if s == nil || s.depot == nil || s.depot.count() == 0 {
+		j.mark("theromdepot", stageNotConfigured)
+		return
+	}
+	cards := s.depot.search(j.query, j.kind, nil, depotCardLimit)
+	if len(cards) > 0 {
+		j.add(cards)
+	}
+	j.mark("theromdepot", stageOK)
 }
 
 // indexerStage runs the torrent fan-out and records what happened to it, in

@@ -82,30 +82,48 @@ func TestEachCategoryBrowseGetsItsOwnCacheEntry(t *testing.T) {
 	}
 }
 
-// A hosted backup and a torrent behave so differently -- one always plays, one
-// might not -- that mixing them with no way to choose makes the list harder to
-// reason about.
-func TestSourceFilterSeparatesBackupsFromTorrents(t *testing.T) {
+// A direct site file and a torrent behave so differently -- one has an HTTP
+// host, one needs peers -- that mixing them with no way to choose makes the
+// list harder to reason about.
+func TestSourceFilterSeparatesSiteFilesFromTorrents(t *testing.T) {
 	cards := []card{
 		{Title: "Contra", Kind: "game", Instant: true,
 			Sources: []source{{Indexer: "Archive.org"}}},
+		{Title: "Contra III", Kind: "game", External: &externalSite{Name: depotSiteName},
+			Sources: []source{{Indexer: depotSiteName, Offsite: true}}},
 		{Title: "Contra ROM Set", Seeders: 40,
 			Sources: []source{{Indexer: "TPB", Seeders: 40}}},
 	}
 	only := func(src string) []card {
 		return filters{Source: src, Sort: "seeders"}.apply(cards)
 	}
-	if got := only("instant"); len(got) != 1 || !got[0].Instant {
-		t.Errorf("instant filter returned %d cards", len(got))
+	if got := only("instant"); len(got) != 2 || got[1].External == nil {
+		t.Errorf("site-file filter returned %d cards", len(got))
 	}
 	if got := only("swarm"); len(got) != 1 || got[0].Instant {
 		t.Errorf("swarm filter returned %d cards", len(got))
 	}
-	if got := only(""); len(got) != 2 {
-		t.Errorf("no filter should return both, got %d", len(got))
+	if got := only(""); len(got) != 3 {
+		t.Errorf("no filter should return all three, got %d", len(got))
 	}
 	f := buildFacets(cards)
-	if f.InstantCount != 1 || f.SwarmCount != 1 {
+	if f.InstantCount != 2 || f.ExternalCount != 1 || f.SwarmCount != 1 {
 		t.Errorf("facet counts wrong: instant=%d swarm=%d", f.InstantCount, f.SwarmCount)
+	}
+}
+
+func TestProviderFilterCanRecoverArchiveFromMixedCatalogues(t *testing.T) {
+	cards := []card{
+		{Title: "Contra", Origin: "archive.org", Sources: []source{{Indexer: "EmulatorJS"}}},
+		{Title: "Contra", Origin: "Vimm's Lair", Sources: []source{{Indexer: "Vimm's Lair"}}},
+		{Title: "Contra", Origin: "The ROM Depot", Sources: []source{{Indexer: "The ROM Depot"}}},
+	}
+	got := filters{Providers: []string{"archive.org"}}.apply(cards)
+	if len(got) != 1 || got[0].Origin != "archive.org" {
+		t.Fatalf("provider filter returned %+v", got)
+	}
+	f := buildFacets(cards)
+	if len(f.Providers) != 3 {
+		t.Fatalf("provider facets = %+v", f.Providers)
 	}
 }

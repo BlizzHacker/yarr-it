@@ -62,6 +62,7 @@ export const DOMAIN_DEFAULTS = Object.freeze({
   quality: [],
   codec: [],
   source: '',
+  provider: '',
   // Game systems -- snes, genesis, c64. Per-domain rather than shared because a
   // machine is only a thing in games: remembering "Super Nintendo" and applying
   // it to Books would empty that catalogue for a reason nobody could see.
@@ -169,6 +170,7 @@ export function activeFilterCount(filters) {
   if (size(filters.quality)) n++;
   if (size(filters.codec)) n++;
   if (size(filters.systems)) n++;
+  if (size(filters.providers) || filters.provider) n++;
   if (filters.source) n++;
   if (filters.sort && filters.sort !== DOMAIN_DEFAULTS.sort) n++;
   return n;
@@ -242,6 +244,7 @@ function readDomain(raw) {
     quality: tokens(r.quality),
     codec: tokens(r.codec),
     source: oneOf(SOURCES, r.source, DOMAIN_DEFAULTS.source),
+	provider: str(r.provider).toLowerCase().trim().slice(0, 40),
     // Not checked against a list of machines, for the same reason `lang` is
     // not checked against LANGUAGES: the server owns that vocabulary and knows
     // aliases this file has never heard of, and quietly dropping a slug merely
