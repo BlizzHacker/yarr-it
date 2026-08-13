@@ -158,12 +158,12 @@ func TestOnlyVimmURLsArePublished(t *testing.T) {
 		}
 	}
 	bad := []string{
-		"http://vimm.net/vault/3",          // not https
-		"https://evil.example/vault/3",     // another host
-		"https://notvimm.net/vault/3",      // suffix without a label boundary
-		"https://vimm.net.evil.com/vault",  // host is evil.com
-		"javascript:alert(1)",              // not a URL we would ever follow
-		"//dl3.vimm.net/?mediaId=3",        // no scheme
+		"http://vimm.net/vault/3",         // not https
+		"https://evil.example/vault/3",    // another host
+		"https://notvimm.net/vault/3",     // suffix without a label boundary
+		"https://vimm.net.evil.com/vault", // host is evil.com
+		"javascript:alert(1)",             // not a URL we would ever follow
+		"//dl3.vimm.net/?mediaId=3",       // no scheme
 	}
 	for _, u := range bad {
 		if got := vimmURL(u); got != "" {
@@ -177,8 +177,8 @@ func TestOnlyVimmURLsArePublished(t *testing.T) {
 func TestAVimmCardNeverClaimsToPlayHere(t *testing.T) {
 	store := storeWith(t,
 		vimmEntry{VaultID: "3", Title: "10-Yard Fight", Platform: "Nintendo", System: "nes",
-			Page: "https://vimm.net/vault/3",
-			Play: "https://vimm.net/vault/?p=play&mediaId=3",
+			Page:     "https://vimm.net/vault/3",
+			Play:     "https://vimm.net/vault/?p=play&mediaId=3",
 			Download: "https://dl3.vimm.net/?mediaId=3", Size: 16384},
 	)
 	cards := store.search("10-Yard Fight", "game", nil, 10)
@@ -397,8 +397,8 @@ func TestVimmResultsCarryTheSystemFacet(t *testing.T) {
 	if seen["snes"] == "" || seen["genesis"] == "" {
 		t.Fatalf("system facet is missing a machine: %+v", f.Systems)
 	}
-	if f.InstantCount != 0 {
-		t.Errorf("InstantCount=%d; an off-site result is not hosted here", f.InstantCount)
+	if f.InstantCount != 2 {
+		t.Errorf("InstantCount=%d; site-file count should include external catalogues", f.InstantCount)
 	}
 	if f.SwarmCount != 0 {
 		t.Errorf("SwarmCount=%d; an off-site result has no peers either", f.SwarmCount)

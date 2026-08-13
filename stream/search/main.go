@@ -168,7 +168,7 @@ type card struct {
 	// External is set when this result lives on somebody else's site. It is
 	// the counterweight to Instant: Instant promises this site will serve it,
 	// this says plainly that it will not, and a card may never carry both. See
-	// externalSite above and vimm.go, which is the only thing that sets it.
+	// externalSite above and the local provider catalogues that set it.
 	External *externalSite `json:"external,omitempty"`
 
 	// Music is the part of a result that only means anything for music: the
@@ -234,6 +234,10 @@ type server struct {
 	// and means nothing has been imported, which is how every instance but
 	// Wade's starts; see vimm.go, where every read tolerates it.
 	vimm *vimmStore
+	// The ROM Depot directory captured by ROMarr Capture. Like Vimm, it is
+	// loaded once and searched from memory; nil/empty is a normal self-hosted
+	// state and is surfaced in health rather than silently hidden.
+	depot *depotStore
 
 	tmdb     *tmdbClient
 	igdb     *igdbClient
@@ -355,6 +359,17 @@ func main() {
 	} else {
 		log.Printf("Vimm's Lair: nothing imported (%s); run with -import-vimm <export.json> to add it",
 			vimmCataloguePath())
+	}
+
+	depot, err := loadDepotStore(depotCataloguePath())
+	if err != nil {
+		log.Fatalf("The ROM Depot catalogue: %v", err)
+	}
+	s.depot = depot
+	if n := depot.count(); n > 0 {
+		log.Printf("The ROM Depot: %d entries from %s", n, depotCataloguePath())
+	} else {
+		log.Printf("The ROM Depot: nothing captured (%s)", depotCataloguePath())
 	}
 
 	s.warm = newWarmer(s)
@@ -779,6 +794,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"cachedQueries": n,
 			"owner":         owner,
 			"vimm":          s.vimm.stats(),
+			"theromdepot":   s.depot.stats(),
 			"detail":        "PROWLARR_API_KEY is not set; torrent search is disabled",
 		})
 		return
@@ -800,7 +816,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// catalogue that failed to import shows up here as zero entries rather than
 	// as games that quietly stopped appearing in search.
 	body := map[string]any{"prowlarr": status, "cachedQueries": n, "owner": owner,
-		"vimm": s.vimm.stats()}
+		"vimm": s.vimm.stats(), "theromdepot": s.depot.stats()}
 	// Whether searches are currently skipping the indexers on purpose. Without
 	// this, a breaker that has tripped looks exactly like an index with nothing
 	// in it -- results simply stop arriving and nothing says why.
@@ -946,11 +962,11 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// it is rather than offering a retry that can only fail again.
 	//
 	// The catalogue has to be in that condition or the sentence stops being
-	// true. An instance with Vimm's Lair imported and no Prowlarr key can
+	// true. An instance with a provider catalogue imported and no Prowlarr key can
 	// answer a game search perfectly well, and refusing it with "no torrent
 	// indexer is configured" would be this handler declining to look at the one
 	// source that was going to answer.
-	if s.apiKey == "" && !wantArchive && s.vimm.count() == 0 {
+	if s.apiKey == "" && !wantArchive && s.vimm.count() == 0 && s.depot.count() == 0 {
 		if stale, ok := s.getAny(cacheKey); ok {
 			respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, kind, f, stale), searchState{cache: "STALE", stale: true}, ownerView)
 			return

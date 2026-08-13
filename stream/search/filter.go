@@ -18,8 +18,9 @@ type filters struct {
 	Qualities  []string // 2160p, 1080p, 720p, ...
 	Codecs     []string // x264, x265, ...
 	Indexers   []string
-	WebSafe    bool   // only what the browser can play unaided
-	Sort       string // relevance | seeders | size | quality | recent | title
+	Providers  []string // card origins: archive.org, Vimm's Lair, The ROM Depot
+	WebSafe    bool     // only what the browser can play unaided
+	Sort       string   // relevance | seeders | size | quality | recent | title
 	Query      string
 	Groups     []string // movies, tv, music, games, apps, books, anime, adult
 	ShowAdult  bool
@@ -64,6 +65,7 @@ func parseFilters(q url.Values) filters {
 		Qualities:  splitCSV(q.Get("quality")),
 		Codecs:     splitCSV(q.Get("codec")),
 		Indexers:   splitCSV(q.Get("indexer")),
+		Providers:  splitCSV(q.Get("provider")),
 		WebSafe:    q.Get("webSafe") == "1" || q.Get("webSafe") == "true",
 		Sort:       q.Get("sort"),
 		Kind:       kindFor(q),
@@ -183,7 +185,13 @@ func (f filters) apply(cards []card) []card {
 		if f.Kind != "" && !sameDomain(c.Kind, f.Kind) {
 			continue
 		}
-		if f.Source == "instant" && !c.Instant {
+		if len(f.Providers) > 0 && !containsFold(f.Providers, c.Origin) {
+			continue
+		}
+		// The UI calls this group "Site files": reliable HTTP-hosted items on
+		// this site plus explicit file/player offers on a named external site.
+		// Keep the wire value `instant` for saved-filter compatibility.
+		if f.Source == "instant" && !c.Instant && c.External == nil {
 			continue
 		}
 		// "Swarm" means a torrent. A result that lives on somebody else's
@@ -525,6 +533,7 @@ type facets struct {
 	Qualities []facetCount `json:"qualities"`
 	Codecs    []facetCount `json:"codecs"`
 	Indexers  []facetCount `json:"indexers"`
+	Providers []facetCount `json:"providers,omitempty"`
 	Groups    []facetCount `json:"groups"`
 	// Languages is what the results say they are in, counted BEFORE the language
 	// filter runs -- these are built from the unfiltered set, which is what makes
@@ -553,17 +562,16 @@ type facets struct {
 	// hand over 13, which is the same asymmetry pointing the wrong way.
 	Systems    []facetCount `json:"systems,omitempty"`
 	AdultCount int          `json:"adultCount"`
-	// How many results arrive each way, so the source toggle can say so
-	// rather than making you click to find out one of them is empty.
+	// How many results arrive as site files (hosted here or explicitly linked
+	// from a provider catalogue) versus peer swarms.
 	InstantCount int `json:"instantCount"`
 	SwarmCount   int `json:"swarmCount"`
-	// ExternalCount is how many results live on another site entirely -- not
-	// hosted here, not seeded by anyone. A third number rather than a share of
-	// one of the other two, because a chip that says "Backups 40" and delivers
-	// twelve is the kind of quiet lie this file exists to prevent.
+	// ExternalCount remains the external subset for clients that want to show
+	// it separately, while InstantCount is the total behind the Site files
+	// filter and must therefore include it.
 	ExternalCount int   `json:"externalCount,omitempty"`
-	MaxSeed      int   `json:"maxSeeders"`
-	MaxSizeMB    int64 `json:"maxSizeMB"`
+	MaxSeed       int   `json:"maxSeeders"`
+	MaxSizeMB     int64 `json:"maxSizeMB"`
 }
 
 type facetCount struct {
@@ -579,10 +587,14 @@ type facetCount struct {
 func buildFacets(cards []card) facets {
 	q, cd, ix := map[string]int{}, map[string]int{}, map[string]int{}
 	grp := map[string]int{}
+	providers := map[string]int{}
 	lang := map[string]int{}
 	sys := map[string]int{}
 	f := facets{}
 	for _, c := range cards {
+		if c.Origin != "" {
+			providers[c.Origin]++
+		}
 		for _, g := range c.Groups {
 			grp[g]++
 		}
@@ -597,10 +609,8 @@ func buildFacets(cards []card) facets {
 		}
 		switch {
 		case c.External != nil:
-			// Counted apart from both. It is not hosted here and it is not
-			// seeded by anyone, and adding it to either number would make that
-			// chip promise results it does not contain.
 			f.ExternalCount++
+			f.InstantCount++
 		case c.Instant:
 			f.InstantCount++
 		default:
@@ -627,6 +637,7 @@ func buildFacets(cards []card) facets {
 	f.Qualities = sortedFacets(q, true)
 	f.Codecs = sortedFacets(cd, false)
 	f.Indexers = sortedFacets(ix, false)
+	f.Providers = sortedFacets(providers, false)
 	f.Groups = sortedFacets(grp, false)
 	if len(lang) > 0 {
 		f.Languages = sortedFacets(lang, false)

@@ -64,6 +64,10 @@ const el = (tag, cls, text) => {
 const state = {
   cards: [],
   facets: null,
+  // Per-source progress from the latest search. A network provider that is
+  // still answering remains visible as pending instead of disappearing from
+  // the filter row while the local catalogues race ahead.
+  sourceStatus: {},
   query: '',
   // The AbortController for the running search. A search is now a first
   // response plus a poll loop that outlives it, so "the previous search" is a
@@ -94,7 +98,7 @@ const state = {
   game: null,
   filters: {
     seeders: 1, minSize: '', maxSize: '',
-    quality: new Set(), codec: new Set(), groups: new Set(),
+    quality: new Set(), codec: new Set(), groups: new Set(), providers: new Set(),
     // Game systems -- snes, genesis, c64. Per-domain, because a machine means
     // nothing outside games; see src/prefs.js.
     systems: new Set(),
@@ -126,6 +130,7 @@ function filterParams() {
   if (f.maxSize) p.set('maxSizeMB', String(f.maxSize));
   if (f.quality.size) p.set('quality', [...f.quality].join(','));
   if (f.codec.size) p.set('codec', [...f.codec].join(','));
+  if (f.providers.size) p.set('provider', [...f.providers].join(','));
   if (f.webSafe) p.set('webSafe', '1');
   if (f.source) p.set('source', f.source);
   if (f.groups.size) p.set('groups', [...f.groups].join(','));
@@ -220,6 +225,7 @@ async function search({ showSpinner = true } = {}) {
       onPaint: ({ cards, added, data: body }) => {
         state.cards = cards;
         if (body.facets) state.facets = body.facets;
+		if (body.sources) state.sourceStatus = body.sources;
         // The filter chips are drawn once and again at the end. Redrawing them
         // on every arrival churns the row a person is reaching for.
         if (!painted || body.complete) renderFilters();
@@ -289,7 +295,11 @@ function loadDomainFilters() {
   state.filters.quality = new Set(d.quality);
   state.filters.codec = new Set(d.codec);
   state.filters.systems = new Set(d.systems);
-  state.filters.source = d.source;
+  state.filters.providers = new Set(d.provider ? [d.provider] : []);
+  // `instant` was the old combined Site files chip. The four named source
+  // controls supersede it; carrying the hidden old value forward would make a
+  // filter active with no button showing why.
+  state.filters.source = d.source === 'instant' ? '' : d.source;
   syncFilterInputs();
 }
 
@@ -317,6 +327,7 @@ function persistFilters() {
     codec: [...f.codec],
     systems: [...f.systems],
     source: f.source,
+		provider: [...f.providers][0] || '',
   });
   renderFilterReset();
 }
@@ -397,6 +408,7 @@ function clearAllFilters({ research = true } = {}) {
   state.filters.quality = new Set();
   state.filters.codec = new Set();
   state.filters.systems = new Set();
+  state.filters.providers = new Set();
   state.filters.adult = false;
   state.filters.webSafe = false;
   state.filters.lang = '';
@@ -451,8 +463,7 @@ function renderFilters() {
   // its own state is worse than one that is missing.
   $('#f-adult').classList.toggle('on', state.filters.adult);
   $('#f-websafe').classList.toggle('on', state.filters.webSafe);
-  $('#f-instant').classList.toggle('on', state.filters.source === 'instant');
-  $('#f-swarm').classList.toggle('on', state.filters.source === 'swarm');
+  renderSourceFilters(f);
 
   // The COUNTS are facts about a result set, so they wait for one.
   if (!f) return;
@@ -468,8 +479,28 @@ function renderFilters() {
     persistFilters();
     refilter();
   });
-  $('#f-instant').textContent = f.instantCount ? `Backups ${f.instantCount}` : 'Backups';
-  $('#f-swarm').textContent = f.swarmCount ? `Torrents ${f.swarmCount}` : 'Torrents';
+  renderSourceFilters(f);
+}
+
+function renderSourceFilters(facets) {
+  const counts = new Map((facets?.providers || []).map((p) => [p.value.toLowerCase(), p.count]));
+  const provider = [...state.filters.providers][0] || '';
+  const paint = (id, name, key, stage) => {
+    const node = $(id);
+    if (!node) return;
+    const count = counts.get(key.toLowerCase());
+    const pending = count == null && state.sourceStatus?.[stage] === 'pending';
+    node.textContent = count != null ? `${name} ${count}` : (pending ? `${name} …` : name);
+    node.classList.toggle('on', provider.toLowerCase() === key.toLowerCase());
+  };
+  paint('#f-archive', 'Archive.org', 'archive.org', 'archive');
+  paint('#f-vimm', "Vimm's Lair", "Vimm's Lair", 'vimm');
+  paint('#f-depot', 'The ROM Depot', 'The ROM Depot', 'theromdepot');
+  const torrents = $('#f-swarm');
+  if (torrents) {
+    torrents.textContent = facets?.swarmCount ? `Torrents ${facets.swarmCount}` : 'Torrents';
+    torrents.classList.toggle('on', state.filters.source === 'swarm');
+  }
 }
 
 /**
@@ -3420,17 +3451,31 @@ function init() {
     persistFilters();
     refilter();
   });
-  for (const [id, value] of [['#f-instant', 'instant'], ['#f-swarm', 'swarm']]) {
-    $(id).addEventListener('click', () => {
-      // Clicking the one already active clears back to showing both, which is
-      // what every other toggle on this bar does.
-      state.filters.source = state.filters.source === value ? '' : value;
-      $('#f-instant').classList.toggle('on', state.filters.source === 'instant');
-      $('#f-swarm').classList.toggle('on', state.filters.source === 'swarm');
-      persistFilters();
-      if (state.cards.length) refilter();
-    });
-  }
+  const chooseProvider = (name) => {
+    const current = [...state.filters.providers][0] || '';
+    state.filters.providers = current.toLowerCase() === name.toLowerCase()
+      ? new Set()
+      : new Set([name]);
+    state.filters.source = '';
+    renderSourceFilters(state.facets);
+  };
+  $('#f-archive').addEventListener('click', () => {
+    chooseProvider('archive.org'); persistFilters(); if (state.cards.length) refilter();
+  });
+  $('#f-vimm').addEventListener('click', () => {
+    chooseProvider("Vimm's Lair"); persistFilters(); if (state.cards.length) refilter();
+  });
+  $('#f-depot').addEventListener('click', () => {
+    chooseProvider('The ROM Depot'); persistFilters(); if (state.cards.length) refilter();
+  });
+  $('#f-swarm').addEventListener('click', () => {
+    const on = state.filters.source === 'swarm';
+    state.filters.source = on ? '' : 'swarm';
+    state.filters.providers = new Set();
+    renderSourceFilters(state.facets);
+    persistFilters();
+    if (state.cards.length) refilter();
+  });
 
   $('#filter-reset').addEventListener('click', clearAllFilters);
 
