@@ -120,3 +120,34 @@ test('both copies of the installer are identical', () => {
   assert.equal(published, source,
     'web/selfhost.sh and deploy/selfhost.sh have drifted; web/ is the one served');
 });
+
+test('saved titles have a dedicated, reachable library screen', () => {
+  const main = read('main.js');
+  const html = read('../index.html');
+
+  assert.match(html, /id="library-open"[^>]+href="\/\?library=1"/,
+    'the signed-in header has no link to the saved library');
+  assert.match(html, /id="saved-library"/,
+    'the saved library has no dedicated mount');
+  const show = main.slice(main.indexOf('async function showSavedLibrary'),
+    main.indexOf('async function browseDomain'));
+  assert.match(show, /#saved-library/,
+    'the saved-library route does not render its dedicated mount');
+  assert.doesNotMatch(show, /const host = \$\('#library'\)/,
+    'saved titles were mounted into the transient playlist browser');
+});
+
+// Video had autoplay while audio did not. Archive music and audiobook tracks
+// resolved correctly, attached a valid MP3, then sat forever behind the word
+// "Resolving" because nothing asked the audio element to start.
+test('Archive audio starts under the same autoplay policy as video', () => {
+  const main = read('main.js');
+  const html = read('../index.html');
+
+  assert.match(html, /<audio id="audio" controls autoplay hidden>/,
+    'the audio element does not start a track selected by the user');
+  assert.match(main, /\['#video', '#audio'\]/,
+    'the saved autoplay setting is applied to video but not audio');
+  assert.match(main, /const starting = el\.play\(\)/,
+    'attaching an Archive MP3 never explicitly starts its audio element');
+});

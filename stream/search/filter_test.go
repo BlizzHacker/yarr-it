@@ -504,6 +504,32 @@ func TestAOneWordSearchIsNotTreatedAsATitle(t *testing.T) {
 	}
 }
 
+func TestArticleTitleWithSeparateYearLeadsOdysseyResults(t *testing.T) {
+	cards := []card{
+		{Key: "game", Title: "Space Odyssey", Year: 1981, Instant: true, Popular: 254699},
+		{Key: "film", Title: "The Odyssey", Year: 2026, Seeders: 6287,
+			Sources: []source{{Seeders: 6287, Codec: "HEVC"}}},
+		{Key: "other", Title: "Odyssey", Year: 1984, Instant: true, Popular: 9000},
+	}
+	f := filters{Query: "The Odyssey 2026", Sort: "relevance"}
+	f.sortCards(cards)
+	if cards[0].Key != "film" {
+		t.Fatalf("The Odyssey (2026) ranked behind %q", cards[0].Title)
+	}
+}
+
+func TestArticleTitleWithoutYearIsStillANamedWork(t *testing.T) {
+	cards := []card{
+		{Key: "popular", Title: "Odyssey Collection", Instant: true, Popular: 500000},
+		{Key: "exact", Title: "The Odyssey", Seeders: 2, Sources: []source{{Seeders: 2}}},
+	}
+	f := filters{Query: "The Odyssey", Sort: "seeders"}
+	f.sortCards(cards)
+	if cards[0].Key != "exact" {
+		t.Fatalf("article title was treated as a keyword; %q led", cards[0].Title)
+	}
+}
+
 // A browse has no query, so there is nothing to be exact about, and reordering
 // it would scramble a shelf for no reason.
 func TestABrowseIsNotReordered(t *testing.T) {

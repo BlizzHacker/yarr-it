@@ -64,6 +64,36 @@ func TestDepotSearchPublishesExplicitLoginRequiredDownload(t *testing.T) {
 	}
 }
 
+func TestDepotSearchKeepsPlatformAndRegionTerms(t *testing.T) {
+	s := depotStoreWith(t, depotItem{
+		ID:       "Nintendo 64/Europe/Mario Party (Europe) (En,Fr,De).z64",
+		Title:    "Mario Party (Europe) (En,Fr,De).z64",
+		Name:     "Mario Party (Europe) (En,Fr,De).z64",
+		Platform: "Nintendo 64",
+		Region:   "Europe",
+	}, depotItem{
+		ID:       "Nintendo 64/Europe/Mario Party 2 (Europe).z64",
+		Title:    "Mario Party 2 (Europe).z64",
+		Name:     "Mario Party 2 (Europe).z64",
+		Platform: "Nintendo 64",
+		Region:   "Europe",
+	}, depotItem{
+		ID:       "Virtual Console/Nintendo Wii/Europe/Nintendo 64/Mario Party 2 (Europe) (N64) (Virtual Console).wad",
+		Title:    "Mario Party 2 (Europe) (N64) (Virtual Console).wad",
+		Name:     "Mario Party 2 (Europe) (N64) (Virtual Console).wad",
+		Platform: "Virtual Console",
+		Region:   "Europe",
+	})
+	cards := s.search("Mario Party Nintendo 64 Europe", domainGame, nil, 10)
+	if len(cards) != 3 {
+		t.Fatalf("metadata-qualified query returned %d cards, want 3", len(cards))
+	}
+	cards = (filters{Query: "Mario Party Nintendo 64 Europe", Sort: "relevance"}).apply(cards)
+	if cards[0].System != "n64" || cards[0].Title != "Mario Party (Europe) (En,Fr,De)" {
+		t.Fatalf("first card = %q / %q, want exact Mario Party on n64", cards[0].Title, cards[0].System)
+	}
+}
+
 func TestDepotRejectsUnsafeCataloguePaths(t *testing.T) {
 	for _, id := range []string{"../secret.zip", "Nintendo 64/../secret.zip", "Nintendo 64\\secret.zip", ""} {
 		if got, ok := depotDownloadURL(id); ok {

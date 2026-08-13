@@ -547,8 +547,8 @@ function skeletonShelf() {
  *
  * `browse(domain)` is injected rather than imported so this module never needs
  * to know how the client talks to a server, and so the tests can drive it.
- * It resolves to an array of cards, or to an empty array for a domain that has
- * nothing -- in which case the whole section is removed.
+ * It resolves to an array of cards, one named shelf, or several named shelves.
+ * An empty result removes the whole domain section.
  */
 export async function renderHome(host, {
   discoverRows, browse, handlers, resume, indexer,
@@ -595,14 +595,30 @@ export async function renderHome(host, {
     pending.push(
       Promise.resolve()
         .then(() => browse(section.domain))
-        .then((cards) => {
+        .then((result) => {
           skel.remove();
-          const items = (cards || []).map((c) => itemFromCard(c, section.domain));
-          if (!items.length) {
-            sec.remove();
-            return;
+          // A fallback may provide one search-card shelf or several exact
+          // discover-item shelves. Books uses the latter so Gutenberg and
+          // LibriVox remain separate rows rather than one replacing the other.
+          // Plain arrays stay supported for every existing caller.
+          const specs = Array.isArray(result)
+            ? [{ cards: result }]
+            : (Array.isArray(result?.shelves) ? result.shelves : [result || {}]);
+          let rendered = 0;
+          for (const spec of specs) {
+            const items = Array.isArray(spec.items)
+              ? spec.items.map((it) => itemFromDiscover(it, section.domain))
+              : (spec.cards || []).map((card) => itemFromCard(card, section.domain));
+            if (spec.mediaType) {
+              for (const item of items) item.mediaType = spec.mediaType;
+            }
+            if (!items.length) continue;
+            sec.append(shelf(spec.title || '', items, handlers));
+            rendered += 1;
           }
-          sec.append(shelf('', items, handlers));
+          if (!rendered) {
+            sec.remove();
+          }
         })
         .catch(() => {
           // A domain we could not ask about is not a domain with nothing in

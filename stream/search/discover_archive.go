@@ -254,13 +254,29 @@ func playTargetFor(d iaSearchDoc, mediaType string) string {
 // A row that fails is dropped rather than failing the page: seven rows where
 // one collection is briefly unreachable is still a landing page, and an error
 // there would replace the whole thing with nothing.
+//
+// Archive's advanced-search endpoint slows down sharply when one client opens
+// a request for every shelf at once.  That used to fan fourteen requests out
+// together; on the live host they all crossed the page's 20-second deadline,
+// so every Archive-backed shelf disappeared in one cache fill.  Keep a small
+// amount of parallelism (a single request is normally sub-second) without
+// turning a landing-page refresh into an accidental load test.
+const archiveDiscoverConcurrency = 3
+
 func (s *server) archiveDiscover(ctx context.Context, perRow int) []discoverRow {
 	out := make([]discoverRow, len(archiveRows))
+	gate := make(chan struct{}, archiveDiscoverConcurrency)
 	var wg sync.WaitGroup
 	for i, r := range archiveRows {
 		wg.Add(1)
 		go func(i int, r archiveRow) {
 			defer wg.Done()
+			select {
+			case gate <- struct{}{}:
+				defer func() { <-gate }()
+			case <-ctx.Done():
+				return
+			}
 			got, err := fetchArchiveRow(ctx, r, perRow)
 			if err != nil {
 				log.Printf("discover %s: %v", r.key, err)

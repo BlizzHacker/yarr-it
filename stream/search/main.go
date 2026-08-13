@@ -892,7 +892,7 @@ func respondSearch(w http.ResponseWriter, q string, f filters,
 		body["sources"] = st.sources
 	}
 	w.Header().Set("X-Cache", st.cache)
-	if ownerView {
+	if ownerView || st.pending {
 		// This response may carry more than the public one for the same query,
 		// so it must not be stored anywhere a later caller could be served from.
 		// writeJSON stamps `public, max-age=60` on everything and publicCORS
@@ -906,7 +906,9 @@ func respondSearch(w http.ResponseWriter, q string, f filters,
 		// wire. privateWriter stamps at WriteHeader time, which is the only
 		// moment that wins. Non-owner responses keep the public caching, which
 		// is what makes the site fast for the people who send most of the
-		// traffic.
+		// traffic. A progressive response is just as unsafe to cache: its job is
+		// still growing, so caching an empty first paint for sixty seconds makes
+		// a healthy search look empty even after the job has completed.
 		w = &privateWriter{ResponseWriter: w}
 	}
 	writeJSON(w, 200, body)

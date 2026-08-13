@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
@@ -321,14 +322,53 @@ func (f filters) exactFirst(cards []card) {
 	// Zelda games; they are not asking for a work called exactly Zelda, and
 	// promoting one puts a 151-download Amstrad fan game above A Link to the
 	// Past. Two words is where a query starts naming something.
-	if len(significantTokens(f.Query)) < 2 {
+	// A leading article still makes a title. "The Odyssey" has one
+	// significant token after stopword removal, but it is a named work rather
+	// than the broad keyword search "odyssey". A stated year is equally strong
+	// evidence that the query names one edition of a work.
+	if len(significantTokens(f.Query)) < 2 &&
+		len(strings.Fields(canonicalTitle(f.Query))) < 2 && titleYear(f.Query) == 0 {
 		return
 	}
 	sort.SliceStable(cards, func(i, j int) bool {
-		ei := matchScore(f.Query, cards[i].Title) >= matchAccept
-		ej := matchScore(f.Query, cards[j].Title) >= matchAccept
+		ei := cardMatchesTitle(f.Query, cards[i])
+		ej := cardMatchesTitle(f.Query, cards[j])
 		return ei && !ej
 	})
+}
+
+func cardMatchesTitle(query string, c card) bool {
+	if matchScore(titleOnlyQuery(query, c), c.Title) < matchAccept {
+		return false
+	}
+	wantYear := titleYear(query)
+	return wantYear == 0 || c.Year == 0 || c.Year == wantYear
+}
+
+// titleOnlyQuery removes platform and region qualifiers that the card proves
+// are metadata. A person searching "Mario Party Nintendo 64 Europe" still
+// named Mario Party; without this seam the global relevance sort promotes
+// Mario Party 2 merely because its filename repeats N64 and Europe.
+func titleOnlyQuery(query string, c card) string {
+	q := " " + canonicalTitle(query) + " "
+	remove := func(phrase string) {
+		phrase = strings.TrimSpace(canonicalTitle(phrase))
+		if phrase != "" {
+			q = strings.ReplaceAll(q, " "+phrase+" ", " ")
+		}
+	}
+	remove(c.Platform)
+
+	metadata := strings.ToLower(c.Platform + " " + c.System)
+	for _, s := range c.Sources {
+		metadata += " " + strings.ToLower(s.Source)
+	}
+	for _, region := range []string{"europe", "usa", "japan", "world", "australia", "korea"} {
+		if strings.Contains(metadata, region) {
+			remove(region)
+		}
+	}
+	return strings.TrimSpace(q)
 }
 
 func (f filters) sortCards(cards []card) {
@@ -394,7 +434,11 @@ func (f filters) sortCards(cards []card) {
 func relevance(c card, queryTerms []string) int {
 	n := 0
 
-	matched := titleOverlap(c.Title, queryTerms)
+	searchTitle := c.Title
+	if c.Year > 0 {
+		searchTitle += " " + fmt.Sprint(c.Year)
+	}
+	matched := titleOverlap(searchTitle, queryTerms)
 	// A recording is filed under the name of the WORK, and the person who made
 	// it lives in a different field. "Tears" by King Oliver's Jazz Band is the
 	// Louis Armstrong record somebody was looking for, and scoring it on its

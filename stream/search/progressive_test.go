@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,14 @@ import (
 	"testing"
 	"time"
 )
+
+func TestEmptyBrowseNeverFansOutToTorrentIndexers(t *testing.T) {
+	j := newSearchJob("   ", "music")
+	j.indexerStage(context.Background(), &server{})
+	if got := j.snapshot().sources["indexers"]; got != stageNone {
+		t.Fatalf("empty browse marked indexers %q, want %q", got, stageNone)
+	}
+}
 
 // Progressive search.
 //
@@ -129,6 +138,9 @@ func TestAStalledIndexerCostsTheResponseNothing(t *testing.T) {
 	if body["job"] == nil || body["job"] == "" {
 		t.Error("no job id; there is no way to collect the rest")
 	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("progressive first paint has Cache-Control %q; a shared cache may pin an empty answer", cc)
+	}
 }
 
 // With no indexer configured at all, a search still has to work -- archive.org
@@ -195,7 +207,7 @@ func TestTheRestOfASearchIsCollectableByJobID(t *testing.T) {
 			_ = json.NewEncoder(w).Encode([]prowlarrResult{{
 				Title: "Metroid.Prime.2002.1080p.BluRay.x264-GRP", Indexer: "stub",
 				Protocol: "torrent", Seeders: 42, Size: 1 << 30,
-				MagnetURL:  "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				MagnetURL: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				Categories: []struct {
 					ID   int    `json:"id"`
 					Name string `json:"name"`
