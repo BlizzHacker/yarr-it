@@ -336,6 +336,11 @@ export function nextLine(model) {
 // for range support, which is measured in tens of seconds; every request after
 // that is answered from its cache in about two tenths.
 const tuneCache = new Map();
+// A full Archive pool has taken just under ten minutes on a cold production
+// restart. Keep the player in its honest "Tuning in" state across that window
+// instead of turning a warming catalogue into a playback failure after 60s.
+const WARM_TUNE_RETRIES = 360;
+const WARM_TUNE_DELAY_MS = 2000;
 
 /** Forget everything. Exported for tests; nothing in the app calls it. */
 export function clearTuneCache(cache = tuneCache) {
@@ -353,12 +358,14 @@ export function clearTuneCache(cache = tuneCache) {
  */
 export function tuneIn(channelId, {
   fetchImpl = apiFetch, clock = () => Date.now(), cache = tuneCache, staleMs = STALE_TUNE_MS,
+  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  warmRetries = WARM_TUNE_RETRIES,
 } = {}) {
   const id = String(channelId ?? '');
   const held = cache.get(id);
   if (held && clock() - held.at < staleMs) return held.promise;
 
-  const promise = requestTune(id, fetchImpl);
+  const promise = requestTune(id, fetchImpl, wait, warmRetries);
   cache.set(id, { at: clock(), promise });
   // A refusal must not be remembered. Otherwise the second press of a channel
   // that was briefly unavailable replays the first failure without asking.
@@ -368,7 +375,8 @@ export function tuneIn(channelId, {
   return promise;
 }
 
-async function requestTune(channelId, fetchImpl) {
+async function requestTune(channelId, fetchImpl, wait, warmRetries) {
+  for (let attempt = 0; ; attempt++) {
   let res;
   try {
     res = await fetchImpl(`${LINEAR_BASE}/stream?channel=${encodeURIComponent(channelId)}`);
@@ -390,7 +398,13 @@ async function requestTune(channelId, fetchImpl) {
     throw new PlaybackError(FAILURE.DEAD_STREAM,
       `the channel service answered ${res?.status ?? 'nothing'}`);
   }
-  return body;
+    // A cold Archive-backed channel is a self-healing 503. Keep the existing
+    // “Tuning in…” player state and ask again while its catalogue warms.
+    const warming = !body.available && body.state === LINEAR_STATE.EMPTY
+      && /\bloading\b|\bwarm/i.test(String(body.detail || ''));
+    if (!warming || attempt >= warmRetries) return body;
+    await wait(WARM_TUNE_DELAY_MS);
+  }
 }
 
 /**

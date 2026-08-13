@@ -1,10 +1,53 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+// The live outage this pins was caused by treating Archive's search API as if
+// fourteen simultaneous shelf queries were free. Every request then crossed
+// the shared page deadline and Games, Books, Comics, Audiobooks and Music all
+// vanished together. A small gate retains parallelism without recreating that
+// all-or-nothing failure.
+func TestArchiveDiscoverBoundsUpstreamConcurrency(t *testing.T) {
+	var active atomic.Int32
+	var maximum atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := active.Add(1)
+		defer active.Add(-1)
+		for {
+			old := maximum.Load()
+			if n <= old || maximum.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"response":{"docs":[{"identifier":"item","title":"Item"}]}}`))
+	}))
+	defer srv.Close()
+
+	oldAPI := archiveSearchAPI
+	archiveSearchAPI = srv.URL
+	defer func() { archiveSearchAPI = oldAPI }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rows := (&server{}).archiveDiscover(ctx, 1)
+	if got := int(maximum.Load()); got > archiveDiscoverConcurrency {
+		t.Fatalf("Archive saw %d simultaneous shelf queries, want at most %d", got, archiveDiscoverConcurrency)
+	}
+	if len(rows) != len(archiveRows) {
+		t.Fatalf("got %d rows, want %d", len(rows), len(archiveRows))
+	}
+}
 
 // Every row must be scoped to something, or a landing shelf becomes whatever
 // archive.org happens to sort first across 40 million items.

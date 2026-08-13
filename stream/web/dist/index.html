@@ -209,6 +209,7 @@
   .btn:hover { background:var(--accent-dim); }
   .btn-ghost { background:transparent; color:var(--accent); border:1px solid var(--accent-dim); }
   .btn-ghost:hover { background:var(--accent-softer); }
+  a.hdr-btn { text-decoration:none; white-space:nowrap; }
   #settings-open {
     flex:none; display:grid; place-items:center; width:43px; height:43px;
     background:var(--panel); border:1px solid var(--line); color:var(--muted);
@@ -889,7 +890,7 @@
   #reader-stage.reader-embedding ~ .reader-nav { display:none; }
 
   /* ---------- library ---------- */
-  #library { padding:8px 0 40px; }
+  #library, #saved-library { padding:8px 0 40px; }
   .lib-group { margin:22px 0 10px; font-size:13px; text-transform:uppercase;
                letter-spacing:.06em; color:var(--dim); font-weight:600; }
   .lib-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; }
@@ -1061,7 +1062,10 @@
                behind it. It is a settings panel now, and calling it after one
                of its six sections sends people looking elsewhere for the rest. -->
           <span class="hdr-ico" aria-hidden="true">⚙</span><span class="hdr-label">Settings</span>
-        </button>
+      </button>
+        <a class="btn btn-ghost hdr-btn" id="library-open" href="/?library=1" hidden>
+          <span class="hdr-ico" aria-hidden="true">★</span><span class="hdr-label">Library</span>
+        </a>
         <button class="btn btn-ghost hdr-btn" id="signin-btn" type="button" hidden>
           <span class="hdr-label">Sign in</span>
         </button>
@@ -1208,6 +1212,7 @@
 
   <div id="resultbar" class="resultbar" hidden></div>
   <div id="grid"></div>
+  <section id="saved-library" hidden></section>
   <section id="library" hidden></section>
 </main>
 
@@ -1596,7 +1601,7 @@
   <div class="stage">
     <video id="video" controls autoplay playsinline hidden></video>
     <img id="image" hidden alt="" />
-    <audio id="audio" controls hidden></audio>
+    <audio id="audio" controls autoplay hidden></audio>
     <div id="canvas" hidden></div>
     <!-- The wrapper exists so a fixed-size third-party embed can be scaled
          from out here: the Archive's emulator canvas is 300x150 whatever the
@@ -1627,6 +1632,6 @@
   </div>
 </div>
 
-<script type="module" src="/app.js?v=0b3bce513b0f"></script>
+<script type="module" src="/app.js?v=1f61f005537f"></script>
 </body>
 </html>

@@ -43,6 +43,17 @@ test('a 401 yields an empty shelf rather than throwing', async () => {
   }
 });
 
+test('the privacy-preserving signed-out 404 also yields an empty shelf', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{"error":"not found"}', { status: 404 });
+  try {
+    assert.deepEqual(await getLibrary(), []);
+    assert.equal(isSignedIn(), false);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 // A fake <video> good enough to drive the tracker.
 function fakeMedia() {
   const listeners = {};

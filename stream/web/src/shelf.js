@@ -37,7 +37,9 @@ async function call(path, options = {}) {
     cache: 'no-store',
     ...options,
   });
-  if (res.status === 401 || res.status === 503) {
+  // Owner-only routes deliberately disguise a signed-out request as 404 so
+  // they do not reveal whether somebody else's private shelf exists.
+  if (res.status === 401 || res.status === 404 || res.status === 503) {
     signedIn = false;
     return null;
   }

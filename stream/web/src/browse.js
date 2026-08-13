@@ -235,7 +235,7 @@ export function mountBrowse({
   // Everything the site normally shows on the landing page. A browse page
   // replaces it and puts it back on the way out, so this module never has to be
   // wired into main.js's own show/hide logic.
-  const siteSections = ['#tv', '#intro', '#get', '#discover', '#resultbar', '#grid', '#library']
+  const siteSections = ['#tv', '#intro', '#get', '#discover', '#resultbar', '#grid', '#saved-library', '#library']
     .map((sel) => doc.querySelector(sel)).filter(Boolean);
 
   const links = el('section');

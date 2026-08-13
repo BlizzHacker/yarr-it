@@ -489,6 +489,14 @@ func (j *searchJob) depotStage(s *server) {
 // indexerStage runs the torrent fan-out and records what happened to it, in
 // terms the client can put on screen.
 func (j *searchJob) indexerStage(ctx context.Context, s *server) {
+	// An empty query is a catalogue browse, never a torrent search. Sending it
+	// to Prowlarr fans every configured indexer out with no title constraint;
+	// the homepage used to do that once per missing shelf and exhausted a 4 GiB
+	// Prowlarr container. Archive/local catalogue rows answer this question.
+	if strings.TrimSpace(j.query) == "" {
+		j.mark("indexers", stageNone)
+		return
+	}
 	if s.apiKey == "" {
 		j.mark("indexers", stageNotConfigured)
 		return

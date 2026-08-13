@@ -1,1 +1,1 @@
-magnet:?xt=urn:btih:a94c93173543069d1f06e3ac5635340aeccf6a08&dn=nestest.nes&ws=https%3A%2F%2Fyarrit.com%2Froms%2Fnestest.nes
+magnet:?xt=urn:btih:a94c93173543069d1f06e3ac5635340aeccf6a08&dn=nestest.nes&xs=https%3A%2F%2Fyarrit.com%2Froms%2Fnestest.torrent&ws=https%3A%2F%2Fyarrit.com%2Froms%2Fnestest.nes

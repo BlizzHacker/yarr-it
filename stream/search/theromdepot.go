@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -209,11 +210,45 @@ func (s *depotStore) search(q, kind string, systems map[string]bool, limit int) 
 			},
 		})
 	}
-	cards = rankByMatch(cards, q)
+	// The catalogue match above deliberately includes title, platform and
+	// region. Do not run the shared title-only ranker here: it used to accept
+	// "Mario Party Nintendo 64 Europe" from the catalogue, then throw that same
+	// card away because "Nintendo 64" is metadata rather than title text.
+	rankDepotCards(cards, q)
 	if len(cards) > limit {
 		cards = cards[:limit]
 	}
 	return cards
+}
+
+func rankDepotCards(cards []card, q string) {
+	terms := queryTerms(q)
+	sort.SliceStable(cards, func(i, j int) bool {
+		// Ask the inverse question first: is the card's complete title present
+		// in the longer metadata-qualified query? That puts "Mario Party" above
+		// Mario Party 2/3 even when Nintendo 64 and Europe follow the title.
+		ti := matchScore(cards[i].Title, q)
+		tj := matchScore(cards[j].Title, q)
+		if ti != tj {
+			return ti > tj
+		}
+		return titleOverlap(depotCardSearchText(cards[i]), terms) >
+			titleOverlap(depotCardSearchText(cards[j]), terms)
+	})
+}
+
+func depotCardSearchText(c card) string {
+	var b strings.Builder
+	b.WriteString(c.Title)
+	b.WriteByte(' ')
+	b.WriteString(c.Platform)
+	for _, s := range c.Sources {
+		b.WriteByte(' ')
+		b.WriteString(s.Title)
+		b.WriteByte(' ')
+		b.WriteString(s.Source)
+	}
+	return b.String()
 }
 
 func depotTitle(item depotItem) string {

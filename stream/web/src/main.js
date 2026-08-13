@@ -24,7 +24,7 @@ import { createBiosStore } from './bios.js';
 import { identifierFrom, fileFrom } from './resolvers/archive.js';
 import {
   getContinueWatching, trackProgress, watchedFraction,
-  getLibrary, addToLibrary, removeFromLibrary, keyFor,
+  getLibrary, addToLibrary, removeFromLibrary, keyFor, isSignedIn,
 } from './shelf.js';
 import { attachSubtitles } from './subtitles.js';
 // What a music card says beyond its title. A pure module because main.js
@@ -52,6 +52,7 @@ import {
   formatBytes, LANGUAGES, DOMAIN_DEFAULTS,
 } from './prefs.js';
 import { keepVideoFitted } from './videofit.js';
+import { filtersFromSearchURL, paramsForSearch } from './search-route.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -123,27 +124,26 @@ const prefs = createPrefs();
 // ------------------------------------------------------------------ search --
 
 function filterParams() {
-  const f = state.filters;
-  const p = new URLSearchParams({ q: state.query, sort: f.sort });
-  if (f.seeders) p.set('minSeeders', String(f.seeders));
-  if (f.minSize) p.set('minSizeMB', String(f.minSize));
-  if (f.maxSize) p.set('maxSizeMB', String(f.maxSize));
-  if (f.quality.size) p.set('quality', [...f.quality].join(','));
-  if (f.codec.size) p.set('codec', [...f.codec].join(','));
-  if (f.providers.size) p.set('provider', [...f.providers].join(','));
-  if (f.webSafe) p.set('webSafe', '1');
-  if (f.source) p.set('source', f.source);
-  if (f.groups.size) p.set('groups', [...f.groups].join(','));
-  if (f.systems.size) p.set('system', [...f.systems].join(','));
-  // Adult results are excluded server-side unless explicitly requested.
-  if (f.adult) p.set('adult', '1');
-  // Sent only when something was actually chosen. Sending `lang=en` for a
-  // caller who never said anything would look identical from here and be a
-  // different request: the server's default is per-domain (English for music,
-  // nothing anywhere else), and an explicit `lang` is honoured for every
-  // domain. Blank means "you decide", which is the truth.
-  if (f.lang) p.set('lang', f.lang);
-  return p;
+  return paramsForSearch(state.query, state.filters);
+}
+
+function applyURLFilters(params) {
+  const f = filtersFromSearchURL(params);
+  if (!f) return;
+  state.filters.groups = new Set(f.groups);
+  state.filters.adult = f.adult;
+  state.filters.webSafe = f.webSafe;
+  state.filters.lang = f.lang;
+  state.filters.sort = f.sort;
+  state.filters.seeders = f.seeders;
+  state.filters.minSize = f.minSize;
+  state.filters.maxSize = f.maxSize;
+  state.filters.quality = new Set(f.quality);
+  state.filters.codec = new Set(f.codec);
+  state.filters.systems = new Set(f.systems);
+  state.filters.providers = new Set(f.providers);
+  state.filters.source = f.source;
+  syncFilterInputs();
 }
 
 /**
@@ -186,6 +186,12 @@ async function search({ showSpinner = true } = {}) {
   state.searchAbort = ctl;
   closeSuggestions();
 
+  // The address is the complete search, not just its words. A copied bare
+  // query must never inherit the recipient's hidden Games/provider filter;
+  // conversely, reloading a deliberately filtered search must keep it exact.
+  history.replaceState(null, '', `?${filterParams()}`);
+
+  $('#filters').hidden = false;
   $('#intro').hidden = true;
   $('#discover').hidden = true;
   $('#get').hidden = true;
@@ -198,6 +204,7 @@ async function search({ showSpinner = true } = {}) {
   // player closes -- then the old channel list resurfaces underneath a
   // brand new, unrelated search. Every fresh search must start clean.
   $('#library').hidden = true;
+  $('#saved-library').hidden = true;
   // The paste-a-link panel is shown, never hidden, by renderLink -- so a search
   // started after pasting a link would otherwise leave the old format list
   // sitting above the new results.
@@ -848,6 +855,8 @@ function restoreLanding() {
   $('#resultbar').hidden = true;
   $('#status').hidden = true;
   $('#library').hidden = true;
+  $('#saved-library').hidden = true;
+  $('#filters').hidden = false;
   $('#intro').hidden = false;
   $('#discover').hidden = false;
   $('#get').hidden = false;
@@ -855,6 +864,62 @@ function restoreLanding() {
   // and stays away entirely if there were never any channels to draw.
   tvStrip?.show();
   renderFilters();
+}
+
+function libraryItemURI(item) {
+  const key = String(item?.key || '');
+  return key.startsWith('ia:')
+    ? `https://archive.org/details/${encodeURIComponent(key.slice(3))}`
+    : '';
+}
+
+/** The signed-in shelf reached from the header. */
+async function showSavedLibrary() {
+  if (homeAbort) homeAbort.abort();
+  state.searchAbort?.abort();
+  tvStrip?.hide();
+  for (const selector of ['#intro', '#discover', '#get', '#resultbar', '#grid', '#linkpanel', '#filters']) {
+    $(selector).hidden = true;
+  }
+  // #library is the transient playlist/torrent-collection browser. A personal
+  // shelf needs its own mount so a later play or search cannot erase it.
+  const host = $('#saved-library');
+  host.replaceChildren(el('h2', null, 'Your library'));
+  host.append(el('p', 'lede', 'Titles you saved. Open one to use its exact Archive item or search every live source again.'));
+  host.hidden = false;
+
+  let items = [];
+  try {
+    items = await getLibrary();
+  } catch {
+    host.append(el('p', 'set-none', 'Your library could not be reached. Try again in a moment.'));
+    return;
+  }
+  if (!isSignedIn()) {
+    const p = el('p', 'set-none', 'Sign in to see the library that follows you between devices. ');
+    const a = el('a', 'btn btn-ghost', 'Sign in');
+    a.href = signInURL('/?library=1');
+    p.append(a);
+    host.append(p);
+    return;
+  }
+  if (!items.length) {
+    host.append(el('p', 'set-none', 'Nothing saved yet. Open any result and choose “Save to library”.'));
+    return;
+  }
+
+  const shelf = el('section', 'shelf');
+  shelf.append(el('h3', null, `Saved · ${items.length}`));
+  const rail = el('div', 'rail');
+  for (const saved of items) {
+    rail.append(homeTile({
+      domain: saved.kind || '', mediaType: saved.kind || '',
+      title: saved.title || saved.key, year: saved.year || 0,
+      poster: saved.poster || '', uri: libraryItemURI(saved), card: null,
+    }, tileHandlers()));
+  }
+  shelf.append(rail);
+  host.append(shelf);
 }
 
 /**
@@ -867,6 +932,32 @@ function restoreLanding() {
  * cached for three hours and answers immediately.
  */
 async function browseDomain(domain, signal) {
+  // Books and audiobooks are two different shelves in the same domain. Fetch
+  // their exact Archive categories together so adding LibriVox never replaces
+  // the printed Gutenberg shelf.
+  if (domain === 'literature') {
+    const keys = ['ia:col:gutenberg', 'ia:col:librivox'];
+    const params = new URLSearchParams({ limit: '24' });
+    for (const key of keys) params.append('key', key);
+    const res = await apiFetch(`/api/rows?${params}`, { signal });
+    if (!res.ok) throw new Error(`browse ${domain}: ${res.status}`);
+    const data = await res.json();
+    const rows = new Map((data.rows || []).map((row) => [row.key, row]));
+    return {
+      shelves: [
+        {
+          title: 'Public domain classics',
+          items: rows.get('ia:col:gutenberg')?.items || [],
+        },
+        {
+          title: 'Audiobooks',
+          mediaType: 'audio',
+          items: rows.get('ia:col:librivox')?.items || [],
+        },
+      ],
+    };
+  }
+
   // minSeeders=0 because a hosted archive.org result has no swarm at all, and
   // the default of 1 would drop the only results these rows have.
   //
@@ -874,12 +965,21 @@ async function browseDomain(domain, signal) {
   // discover has no row for, and someone who types a search two seconds after
   // the page opens leaves all of them in flight -- filling the connection pool
   // the search itself needs, for rows that are about to be hidden.
+  // Music's normal default is English. A landing shelf is broader than a
+  // language-filtered search and, crucially, uses a distinct cache entry from
+  // a failed cold English browse instead of letting that empty entry remove
+  // the Music section for its whole TTL.
+  const lang = domain === 'music' ? '&lang=any' : '';
   const res = await apiFetch(
-    `/api/search?kind=${encodeURIComponent(domain)}&minSeeders=0`, { signal });
+    `/api/search?kind=${encodeURIComponent(domain)}&minSeeders=0${lang}`, { signal });
   if (!res.ok) throw new Error(`browse ${domain}: ${res.status}`);
   const data = await res.json();
   // A rail is a rail, not a result set; the rest is a search away.
-  return (data.cards || []).slice(0, 24);
+  const cards = (data.cards || []).slice(0, 24);
+  if (domain === 'music') {
+    return { title: 'Music from Archive.org', mediaType: 'music', cards };
+  }
+  return cards;
 }
 
 /**
@@ -2143,11 +2243,29 @@ async function play(card, src) {
         })
         .catch(() => {});
     }
-    el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
+    const isMedia = out.render === 'video' || out.render === 'audio';
+    if (isMedia) {
+      el.addEventListener('playing', () => setPlayerStatus(''), { once: true });
+      if (prefs.playback().autoplay) {
+        // Setting src is not a request to start an <audio> element in every
+        // Chromium build. Ask explicitly while this is still the user's track
+        // click; if policy refuses, leave working controls and say what to do.
+        try {
+          const starting = el.play();
+          starting?.catch(() => {
+            if (gen === state.resolveGen) setPlayerStatus('Ready — press play');
+          });
+        } catch {
+          setPlayerStatus('Ready — press play');
+        }
+      } else {
+        setPlayerStatus('Ready — press play');
+      }
+    }
     // Only <video>/<audio> fire a 'playing' event. An image, an iframe embed and
     // a canvas player (Ruffle/EmulatorJS) never will, so their status has to be
     // cleared here or the overlay sits on "Resolving…" forever.
-    if (out.render !== 'video' && out.render !== 'audio') setPlayerStatus('');
+    if (!isMedia) setPlayerStatus('');
   } catch (err) {
     if (gen !== state.resolveGen) return;
     const why = err instanceof PlaybackError ? err.message : `Could not start: ${err.message}`;
@@ -2789,8 +2907,10 @@ function wireSettingsPrefs() {
   });
   onCheck('#set-autoplay', (on) => {
     prefs.setPlayback({ autoplay: on });
-    const v = $('#video');
-    if (v) v.autoplay = on;
+    for (const selector of ['#video', '#audio']) {
+      const media = $(selector);
+      if (media) media.autoplay = on;
+    }
   });
   onCheck('#set-subtitles', (on) => prefs.setPlayback({ subtitles: on ? 'on' : 'off' }));
 
@@ -3292,6 +3412,7 @@ async function refreshAccount() {
   const outBtn = $('#acct-signout');
   const hdrIn = $('#signin-btn');
   const hdrOut = $('#signout-btn');
+  const hdrLibrary = $('#library-open');
 
   if (me) {
     if (who) who.textContent = displayName(me);
@@ -3299,12 +3420,14 @@ async function refreshAccount() {
     if (outBtn) outBtn.hidden = false;
     if (hdrIn) hdrIn.hidden = true;
     if (hdrOut) hdrOut.hidden = false;
+    if (hdrLibrary) hdrLibrary.hidden = false;
   } else {
     if (who) who.textContent = 'Not signed in';
     if (inBtn) inBtn.hidden = false;
     if (outBtn) outBtn.hidden = true;
     if (hdrIn) hdrIn.hidden = false;
     if (hdrOut) hdrOut.hidden = true;
+    if (hdrLibrary) hdrLibrary.hidden = true;
   }
 }
 
@@ -3529,8 +3652,10 @@ function init() {
   // state by the time a `?q=` in the URL triggers one, or the first search of
   // the session is the only one that ignores them.
   applyStoredFilters();
-  const video = $('#video');
-  if (video) video.autoplay = prefs.playback().autoplay;
+  for (const selector of ['#video', '#audio']) {
+    const media = $(selector);
+    if (media) media.autoplay = prefs.playback().autoplay;
+  }
 
   // Draw the category chips immediately. Without this they appear only once a
   // search has returned facets, which is exactly the state where you cannot
@@ -3557,8 +3682,12 @@ function init() {
 
   const params = new URLSearchParams(location.search);
   const initial = params.get('q');
-  if (!initial && routeOf(location.pathname).view === 'site') { mountChannels(); loadHome(); }
+  const wantsLibrary = params.get('library') === '1';
+  if (!initial && !wantsLibrary && routeOf(location.pathname).view === 'site') { mountChannels(); loadHome(); }
+  if (wantsLibrary) showSavedLibrary();
   if (initial) {
+    applyURLFilters(params);
+    renderFilters();
     $('#q').value = initial;
     state.query = initial;
     search();

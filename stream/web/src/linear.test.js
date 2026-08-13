@@ -326,6 +326,24 @@ test('a 503 is read for its body rather than treated as a broken request', async
   assert.equal(tune.detail, TUNE_UNAVAILABLE.detail);
 });
 
+test('a cold channel is retried until its Archive catalogue is ready', async () => {
+  let calls = 0;
+  const waited = [];
+  const tune = await tuneIn('nostalgia-cartoons', {
+    cache: new Map(),
+    warmRetries: 3,
+    wait: async (ms) => { waited.push(ms); },
+    fetchImpl: async () => {
+      calls++;
+      const body = calls < 3 ? NOW_WARMING : TUNE_OK;
+      return { ok: calls >= 3, status: calls >= 3 ? 200 : 503, json: async () => body };
+    },
+  });
+  assert.equal(tune.available, true);
+  assert.equal(calls, 3);
+  assert.deepEqual(waited, [2000, 2000]);
+});
+
 test('a hover and the click after it are one request, not two', async () => {
   const cache = new Map();
   let calls = 0;

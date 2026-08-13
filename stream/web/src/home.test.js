@@ -405,6 +405,44 @@ test('a domain whose browse comes back empty leaves no section behind', async ()
   });
 });
 
+test('Books fallback keeps printed books and adds audiobooks beneath them', async () => {
+  await withFakeDom(async () => {
+    const host = fakeEl('div');
+    await renderHome(host, {
+      discoverRows: [],
+      browse: (d) => (d === 'literature' ? {
+        shelves: [
+          {
+            title: 'Public domain classics',
+            items: [{
+              title: 'Pride and Prejudice', mediaType: 'text',
+              play: 'https://archive.org/details/prideandprejudice',
+            }],
+          },
+          {
+            title: 'Audiobooks',
+            mediaType: 'audio',
+            items: [{
+              title: 'Alice in Wonderland', mediaType: 'audio',
+              play: 'https://archive.org/details/alice_librivox',
+            }],
+          },
+        ],
+      } : []),
+      handlers: { onActivate() {} },
+    });
+    const books = host.children.find((n) => n.dataset.domain === 'literature');
+    assert.ok(books, 'Books domain disappeared');
+    const text = [];
+    const walk = (n) => { text.push(n.textContent); for (const c of n.children) walk(c); };
+    walk(books);
+    assert.ok(text.includes('Public domain classics'), 'printed Books shelf disappeared');
+    assert.ok(text.includes('Read'), 'printed Books shelf lost its Read action');
+    assert.ok(text.includes('Audiobooks'), 'Audiobooks shelf disappeared');
+    assert.ok(text.includes('Listen'), 'Audiobooks shelf lost its Listen action');
+  });
+});
+
 test('a browse that fails removes its section rather than leaving a heading over nothing', async () => {
   await withFakeDom(async () => {
     const host = fakeEl('div');
