@@ -2110,7 +2110,7 @@ function buildRegistry() {
  * torrent resolver claims a magnet, but a ROM set to download is not a thing
  * to press play on, and refusing to say so is the promise this keeps.
  */
-const PLAYS_IN_PAGE = [archiveResolver, gameResolver, flashResolver];
+const PLAYS_IN_PAGE = [webmulatorResolver, archiveResolver, gameResolver, flashResolver];
 setPlayProbe((item) => {
   const uri = item?.uri ?? '';
   return PLAYS_IN_PAGE.some((r) => {
