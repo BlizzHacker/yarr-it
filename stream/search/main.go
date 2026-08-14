@@ -86,8 +86,8 @@ type source struct {
 	// self-hosted deployment and on every wrapper client, whose page origin is
 	// not the API's. The server knows; it says so.
 	OnSite bool `json:"onSite,omitempty"`
-	// Action is what following this source DOES, in one word: "play" or
-	// "download". It exists because those are separate facts about the same
+	// Action is what following this source DOES: "play", "download", or
+	// "open". It exists because those are separate facts about the same
 	// entry and a catalogue can publish either, both or neither -- Vimm's Lair
 	// holds 5,586 downloadable entries of which 4,470 are also playable in
 	// their own browser player. Collapsing them into one row would hide from a
@@ -238,6 +238,13 @@ type server struct {
 	// loaded once and searched from memory; nil/empty is a normal self-hosted
 	// state and is surfaced in health rather than silently hidden.
 	depot *depotStore
+	// Browser-captured metadata from every other ROMarr provider. This carries
+	// only public item pages; provider-specific play/download promises are added
+	// by rom_sources.go when the provider publicly exposes them.
+	romCatalog *romCatalogStore
+	// Public provider searches (Webmulator, Retrostic, EmuParadise and
+	// RomuLation). They use each site's own search form, never a crawl.
+	romSources *romSourceSet
 
 	tmdb     *tmdbClient
 	igdb     *igdbClient
@@ -370,6 +377,18 @@ func main() {
 		log.Printf("The ROM Depot: %d entries from %s", n, depotCataloguePath())
 	} else {
 		log.Printf("The ROM Depot: nothing captured (%s)", depotCataloguePath())
+	}
+
+	romCatalog, err := loadROMCatalogStore(romCatalogPath())
+	if err != nil {
+		log.Fatalf("ROMarr provider catalogue: %v", err)
+	}
+	s.romCatalog = romCatalog
+	s.romSources = newROMSourceSet()
+	if n := romCatalog.count(); n > 0 {
+		log.Printf("ROMarr providers: %d browser-captured entries from %s", n, romCatalogPath())
+	} else {
+		log.Printf("ROMarr providers: no browser-captured metadata (%s)", romCatalogPath())
 	}
 
 	s.warm = newWarmer(s)
@@ -795,6 +814,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"owner":         owner,
 			"vimm":          s.vimm.stats(),
 			"theromdepot":   s.depot.stats(),
+			"romProviders":  s.romCatalog.stats(),
 			"detail":        "PROWLARR_API_KEY is not set; torrent search is disabled",
 		})
 		return
@@ -816,7 +836,8 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// catalogue that failed to import shows up here as zero entries rather than
 	// as games that quietly stopped appearing in search.
 	body := map[string]any{"prowlarr": status, "cachedQueries": n, "owner": owner,
-		"vimm": s.vimm.stats(), "theromdepot": s.depot.stats()}
+		"vimm": s.vimm.stats(), "theromdepot": s.depot.stats(),
+		"romProviders": s.romCatalog.stats()}
 	// Whether searches are currently skipping the indexers on purpose. Without
 	// this, a breaker that has tripped looks exactly like an index with nothing
 	// in it -- results simply stop arriving and nothing says why.
@@ -968,7 +989,8 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// answer a game search perfectly well, and refusing it with "no torrent
 	// indexer is configured" would be this handler declining to look at the one
 	// source that was going to answer.
-	if s.apiKey == "" && !wantArchive && s.vimm.count() == 0 && s.depot.count() == 0 {
+	hasPublicROMSearch := s.romSources != nil && len(s.romSources.providers) > 0 && (kind == "" || sameDomain(kind, domainGame))
+	if s.apiKey == "" && !wantArchive && s.vimm.count() == 0 && s.depot.count() == 0 && s.romCatalog.count() == 0 && !hasPublicROMSearch {
 		if stale, ok := s.getAny(cacheKey); ok {
 			respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, kind, f, stale), searchState{cache: "STALE", stale: true}, ownerView)
 			return

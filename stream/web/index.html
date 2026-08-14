@@ -242,6 +242,7 @@
      the visual viewport is still 412, so the whole site scrolls sideways and
      the right-hand chips sit off screen with nothing to say so. */
   #f-groups { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+  #f-providers { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
   .chip .cnt { opacity:.55; margin-left:4px; font-size:11px; }
   .fsel { padding:5px 9px; font-size:12.5px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; }
   .fnum { width:78px; padding:5px 9px; font-size:12.5px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; }
@@ -1102,9 +1103,7 @@
       <span class="chip" id="f-websafe" title="Only sources your browser can play without help">Plays in browser</span>
     </div>
     <div class="fgroup"><span class="flabel">Source</span>
-      <span class="chip" id="f-archive" title="Hosted by Archive.org and playable here">Archive.org</span>
-      <span class="chip" id="f-vimm" title="Vimm's Lair catalogue and Yarr.It vault">Vimm's Lair</span>
-      <span class="chip" id="f-depot" title="The ROM Depot catalogue — account required to download">The ROM Depot</span>
+      <span id="f-providers"></span>
       <span class="chip" id="f-swarm" title="Torrent releases — depend on who is seeding">Torrents</span>
     </div>
     <!-- The language filter. Hidden until there is something for it to act on:
@@ -1587,6 +1586,7 @@
       <div id="player-title"></div>
       <div id="player-sub"></div>
     </div>
+    <a id="player-download" class="chip" hidden target="_blank" rel="noopener noreferrer">Download ROM</a>
     <button id="player-close" type="button">Close</button>
   </div>
   <!-- Which player is running, and the other one you could have. Drawn above
