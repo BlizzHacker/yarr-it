@@ -3,6 +3,7 @@ import { createRegistry, makeSource, makeCollection, isCollection } from './sour
 import { createTorrentResolver, normalizeMagnet } from './resolvers/torrent.js';
 import { urlResolver } from './resolvers/url.js';
 import { embedResolver } from './resolvers/embed.js';
+import { webmulatorResolver } from './resolvers/webmulator.js';
 import { playlistResolver } from './resolvers/playlist.js';
 import { flashResolver } from './resolvers/flash.js';
 import { gameResolver } from './resolvers/game.js';
@@ -53,6 +54,8 @@ import {
 } from './prefs.js';
 import { keepVideoFitted } from './videofit.js';
 import { filtersFromSearchURL, paramsForSearch } from './search-route.js';
+import { offsiteVerb } from './provider-actions.js';
+import { playerDownloadURL } from './player-download.js';
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
@@ -492,17 +495,44 @@ function renderFilters() {
 function renderSourceFilters(facets) {
   const counts = new Map((facets?.providers || []).map((p) => [p.value.toLowerCase(), p.count]));
   const provider = [...state.filters.providers][0] || '';
-  const paint = (id, name, key, stage) => {
-    const node = $(id);
-    if (!node) return;
-    const count = counts.get(key.toLowerCase());
-    const pending = count == null && state.sourceStatus?.[stage] === 'pending';
-    node.textContent = count != null ? `${name} ${count}` : (pending ? `${name} …` : name);
-    node.classList.toggle('on', provider.toLowerCase() === key.toLowerCase());
-  };
-  paint('#f-archive', 'Archive.org', 'archive.org', 'archive');
-  paint('#f-vimm', "Vimm's Lair", "Vimm's Lair", 'vimm');
-  paint('#f-depot', 'The ROM Depot', 'The ROM Depot', 'theromdepot');
+  const known = [
+    ['Archive.org', 'archive.org', 'archive', 'Hosted by Archive.org and playable here', false],
+    ["Vimm's Lair", "Vimm's Lair", 'vimm', 'Vimm catalogue, Yarr.It vault, and public Vimm actions', false],
+    ['The ROM Depot', 'The ROM Depot', 'theromdepot', 'Account required to download', false],
+    ['Webmulator', 'Webmulator', 'webmulator', 'Public hosted browser player', true],
+    ['Retrostic', 'Retrostic', 'retrostic', 'Public hosted player; browser required to download', true],
+    ['EmuParadise', 'EmuParadise', 'emuparadise', 'Discovery only; game files are no longer offered', true],
+    ['RomuLation', 'RomuLation', 'romulation', 'Paid account and signed-in browser required to download', true],
+    ['CoolROM', 'CoolROM', 'romarr-catalog', 'Browser-captured catalogue pages', true],
+    ['CDRomance', 'CDRomance', 'romarr-catalog', 'Browser-cleared, captured catalogue pages', true],
+  ];
+  const byKey = new Map(known.map((row) => [row[1].toLowerCase(), row]));
+  for (const facet of facets?.providers || []) {
+    if (!byKey.has(facet.value.toLowerCase())) {
+      const row = [facet.value, facet.value, '', `Results from ${facet.value}`, false];
+      known.push(row);
+      byKey.set(facet.value.toLowerCase(), row);
+    }
+  }
+  const host = $('#f-providers');
+  if (host) {
+    const gameContext = state.filters.groups.has('games')
+      || state.cards.some((card) => card.kind === 'game');
+    const visible = known.filter(([, key, , , gameOnly]) => !gameOnly
+      || gameContext
+      || counts.has(key.toLowerCase())
+      || provider.toLowerCase() === key.toLowerCase());
+    host.replaceChildren(...visible.map(([name, key, stage, hint]) => {
+      const count = counts.get(key.toLowerCase());
+      const pending = count == null && stage && state.sourceStatus?.[stage] === 'pending';
+      const node = el('button', 'chip', count != null ? `${name} ${count}` : (pending ? `${name} …` : name));
+      node.type = 'button';
+      node.dataset.provider = key;
+      node.title = hint;
+      node.classList.toggle('on', provider.toLowerCase() === key.toLowerCase());
+      return node;
+    }));
+  }
   const torrents = $('#f-swarm');
   if (torrents) {
     torrents.textContent = facets?.swarmCount ? `Torrents ${facets.swarmCount}` : 'Torrents';
@@ -1313,6 +1343,7 @@ function offsiteOffers(card) {
   if (has.has('play') && has.has('download')) return 'play or download there';
   if (has.has('play')) return 'plays there';
   if (has.has('download')) return 'download';
+  if (has.has('open')) return 'open its catalogue page';
   return '';
 }
 
@@ -1423,9 +1454,9 @@ function offsiteSourceRow(card, s, isBest) {
   // the URL from travelling with the click.
   row.rel = 'noopener noreferrer';
 
-  const verb = s.action === 'play' ? 'PLAY THERE' : 'DOWNLOAD';
+  const verb = offsiteVerb(s.action);
   row.setAttribute('aria-label',
-    `${verb === 'PLAY THERE' ? 'Play' : 'Download'} ${s.title} on ${card.external?.name || s.indexer}`
+    `${verb === 'PLAY THERE' ? 'Play' : (verb === 'DOWNLOAD' ? 'Download' : 'Open')} ${s.title} on ${card.external?.name || s.indexer}`
     + ' (opens in a new tab)');
   row.title = row.getAttribute('aria-label');
 
@@ -1643,6 +1674,7 @@ async function startInPlayer(verdict, route, card) {
     console.warn('[player] cleanup of outgoing playable failed:', err?.message || err);
   }
   state.playable = null;
+  setPlayerDownload(route === ROUTE.EMULATORJS ? verdict?.rom?.direct : '');
   releaseBios();
 
   const els = playerElements();
@@ -1744,6 +1776,15 @@ function clearGamePanels() {
   const host = $('#guide');
   if (host) { host.replaceChildren(); host.hidden = true; }
   showSwarmStats(true);
+}
+
+function setPlayerDownload(raw) {
+  const link = $('#player-download');
+  if (!link) return;
+  const href = playerDownloadURL(raw);
+  link.hidden = !href;
+  if (href) link.href = href;
+  else link.removeAttribute('href');
 }
 
 /** The peers/speed/buffered row, which only means anything for a torrent. */
@@ -2039,6 +2080,7 @@ function buildRegistry() {
     // repack, that HEAD would start an ffmpeg run for nothing.
     .register(createLinkResolver())
     .register(embedResolver)      // before url: a YouTube link is also an http URL
+    .register(webmulatorResolver) // official hosted EmulatorJS page, never its hidden ROM URL
     .register(archiveResolver)    // before url/game: archive.org runs its own player
     .register(flashResolver)      // before url: a .swf is also an http URL
     .register(gameResolver)       // before url: a .nes/.smc is also an http URL
@@ -2148,6 +2190,7 @@ async function play(card, src) {
   document.body.style.overflow = 'hidden';
   $('#player-title').textContent = card.title + (card.year ? ` (${card.year})` : '');
   $('#player-sub').textContent = src.title ?? '';
+  setPlayerDownload((card.sources || []).find((source) => source.action === 'download')?.magnet || '');
   setPlayerStatus('Resolving…');
 
   const els = playerElements();
@@ -2331,6 +2374,7 @@ function closePlayer() {
   releaseBios();
   state.game = null;
   clearGamePanels();
+  setPlayerDownload('');
   // Disconnects the ResizeObserver AND clears the inline width, so the next
   // source -- which may be a 4K film needing no help at all -- does not open
   // wearing the last one's 960px.
@@ -3582,14 +3626,12 @@ function init() {
     state.filters.source = '';
     renderSourceFilters(state.facets);
   };
-  $('#f-archive').addEventListener('click', () => {
-    chooseProvider('archive.org'); persistFilters(); if (state.cards.length) refilter();
-  });
-  $('#f-vimm').addEventListener('click', () => {
-    chooseProvider("Vimm's Lair"); persistFilters(); if (state.cards.length) refilter();
-  });
-  $('#f-depot').addEventListener('click', () => {
-    chooseProvider('The ROM Depot'); persistFilters(); if (state.cards.length) refilter();
+  $('#f-providers').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-provider]');
+    if (!chip) return;
+    chooseProvider(chip.dataset.provider);
+    persistFilters();
+    if (state.cards.length) refilter();
   });
   $('#f-swarm').addEventListener('click', () => {
     const on = state.filters.source === 'swarm';
