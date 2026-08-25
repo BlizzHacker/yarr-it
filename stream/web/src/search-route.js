@@ -6,7 +6,12 @@ const FILTER_KEYS = Object.freeze([
 ]);
 
 const SORTS = new Set(['seeders', 'relevance', 'quality', 'size', 'recent', 'title']);
-const SOURCES = new Set(['', 'swarm']);
+// The values a LINK may carry. 'instant' is deliberately absent -- it is the
+// retired combined chip, superseded by the four named provider controls, and
+// honouring it from a URL would light a filter with no button showing why.
+// 'sets' is here because the server has always understood it and now the page
+// has a chip and a band for it, so a shared link can carry that choice.
+const SOURCES = new Set(['', 'swarm', 'sets']);
 
 function csv(value, cap = 24) {
   return String(value ?? '').split(',')

@@ -249,6 +249,16 @@ export function itemFromDiscover(it, domain) {
     // open on vimm.net -- and dropping this here is precisely how such a tile
     // ends up labelled with a verb instead of a destination.
     external: it.external || null,
+    // A whole collection in one torrent, when that is what this tile is. Same
+    // field and same meaning as itemFromCard's, for the same reason `external`
+    // is: tileAction reads ONE property and must not have to know which
+    // endpoint built the item.
+    //
+    // This is the field b71f7ad's bug was about, armed on both normalisers from
+    // the start this time. Dropping it here is exactly how a category page's
+    // sets band would fall through to `canPlay`, answer no, and print "Open"
+    // over a 41 GB torrent.
+    set: it.set || null,
     card: null,
   };
 }
@@ -270,6 +280,10 @@ export function itemFromCard(card, domain) {
     // client that had to recognise hostnames to find out would get it wrong for
     // exactly one source and print "Play" over a link to somebody else's site.
     external: card.external || null,
+    // See itemFromDiscover's copy of this field: both normalisers must carry
+    // it, or a set tile built by one endpoint behaves differently from the
+    // identical tile built by the other.
+    set: card.set || null,
     card,
   };
 }
@@ -317,6 +331,45 @@ export function domainOfItem(item) {
  */
 export function sourceBadge(card) {
   const named = card.origin || card.sources?.[card.best ?? 0]?.indexer || '';
+  if (card.set) {
+    // Outlined rather than filled, like the off-site badge, because this is
+    // also not one of the results this site serves — and deliberately WITHOUT
+    // A NUMBER.
+    //
+    // The number is the whole reason this branch exists. The torrent badge
+    // below welds the source name to a seeder count, because for a swarm "who
+    // has it" and "will it work" are one fact. Nobody has counted these
+    // recently enough to say: the index publishes seeder figures that stopped
+    // updating in April 2026, so a card built from them would print "0" over
+    // live swarms and a confident number over dead ones. `0▲` is worse than
+    // silence — it renders in the dead-source colour and reads as "this will
+    // not work".
+    //
+    // So while peersKnown is false there is no count and never the `dead`
+    // class. The hint says why, because an absence with no explanation is its
+    // own kind of confusing.
+    const measured = card.set.measuredAt
+      ? ` Last measured ${card.set.measuredAt.slice(0, 7)}.`
+      : '';
+    // The size, with the SAME fallback the tile label uses.
+    //
+    // It is spelled once here because the two disagreed: tileAction printed
+    // `Whole set · size unknown` on the tile while this hint printed
+    // `undefined — a whole set in one torrent` in the tooltip over it, about
+    // the same card. Unreachable from this server today -- minervaCard refuses
+    // a row whose size is not positive -- but a catalogue is a file on disk and
+    // a client renders whatever is in it, and `undefined` is the one word in
+    // that sentence that is not about the thing at all.
+    const size = card.set.sizeHuman || 'size unknown';
+    return {
+      text: `${named || 'Minerva'} · set`,
+      cls: 'badge src set',
+      hint: card.set.peersKnown
+        ? `${size} — a whole set in one torrent`
+        : `${size} — a whole set in one torrent. `
+          + `Nobody has counted its peers recently, so no seeder count is shown.${measured}`,
+    };
+  }
   if (card.external) {
     return {
       text: named || card.external.name,
@@ -351,6 +404,32 @@ export function tileAction(item) {
   const verb = verbFor(domainOfItem(item));
   const id = archiveIdFrom(item.uri);
 
+  if (item.set) {
+    // A whole collection in one torrent, and the FIRST rung on purpose.
+    //
+    // Every other branch below answers "what is this thing" and picks a verb
+    // for it. None of them can answer it here, because this is not a thing —
+    // it is a container of things, and every verb in the vocabulary would be a
+    // promise about one of its contents. "Play" would offer a game that is one
+    // of 3,647; "Read" would offer a manual that is one of a 1.64 TB mirror;
+    // even "Download" on its own hides the number that decides whether anybody
+    // wants it.
+    //
+    // So the label is not a verb at all. It says WHAT (a whole set) and HOW
+    // BIG, because the size is the fact somebody needs before they click and
+    // the tile is the last place it can be said — a tile shows no source rows.
+    //
+    // Running first also makes the reader rung below unreachable for a set.
+    // That is currently belt and braces rather than a live fix: archiveIdFrom
+    // answers '' for a magnet URI, so a bitsavers set would not have reached
+    // it anyway. It is worth the one line to keep it that way if either of
+    // those ever changes.
+    return {
+      kind: 'set',
+      label: `Whole set · ${item.set.sizeHuman || 'size unknown'}`,
+      set: item.set,
+    };
+  }
   if ((verb === 'read' || verb === 'view') && id) {
     return { kind: 'reader', label: title(verb), id, verb };
   }

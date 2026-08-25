@@ -94,7 +94,10 @@ export const PLAYBACK_DEFAULTS = Object.freeze({
 });
 
 const SORTS = new Set(['seeders', 'relevance', 'quality', 'size', 'recent', 'title']);
-const SOURCES = new Set(['', 'instant', 'swarm']);
+// 'instant' is the retired combined chip and is kept only so a value stored
+// before the four named provider controls existed still round-trips; see
+// loadDomainFilters, which drops it on the way in.
+const SOURCES = new Set(['', 'instant', 'swarm', 'sets']);
 const THEMES = new Set(['dark', 'midnight', 'light']);
 const COVERS = new Set(['small', 'medium', 'large']);
 const MOTION = new Set(['full', 'reduced']);

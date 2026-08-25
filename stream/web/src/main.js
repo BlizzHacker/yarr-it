@@ -45,7 +45,7 @@ import {
   routeAdvice, describeService, healthLabel, normaliseServiceURL,
 } from './services.js';
 import { TRANSPORT, extensionAvailable } from './transport.js';
-import { runSearch, sleeper, describeProgress } from './progressive.js';
+import { runSearch, sleeper, describeProgress, cardKey } from './progressive.js';
 import { createSuggester, suggestKey, suggestionHint } from './suggest.js';
 import {
   createPrefs, domainKeyFor, activeFilterCount, describeStored, forgetStored,
@@ -64,6 +64,16 @@ const el = (tag, cls, text) => {
 
 const state = {
   cards: [],
+  // The whole-collection torrents from the latest response, which the server
+  // sends in its own key rather than inside `cards`. Held separately for the
+  // same reason it arrives separately: these are containers of the things in
+  // the grid, they are never merged into it, and a filter chip that empties
+  // the grid still has to know a band is on screen.
+  sets: [],
+  // The keys of what the band currently shows, so a poll that carries the
+  // same sets again does not rebuild it under somebody's cursor. Null means
+  // "nothing painted", which is not the same as "painted, and empty".
+  setsStamp: null,
   facets: null,
   // Per-source progress from the latest search. A network provider that is
   // still answering remains visible as pending instead of disappearing from
@@ -215,6 +225,14 @@ async function search({ showSpinner = true } = {}) {
   }
 
   state.cards = [];
+  // The band belongs to the query that produced it. Emptied here rather than
+  // left to be overwritten, because the previous search's sets sitting under
+  // the new one's results is the one arrangement that reads as an answer to
+  // the new question. It is repainted from the first response, which always
+  // carries them: minervaStage is a scan of memory on the synchronous path.
+  state.sets = [];
+  state.setsStamp = null;
+  if (showSpinner) hideSetBand();
   // The grid still holds the previous search's tiles, or skeletons. It is
   // cleared on the first arrival that has something to put there, so a slow
   // first paint shows placeholders rather than a blank page.
@@ -233,6 +251,10 @@ async function search({ showSpinner = true } = {}) {
         state.cards = cards;
         if (body.facets) state.facets = body.facets;
 		if (body.sources) state.sourceStatus = body.sources;
+        // Before renderFilters, because the Sets chip counts what is in the
+        // band and the band is not in `facets` -- the server builds those
+        // after the partition, so they describe the grid and nothing else.
+        paintSetBand(body);
         // The filter chips are drawn once and again at the end. Redrawing them
         // on every arrival churns the row a person is reaching for.
         if (!painted || body.complete) renderFilters();
@@ -254,6 +276,20 @@ async function search({ showSpinner = true } = {}) {
 
 /** Re-filter without re-querying the indexers; the server filters its cache. */
 const refilter = debounce(() => search({ showSpinner: false }), 250);
+
+/**
+ * Whether a search has produced anything a filter change could re-narrow.
+ *
+ * `state.cards.length` was this test, and it was right until a filter could
+ * legitimately empty the GRID while leaving a real answer on the page. "Sets"
+ * is that filter: every card it keeps is a container, so they all leave for
+ * the band and `cards` is empty by construction. Guarding on cards alone would
+ * then make the next chip click do nothing at all -- INCLUDING THE CLICK THAT
+ * UNTICKS IT, which strands somebody inside the filter they just chose.
+ */
+function hasResults() {
+  return state.cards.length > 0 || state.sets.length > 0;
+}
 
 function showRetry(message, onRetry) {
   const s = $('#status');
@@ -508,6 +544,15 @@ function renderSourceFilters(facets) {
     torrents.textContent = facets?.swarmCount ? `Torrents ${facets.swarmCount}` : 'Torrents';
     torrents.classList.toggle('on', state.filters.source === 'swarm');
   }
+  const sets = $('#f-sets');
+  if (sets) {
+    // Counted from the BAND rather than from `facets`, and that is not a
+    // shortcut. The server builds its facets after partitioning sets out, so
+    // there is no set count in them and there should not be: a facet is a
+    // promise about the grid. The band is the only place this number exists.
+    sets.textContent = state.sets.length ? `Sets ${state.sets.length}` : 'Sets';
+    sets.classList.toggle('on', state.filters.source === 'sets');
+  }
 }
 
 /**
@@ -629,7 +674,7 @@ function groupRow(host, values, selected) {
       // So: if results are already on screen, narrowing them is instant and
       // free (the server filters its cache). If there are none, the chip just
       // arms the search and the Search button runs it.
-      if (state.cards.length) refilter();
+      if (hasResults()) refilter();
       else armSearch();
     });
     host.append(c);
@@ -688,6 +733,69 @@ function paintCards(added, data) {
 }
 
 /**
+ * The whole-collection torrents, in a band of their own below the grid.
+ *
+ * THE ONLY READER of `body.sets` on this page. The server has always sent the
+ * key -- minervaStage runs on the synchronous first-paint path and
+ * respondSearch partitions the cards into it -- but progressive.js merges
+ * `body.cards` and nothing here looked at the sibling, so every one of those
+ * sets was computed, de-duped, filtered, partitioned and then dropped on the
+ * floor. Minerva was visible on category pages and nowhere else.
+ *
+ * A BAND, never rows in the grid, which is the same rule partitionSets
+ * enforces one layer up and is worth enforcing twice: the two fail in
+ * different directions, because the server cannot see what a client renders
+ * and a client cannot see what the pipeline merged. A search for "Super Mario
+ * World" must never answer with a 50 GB tile dressed as a game.
+ *
+ * The tiles are built by the SAME tile() the grid uses, deliberately. Its
+ * badge comes from sourceBadge and its label from tileAction, and both
+ * already know what a set is -- "Minerva Archive · set" and "Whole set
+ * · 7.8 GiB", never a verb. A second renderer here would be a second
+ * place for that to drift, and drifting means the word "Play" over 8.4 GB.
+ */
+function paintSetBand(data) {
+  const band = $('#sets');
+  if (!band) return;
+  // `set` is the positive statement that a card is a container. A card in
+  // this key without one would be an ordinary result rendered outside the
+  // grid, which is the wrong half of the mistake this band exists to avoid.
+  const list = (Array.isArray(data?.sets) ? data.sets : []).filter((c) => c && c.set);
+  // Every poll carries the WHOLE set list rather than a delta, so painting
+  // unconditionally would rebuild the band on each of five arrivals -- moving
+  // tiles under a cursor that is already aiming at one, which is the exact
+  // thing paintCards refuses to do to the grid.
+  const stamp = list.map(cardKey).join('\u0000');
+  if (stamp === state.setsStamp) return;
+  state.setsStamp = stamp;
+  state.sets = list;
+  band.replaceChildren();
+  if (!list.length) { band.hidden = true; return; }
+
+  band.append(el('h2', 'setsh',
+    list.length === 1 ? 'One whole set' : `${list.length} whole sets`));
+  // What they are and what that costs, before any of them is clicked. The
+  // second half is not a disclaimer: nothing in this band is hosted, none of
+  // it opens in the player, and the size is the fact somebody decides on.
+  band.append(el('p', 'setsn',
+    'Each of these is a single torrent holding an entire collection at once, '
+    + 'not one title out of it. Nothing here plays in the browser \u2014 it goes '
+    + 'to a torrent client, and the size is the decision.'));
+  const g = el('div', 'setsg');
+  for (const c of list) g.append(tile(c));
+  band.append(g);
+  band.hidden = false;
+}
+
+/** Put the band away and forget what was in it. */
+function hideSetBand() {
+  const band = $('#sets');
+  if (!band) return;
+  band.replaceChildren();
+  band.hidden = true;
+}
+
+/**
  * The line above the grid: how many, for what, and what is still coming.
  *
  * All on one line and rewritten in place, deliberately. A note that appears
@@ -712,6 +820,16 @@ function updateResultBar(data) {
     + (data.total && data.total !== state.cards.length ? ` · ${data.total} before filters` : '');
   bar.append(el('span', null, counted));
 
+  // The band is not in `total` and not in the count above it, because neither
+  // of those is about it: the server partitions sets out BEFORE it counts, so
+  // both numbers are promises about the grid. Saying so here is what stops
+  // "0 results" from sitting above a screen that visibly has something on it
+  // -- which is exactly what `?source=sets` produces.
+  if (state.sets.length) {
+    bar.append(el('span', 'setsbar',
+      `+ ${state.sets.length} whole set${state.sets.length === 1 ? '' : 's'} below`));
+  }
+
   if (progress.text) {
     bar.append(el('span', `progress ${progress.tone}`, progress.text));
   }
@@ -730,6 +848,15 @@ function finishResults(data) {
   }
   $('#grid').replaceChildren();
   state.gridLive = true;
+  // An empty grid with a full band is not an empty search. It is the ordinary
+  // shape of `?source=sets`, where every surviving card IS a container and the
+  // grid is empty by construction -- and telling somebody to loosen their
+  // filters while a band of real answers sits under the message is worse than
+  // saying nothing.
+  if (state.sets.length) {
+    $('#status').hidden = true;
+    return;
+  }
   const progress = describeProgress(data);
   $('#status').textContent = progress.tone === 'degraded'
     ? `${progress.text} Nothing was found for this search.`
@@ -765,7 +892,13 @@ function tile(card) {
   badge.title = src.hint;
   p.append(badge);
   if (card.art?.rating) p.append(el('span', 'rating', card.art.rating.toFixed(1)));
-  const bq = card.platform || card.sources[card.best]?.quality;
+  // The platform pill, bottom-LEFT, opposite the label. Never for a set, for
+  // two reasons that arrive together: a set's `platform` is the path component
+  // it is named after, so it is the SAME STRING as the title two lines below --
+  // and being that long it runs straight into the label at the other corner,
+  // which is where the size is. A duplicated title is noise; a duplicated title
+  // sitting on top of the number somebody decides on is worse than noise.
+  const bq = card.set ? '' : (card.platform || card.sources[card.best]?.quality);
   if (bq) p.append(el('span', 'best-q', bq));
   // What this card is for, in its own domain's word. A search for "batman"
   // returns films, comics and games together, and until now every one of them
@@ -778,7 +911,18 @@ function tile(card) {
   if (card.year) bits.push(card.year);
   if (card.isSeries) bits.push(`S${card.season}E${card.episode}`);
   bits.push(...musicBits(card));
-  if (card.external) {
+  if (card.set) {
+    // NEVER the release count the last branch prints. A set's two rows are the
+    // magnet and the .torrent of the SAME torrent, so "2 sources" beside a
+    // container reads as two releases of one work -- the precise confusion
+    // between a thing and a box of things that this whole band exists to
+    // prevent. What is useful instead is which collection it is out of and
+    // how much is in it. The file count is omitted rather than printed as 0
+    // where nobody has read the torrent's file list: "0 files" describes an
+    // empty torrent, which is a different and false claim.
+    if (card.set.collection) bits.push(card.set.collection);
+    if (card.set.files > 0) bits.push(`${card.set.files.toLocaleString()} files`);
+  } else if (card.external) {
     bits.push(`on ${card.external.name}`);
     // What is actually on offer over there, in the site's own two words. An
     // entry can be downloadable, playable in their player, or both, and those
@@ -850,8 +994,11 @@ function openCard(card) {
  */
 function restoreLanding() {
   state.cards = [];
+  state.sets = [];
+  state.setsStamp = null;
   state.facets = null;
   $('#grid').replaceChildren();
+  hideSetBand();
   $('#resultbar').hidden = true;
   $('#status').hidden = true;
   $('#library').hidden = true;
@@ -878,7 +1025,8 @@ async function showSavedLibrary() {
   if (homeAbort) homeAbort.abort();
   state.searchAbort?.abort();
   tvStrip?.hide();
-  for (const selector of ['#intro', '#discover', '#get', '#resultbar', '#grid', '#linkpanel', '#filters']) {
+  for (const selector of ['#intro', '#discover', '#get', '#resultbar', '#grid', '#sets',
+    '#linkpanel', '#filters']) {
     $(selector).hidden = true;
   }
   // #library is the transient playlist/torrent-collection browser. A personal
@@ -1084,6 +1232,19 @@ function tileHandlers() {
         openReaderFor(action.id, item.title, action.verb);
         return;
       }
+      if (action.kind === 'set') {
+        // A set opens its detail sheet, where the size, the file count and the
+        // two download rows are. It never runs a search — the fall-through at
+        // the bottom of this function would do that, and searching for the name
+        // of a container returns the container.
+        //
+        // Sets are partitioned out of `cards` by the server and the category
+        // band renders its own anchors, so nothing should reach here today.
+        // Handled anyway: the cost is four lines, and the failure it prevents
+        // is a 41 GB torrent quietly becoming a text search.
+        if (item.card) openCard(item.card);
+        return;
+      }
       if (action.kind === 'open') {
         // A card came from a search and has sources to choose between; a
         // discover item with a play target IS the thing and opens directly.
@@ -1211,14 +1372,26 @@ function openDetail(card) {
   if (card.year) sub.push(card.year);
   if (card.isSeries) sub.push(`Season ${card.season}, Episode ${card.episode}`);
   if (card.art?.rating) sub.push(`★ ${card.art.rating.toFixed(1)}`);
-  if (card.platform) sub.push(card.platform);
+  // Not for a set. Its `platform` is the path component it is named after, so
+  // it is the same string as the title directly above this line -- the same
+  // duplication tile() drops, where it also landed on top of the size.
+  if (card.platform && !card.set) sub.push(card.platform);
   // Venue and date, for a card whose title is a sentence and whose identity is
   // a place and a day. See musicBits.
   sub.push(...musicBits(card));
   // Where it came from, then what that means for getting hold of it — the same
   // two facts the tile's badge carried, with room here to say them in words.
   const named = card.origin || card.sources?.[card.best ?? 0]?.indexer || '';
-  if (card.external) {
+  if (card.set) {
+    // What it is, how big, and how many files — in that order, because that is
+    // the order somebody decides in. The file count is omitted rather than
+    // printed as 0 when nobody has read the torrent's file list: "0 files"
+    // describes an empty torrent, which is a different and false claim.
+    if (card.set.collection) sub.push(card.set.collection);
+    sub.push(card.set.sizeHuman);
+    if (card.set.files > 0) sub.push(`${card.set.files.toLocaleString()} files`);
+    sub.push('one torrent');
+  } else if (card.external) {
     sub.push(`Catalogued on ${card.external.name}`);
   } else if (card.instant) {
     sub.push(`${named || 'Hosted'} — plays instantly, no download`);
@@ -1237,7 +1410,33 @@ function openDetail(card) {
   // What the rows below will actually do, said before any of them is clicked.
   // An off-site card gets its own sentence because both of the others are
   // untrue of it: nothing here is pressed, and nothing here streams.
-  if (card.external) {
+  if (card.set) {
+    // A FOURTH sentence, beside instant, external and swarm. None of the other
+    // three is true here: nothing plays, nothing leaves for another website,
+    // and "pick one to stream" describes choosing between releases of one work
+    // rather than fetching a container of thousands.
+    //
+    // The line says the two things a person needs before the rows below make
+    // sense — that this is everything at once, and what that weighs.
+    const parts = [
+      `The whole ${card.set.collection || 'set'} in one torrent`,
+      `${card.set.sizeHuman} in total`,
+    ];
+    if (card.set.files > 0) parts.push(`${card.set.files.toLocaleString()} files`);
+    // Where in it the thing they searched for actually is.
+    //
+    // Rendered ONLY when the server said so. A null `contains` prints NOTHING
+    // — not "contents unknown", not "may contain what you searched for". A
+    // hedge here would be read as a weak yes, and the honest state is that
+    // nobody has read this torrent's file list.
+    if (card.set.contains?.file) {
+      const of = card.set.contains.sizeHuman
+        ? `${card.set.contains.sizeHuman} of ${card.set.sizeHuman}`
+        : card.set.sizeHuman;
+      parts.push(`Contains ${card.set.contains.file} — ${of}`);
+    }
+    $('#d-srch').textContent = parts.join(' · ');
+  } else if (card.external) {
     $('#d-srch').textContent =
       `${card.sources.length} link${card.sources.length === 1 ? '' : 's'} on `
       + `${card.external.name} — each one opens ${card.external.host} in a new tab`;
@@ -1328,6 +1527,10 @@ function offsiteOffers(card) {
  * routed into the player, because there is no handler to route.
  */
 function sourceRow(card, s, isBest) {
+  // Before everything, including the two navigation rows below it. A set's
+  // rows are neither: they are a handoff to a program that is usually not this
+  // browser, and the torrent branch at the bottom would route one into play().
+  if (card.set) return setSourceRow(card, s, isBest);
   if (s.onSite) return isolatedSourceRow(s, isBest);
   if (s.offsite) return offsiteSourceRow(card, s, isBest);
 
@@ -1410,6 +1613,62 @@ function isolatedSourceRow(s, isBest) {
   const r = el('div', 'sr');
   if (s.size) r.append(el('span', null, s.sizeHuman));
   r.append(el('span', null, 'opens the player'));
+  row.append(r);
+  return row;
+}
+
+/**
+ * A row that hands a whole collection to a torrent client.
+ *
+ * AN ANCHOR, NOT A BUTTON, and for the same reason offsiteSourceRow is one: an
+ * anchor says where it goes before it is pressed, works with middle-click and
+ * ctrl-click, is announced as a link by a screen reader, and — the half that
+ * matters here — CANNOT ACCIDENTALLY BE ROUTED INTO THE PLAYER, because there
+ * is no handler to route. A magnet in a `<button>` is one refactor away from
+ * being passed to play().
+ *
+ * But it does NOT carry the "leaves this site" tag the offsite row carries,
+ * because it does not. A magnet is handed to a program on the person's own
+ * machine; nothing navigates, and no page of anybody's website opens. Marking
+ * it as a departure would be false in both halves, and would put the warning
+ * colour on the one row here that is doing exactly what it says.
+ *
+ * Every torrent word is absent: no quality, no codec, no `0▲`, no webSafe tag.
+ * A set has none of them, and printing them as "unknown" and "0" is what makes
+ * the most reliable row on a page read as the most broken.
+ */
+function setSourceRow(card, s, isBest) {
+  const row = el('a', isBest ? 'source best set' : 'source set');
+  row.href = s.magnet ?? s.uri ?? '';
+
+  const torrentFile = /\.torrent(\?|$)/i.test(row.href);
+  const verb = torrentFile ? '.TORRENT' : 'MAGNET';
+  row.setAttribute('aria-label',
+    `${torrentFile ? 'Download the .torrent file for' : 'Open the magnet link for'} `
+    + `${card.set.name} — ${card.set.sizeHuman}`);
+  row.title = row.getAttribute('aria-label');
+
+  const l = el('div', 'sl');
+  l.append(el('span', 'q', verb));
+  // The collection, which is the one word that says what kind of set this is.
+  if (s.source) l.append(el('span', 'tag', s.source));
+  l.append(el('span', 'name', s.title));
+  // Where inside the set the searched-for file sits — text to read and copy,
+  // never a link, because there is nothing to link to: the file is inside a
+  // torrent nobody has downloaded yet. Present only when the server read it
+  // out of the torrent's own file list.
+  if (s.within) {
+    const w = el('span', 'within', s.within);
+    w.title = `Inside this set at: ${s.within}`;
+    l.append(w);
+  }
+  row.append(l);
+
+  const r = el('div', 'sr');
+  // The size, always, and it is the only number on the row. On a set it is not
+  // decoration — it is the decision.
+  r.append(el('span', null, s.sizeHuman || card.set.sizeHuman));
+  r.append(el('span', null, s.indexer));
   row.append(r);
   return row;
 }
@@ -3583,13 +3842,13 @@ function init() {
     renderSourceFilters(state.facets);
   };
   $('#f-archive').addEventListener('click', () => {
-    chooseProvider('archive.org'); persistFilters(); if (state.cards.length) refilter();
+    chooseProvider('archive.org'); persistFilters(); if (hasResults()) refilter();
   });
   $('#f-vimm').addEventListener('click', () => {
-    chooseProvider("Vimm's Lair"); persistFilters(); if (state.cards.length) refilter();
+    chooseProvider("Vimm's Lair"); persistFilters(); if (hasResults()) refilter();
   });
   $('#f-depot').addEventListener('click', () => {
-    chooseProvider('The ROM Depot'); persistFilters(); if (state.cards.length) refilter();
+    chooseProvider('The ROM Depot'); persistFilters(); if (hasResults()) refilter();
   });
   $('#f-swarm').addEventListener('click', () => {
     const on = state.filters.source === 'swarm';
@@ -3597,7 +3856,24 @@ function init() {
     state.filters.providers = new Set();
     renderSourceFilters(state.facets);
     persistFilters();
-    if (state.cards.length) refilter();
+    if (hasResults()) refilter();
+  });
+  // "Sets" narrows to the containers, which the server has understood since
+  // filters.Source gained the value and nothing on this page could ask for.
+  //
+  // Every card that survives it IS a set, so the grid comes back empty BY
+  // CONSTRUCTION and the whole answer is the band -- which is why this chip
+  // could not be wired up until the band existed. Before that, ticking it
+  // would have produced a blank results page with the answer in a key nobody
+  // read. updateResultBar and finishResults both know about the band, so an
+  // empty grid here is never reported as a search that found nothing.
+  $('#f-sets').addEventListener('click', () => {
+    const on = state.filters.source === 'sets';
+    state.filters.source = on ? '' : 'sets';
+    state.filters.providers = new Set();
+    renderSourceFilters(state.facets);
+    persistFilters();
+    if (hasResults()) refilter();
   });
 
   $('#filter-reset').addEventListener('click', clearAllFilters);

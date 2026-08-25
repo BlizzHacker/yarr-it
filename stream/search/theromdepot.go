@@ -90,7 +90,7 @@ func loadDepotStore(filename string) (*depotStore, error) {
 		if !ok || title == "" || strings.TrimSpace(item.Platform) == "" {
 			continue
 		}
-		searchText := strings.Join([]string{title, item.Name, item.Platform, item.Region}, " ")
+		searchText := strings.Join([]string{title, item.Name, item.Platform, item.Region, depotPathTerms(item.ID)}, " ")
 		rows = append(rows, depotRow{
 			depotItem: item,
 			title:     title,
@@ -210,10 +210,11 @@ func (s *depotStore) search(q, kind string, systems map[string]bool, limit int) 
 			},
 		})
 	}
-	// The catalogue match above deliberately includes title, platform and
-	// region. Do not run the shared title-only ranker here: it used to accept
-	// "Mario Party Nintendo 64 Europe" from the catalogue, then throw that same
-	// card away because "Nintendo 64" is metadata rather than title text.
+	// The catalogue match above deliberately includes title, platform, region
+	// and catalogue path. Do not run the shared title-only ranker here: it used
+	// to accept "Mario Party Nintendo 64 Europe" from the catalogue, then throw
+	// that same card away because "Nintendo 64" is metadata rather than title
+	// text.
 	rankDepotCards(cards, q)
 	if len(cards) > limit {
 		cards = cards[:limit]
@@ -271,6 +272,22 @@ func depotTitle(item depotItem) string {
 		}
 	}
 	return name
+}
+
+// depotPathTerms is the catalogue path as searchable words.
+//
+// The ROM Depot's directory API keeps the machine in the path, and in the
+// Virtual Console tree that path is the ONLY place it is spelled out: a Wii
+// re-release of an N64 game carries Platform "Virtual Console" and a title that
+// abbreviates the machine to "(N64)", so indexing title/name/platform/region
+// alone leaves the word "Nintendo" nothing to match. A search for "Mario Party
+// Nintendo 64 Europe" then finds the cartridge and silently loses the Virtual
+// Console download, which is the opposite of what a metadata-qualified query is
+// for. These segments are the same metadata the site itself browses by, so they
+// are indexed like any other field rather than being special-cased at query
+// time.
+func depotPathTerms(id string) string {
+	return strings.ReplaceAll(strings.Trim(strings.TrimSpace(id), "/"), "/", " ")
 }
 
 func depotDownloadURL(id string) (string, bool) {

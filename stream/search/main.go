@@ -93,6 +93,101 @@ type source struct {
 	// their own browser player. Collapsing them into one row would hide from a
 	// person which of the two they were about to get.
 	Action string `json:"action,omitempty"`
+
+	// Within is the path of ONE file inside a set, when this source is a set
+	// that was matched because of that file. It is the answer to "I searched
+	// for Super Mario World and got an 8.4 GB torrent -- where in it?", and it
+	// is copy-able text rather than a link, because there is nothing to link
+	// to: the file is inside a torrent nobody has downloaded yet.
+	//
+	// It is set ONLY from a torrent's own file list, never from a browse path.
+	// A browse path says a file is somewhere under a directory; it does not say
+	// that the torrent covering that directory contains it, and 11 TeknoParrot
+	// files and a whole 24.55 GB C64 subtree are proof that those are different
+	// claims.
+	//
+	// NOTHING POPULATES THIS YET. It is the wire shape for the optional
+	// per-file tier, which needs each torrent's file list and so needs those
+	// torrents fetched. Until that exists the field is absent from every
+	// response, and the client is required to render nothing for it rather than
+	// a hedge -- see setInfo.Contains, which carries the same rule and the same
+	// reason.
+	Within string `json:"within,omitempty"`
+}
+
+// setInfo is what a card carries when the thing it offers is a whole SET rather
+// than a work: one torrent covering an entire curated collection.
+//
+// It is the third member of a mutually exclusive trio with card.Instant and
+// card.External, and the exclusivity is the point:
+//
+//	Instant   this site will serve it, and it plays here
+//	External  this site will not serve it; a click leaves for another website
+//	Set       this is a container. It is a swarm, it is not one work, and the
+//	          number that matters before clicking is its SIZE
+//
+// A set is NOT External even though it comes from another site's index, because
+// External's whole vocabulary is about a click landing on somebody else's page.
+// A magnet does not do that; it is handed to a torrent client. And it is NOT
+// Instant, because nobody is serving it over HTTP.
+//
+// The size is in here rather than left to the source rows because a tile shows
+// no rows. "Whole set" on its own is how somebody queues 6.75 TB by accident.
+type setInfo struct {
+	// Name is the set as a person reads it.
+	Name string `json:"name"`
+	// Collection is which curated collection it belongs to: "No-Intro".
+	Collection string `json:"collection,omitempty"`
+	// Path is where it sits in the source index, for a person who wants to go
+	// and look at what is in it.
+	Path string `json:"path,omitempty"`
+
+	SizeBytes int64  `json:"sizeBytes"`
+	SizeHuman string `json:"sizeHuman"`
+	// Files is how many files the set holds, or 0 for unknown. Zero must render
+	// as nothing at all rather than as "0 files".
+	Files int `json:"files,omitempty"`
+
+	// PeersKnown says whether anybody has measured this swarm RECENTLY ENOUGH
+	// TO SAY SO. It is false on everything Minerva publishes, and while it is
+	// false the client must print no number at all -- not a zero, and never the
+	// dead-source colour, which reads as "this will not work".
+	//
+	// The distinction is not pedantic. Minerva's own seeder counts stopped
+	// updating in April 2026: a card rendered from them would say "0 seeders"
+	// about swarms that are alive and "412 seeders" about swarms that are not.
+	// Saying nothing is the only true option, and this flag is what makes
+	// saying nothing a decision the server took rather than a field the client
+	// forgot to read.
+	PeersKnown bool `json:"peersKnown"`
+	// MeasuredAt is when the source last measured the swarm, so the one honest
+	// sentence about it can still be said. Present WITHOUT the counts, on
+	// purpose.
+	MeasuredAt string `json:"measuredAt,omitempty"`
+
+	// Contains is the one file inside this set that matched the query, when
+	// there is one and it is known. Nil renders NOTHING -- not a hedge, not
+	// "contents unknown". A sentence about what a set holds is worth having
+	// only when it is true.
+	//
+	// NIL ON EVERY RESPONSE TODAY, and the deployment is coherent that way
+	// rather than degraded. Knowing what is inside a set means reading that
+	// torrent's own file list, which nothing here does yet -- and with no file
+	// list there is nothing honest to say. The consequence is deliberate and
+	// worth stating: a set surfaces only when a query names the set, the
+	// collection or the machine, and never when it names a game inside one.
+	Contains *setMatch `json:"contains,omitempty"`
+}
+
+// setMatch is one file inside a set, named because somebody searched for it.
+type setMatch struct {
+	// File is the path of the file within the torrent.
+	File string `json:"file"`
+	// SizeBytes is that file's own size, which is the number that makes the
+	// sentence useful: "4.1 MB of 8.4 GB" is the difference between a set being
+	// absurd for one game and being merely large.
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	SizeHuman string `json:"sizeHuman,omitempty"`
 }
 
 // externalSite names the site a result actually lives on, when that is not this
@@ -171,6 +266,20 @@ type card struct {
 	// externalSite above and the local provider catalogues that set it.
 	External *externalSite `json:"external,omitempty"`
 
+	// Set is set when this result is a whole COLLECTION in one torrent rather
+	// than a single work -- every No-Intro SNES cartridge in one 8.4 GB file.
+	//
+	// The third of three mutually exclusive states, with Instant and External.
+	// See setInfo above for what each of them promises, and minervaCard, which
+	// is the single fork that assigns exactly one of them.
+	//
+	// Two consequences that are easy to get wrong and are pinned by tests:
+	// a set card is never in the response's `cards` array (respondSearch
+	// partitions it into `sets`), and it never counts towards a category total,
+	// because a category total promises tiles a page can produce and a set is
+	// not a tile in that grid.
+	Set *setInfo `json:"set,omitempty"`
+
 	// Music is the part of a result that only means anything for music: the
 	// artist, the venue, the date of the show. One optional object rather than
 	// six optional fields, so a film or a ROM card is byte-for-byte what it was
@@ -238,6 +347,10 @@ type server struct {
 	// loaded once and searched from memory; nil/empty is a normal self-hosted
 	// state and is surfaced in health rather than silently hidden.
 	depot *depotStore
+	// The Minerva Archive's set catalogue: 1,049 whole-collection torrents,
+	// fetched and reduced off-box. Nil/empty is the state every instance starts
+	// in and is a coherent deployment, not a degraded one -- see minerva.go.
+	minerva *minervaStore
 
 	tmdb     *tmdbClient
 	igdb     *igdbClient
@@ -285,6 +398,23 @@ func main() {
 	// until it is restarted. See vimm_import.go.
 	importVimmPath := flag.String("import-vimm", "",
 		"import a Vimm's Lair catalogue export (JSON) into VIMM_PATH and exit")
+	// The Minerva Archive, in two halves that are deliberately separate
+	// processes on deliberately separate machines.
+	//
+	// -fetch-minerva talks to minerva-archive.org; -import-minerva talks to
+	// nothing. Splitting them is what lets the rule "the production VPS makes
+	// zero requests to minerva-archive.org" be true by construction rather than
+	// by discipline: the fetcher is run from a workstation, the snapshot is
+	// copied across, and the importer reduces it locally. See minerva_fetch.go.
+	fetchMinervaDir := flag.String("fetch-minerva", "",
+		"fetch a Minerva Archive snapshot into this directory and exit (run this OFF the server)")
+	importMinervaDir := flag.String("import-minerva", "",
+		"reduce a Minerva Archive snapshot directory into MINERVA_PATH and exit")
+	// Refuses a snapshot holding less than 80% of the sets already published,
+	// unless this says the shrink is intended. See the corpus ratchet in
+	// minerva_import.go.
+	forceMinerva := flag.Bool("force", false,
+		"allow -import-minerva to publish a catalogue much smaller than the current one")
 	flag.Parse()
 
 	if *egressOnly != "" {
@@ -301,6 +431,27 @@ func main() {
 			log.Fatalf("import: %v", err)
 		}
 		log.Printf("catalogue written to %s", vimmCataloguePath())
+		return
+	}
+
+	if *fetchMinervaDir != "" {
+		if err := fetchMinerva(*fetchMinervaDir); err != nil {
+			log.Fatalf("fetch: %v", err)
+		}
+		log.Printf("snapshot written to %s; now run -import-minerva %s",
+			*fetchMinervaDir, *fetchMinervaDir)
+		return
+	}
+
+	if *importMinervaDir != "" {
+		rep, err := importMinerva(*importMinervaDir, minervaCataloguePath(), *forceMinerva)
+		if rep != nil {
+			fmt.Print(rep)
+		}
+		if err != nil {
+			log.Fatalf("import: %v", err)
+		}
+		log.Printf("catalogue written to %s", minervaCataloguePath())
 		return
 	}
 
@@ -370,6 +521,19 @@ func main() {
 		log.Printf("The ROM Depot: %d entries from %s", n, depotCataloguePath())
 	} else {
 		log.Printf("The ROM Depot: nothing captured (%s)", depotCataloguePath())
+	}
+
+	minerva, err := loadMinervaStore(minervaCataloguePath())
+	if err != nil {
+		log.Fatalf("minerva catalogue: %v", err)
+	}
+	s.minerva = minerva
+	if n := minerva.count(); n > 0 {
+		log.Printf("Minerva Archive: %d sets from %s", n, minervaCataloguePath())
+	} else {
+		log.Printf("Minerva Archive: nothing imported (%s); fetch a snapshot with "+
+			"-fetch-minerva <dir> off this machine, then -import-minerva <dir>",
+			minervaCataloguePath())
 	}
 
 	s.warm = newWarmer(s)
@@ -795,6 +959,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"owner":         owner,
 			"vimm":          s.vimm.stats(),
 			"theromdepot":   s.depot.stats(),
+			"minerva":       s.minerva.stats(),
 			"detail":        "PROWLARR_API_KEY is not set; torrent search is disabled",
 		})
 		return
@@ -816,7 +981,8 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// catalogue that failed to import shows up here as zero entries rather than
 	// as games that quietly stopped appearing in search.
 	body := map[string]any{"prowlarr": status, "cachedQueries": n, "owner": owner,
-		"vimm": s.vimm.stats(), "theromdepot": s.depot.stats()}
+		"vimm": s.vimm.stats(), "theromdepot": s.depot.stats(),
+		"minerva": s.minerva.stats()}
 	// Whether searches are currently skipping the indexers on purpose. Without
 	// this, a breaker that has tripped looks exactly like an index with nothing
 	// in it -- results simply stop arriving and nothing says why.
@@ -850,6 +1016,23 @@ type searchState struct {
 // are needed, because they fail in different directions -- the invariant
 // upstream cannot see a per-request merge, and a check here cannot see a card
 // that was cached under someone else's search.
+// partitionSets splits whole-collection torrents out of a result list,
+// preserving the order of both halves.
+//
+// One function, called once, rather than a `c.Set == nil` test at each of the
+// places a set must not appear. There were four such places at the time of
+// writing and the fifth is the one that would have shipped a bug.
+func partitionSets(cards []card) (works, sets []card) {
+	for _, c := range cards {
+		if c.Set != nil {
+			sets = append(sets, c)
+			continue
+		}
+		works = append(works, c)
+	}
+	return works, sets
+}
+
 func respondSearch(w http.ResponseWriter, q string, f filters,
 	dev *deviceProfile, cards []card, st searchState, ownerView bool) {
 
@@ -857,15 +1040,40 @@ func respondSearch(w http.ResponseWriter, q string, f filters,
 		cards = dropOwnerCards(cards)
 	}
 	visible := dev.applyDevice(cards)
+	// How many the DEVICE removed, which is what this number has always meant.
+	// Measured before the partition below, or a phone would be told that
+	// twenty sets were "filtered out" by its own capabilities.
+	deviceDropped := len(cards) - len(visible)
+
+	// Sets leave the main list HERE, and this one line is what makes "a set is
+	// never interleaved with works" a property of the code rather than a rule
+	// somebody has to remember.
+	//
+	// They travel with everything else right up to this point on purpose: they
+	// go through the same de-dup, the same filters and the same device profile,
+	// so there is one pipeline rather than two that agree today. Only the
+	// SHAPE of the response separates them, and it separates them before
+	// facets and before `total`, because a facet count and a result count are
+	// promises about the grid and a set is not in the grid.
+	visible, setCards := partitionSets(visible)
+
 	body := map[string]any{
 		"query":  q,
 		"cards":  f.apply(visible),
 		"facets": buildFacets(visible),
 		"total":  len(visible),
 	}
+	// A separate key, never a row inside `cards`, and never inside `rows` on
+	// the browse side either. An older client -- an Xbox, a Roku, a Cartridge
+	// build -- does not know this key and so shows NOTHING, which is exactly
+	// right. The alternative shape, a set tile in the ordinary list, would
+	// render on every one of those clients as a playable game.
+	if kept := f.apply(setCards); len(kept) > 0 {
+		body["sets"] = kept
+	}
 	if dev != nil {
 		body["device"] = dev.Name
-		body["filteredOut"] = len(cards) - len(visible)
+		body["filteredOut"] = deviceDropped
 	}
 	if st.stale {
 		body["stale"] = true
@@ -968,7 +1176,8 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// answer a game search perfectly well, and refusing it with "no torrent
 	// indexer is configured" would be this handler declining to look at the one
 	// source that was going to answer.
-	if s.apiKey == "" && !wantArchive && s.vimm.count() == 0 && s.depot.count() == 0 {
+	if s.apiKey == "" && !wantArchive && s.vimm.count() == 0 && s.depot.count() == 0 &&
+		s.minerva.count() == 0 {
 		if stale, ok := s.getAny(cacheKey); ok {
 			respondSearch(w, q, f, dev, s.deepenBySystem(r.Context(), q, kind, f, stale), searchState{cache: "STALE", stale: true}, ownerView)
 			return

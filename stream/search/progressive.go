@@ -331,6 +331,7 @@ func (j *searchJob) run(s *server) {
 	// property to lose. See vimm.go.
 	j.vimmStage(s)
 	j.depotStage(s)
+	j.minervaStage(s)
 
 	// archive.org is the fast half and the only thing the first paint waits
 	// for. It is a public metadata query with no queue behind it: measured
@@ -484,6 +485,58 @@ func (j *searchJob) depotStage(s *server) {
 		j.add(cards)
 	}
 	j.mark("theromdepot", stageOK)
+}
+
+// minervaStage adds the Minerva Archive's whole-collection torrents.
+//
+// Third of the three synchronous local scans, and synchronous for exactly the
+// reason the block above run's goroutines gives: firstWave is released by
+// whichever fast source finishes first, INCLUDING A FAILED ONE, so a source
+// that adds its cards afterwards contributes nothing to the paint it was meant
+// to be part of. This one is a scan of 1,049 pre-lowercased paths, which is
+// cheaper than the two scans already above it.
+//
+// stageFailed is unreachable here, and that is a property rather than an
+// oversight: this stage makes no network call and can only read memory. The
+// verdict it can never produce is the one that means "the question was never
+// really put", and nothing here can fail to put it.
+func (j *searchJob) minervaStage(s *server) {
+	// NOT games-only, unlike the two stages above. Minerva indexes a 1.64 TB
+	// documentation mirror and 2.25 TB of scans as well as ROM sets, and those
+	// belong to literature and image. The per-collection domain decides, so the
+	// only kind this source has nothing at all to say about is one no
+	// collection maps to -- music, today.
+	if j.kind != "" && !minervaServesKind(j.kind) {
+		// "none" rather than "ok": it did not apply. Reporting it as a source
+		// that looked and found nothing would misdescribe an empty music
+		// search.
+		j.mark("minerva", stageNone)
+		return
+	}
+	if s == nil || s.minerva == nil || s.minerva.count() == 0 {
+		// Exists and could answer; the fix is to run the fetcher and the
+		// importer. Distinct from "failed", which would mean something broke.
+		j.mark("minerva", stageNotConfigured)
+		return
+	}
+	cards := s.minerva.search(j.query, j.kind, nil, minervaCardLimit)
+	if len(cards) > 0 {
+		j.add(cards)
+	}
+	// Asked, answered, possibly with nothing. That is stageOK either way.
+	j.mark("minerva", stageOK)
+}
+
+// minervaServesKind reports whether any Minerva collection is filed under this
+// domain. Derived from the collection map rather than restated, so adding a
+// collection on a new shelf cannot leave this behind saying otherwise.
+func minervaServesKind(kind string) bool {
+	for _, c := range minervaCollections {
+		if c.Domain != "" && sameDomain(kind, c.Domain) {
+			return true
+		}
+	}
+	return false
 }
 
 // indexerStage runs the torrent fan-out and records what happened to it, in

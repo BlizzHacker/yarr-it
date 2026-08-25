@@ -35,6 +35,25 @@ type discoverRow struct {
 	Title string        `json:"title"`
 	Key   string        `json:"key"`
 	Items []discoverItm `json:"items"`
+
+	// Sets are whole-collection torrents for this category -- every No-Intro
+	// SNES cartridge in one file -- shown as a band BELOW the grid rather than
+	// mixed into it.
+	//
+	// A SIBLING FIELD RATHER THAN MORE ITEMS, and that is the whole decision.
+	// A set is not a game and must never be interleaved among games; but the
+	// shape that keeps it out of `Items` also has to keep it away from clients
+	// that have never heard of it. This one does both: an Xbox, Roku or
+	// Cartridge build reads `Items`, finds nothing new, and shows nothing --
+	// whereas a new row inside the existing list would have rendered on every
+	// one of them as a playable game with a Play button over a 41 GB torrent.
+	//
+	// omitempty, so a category with no sets is byte-for-byte the response it
+	// has always been.
+	Sets []discoverItm `json:"sets,omitempty"`
+	// SetsNote is the sentence above the band, written by the server because
+	// only the server knows the size range in it.
+	SetsNote string `json:"setsNote,omitempty"`
 }
 
 type discoverItm struct {
@@ -82,6 +101,16 @@ type discoverItm struct {
 	// omitempty right: those items ARE the thing, and a nil here is the
 	// positive statement that nothing about this tile leaves the site.
 	External *externalSite `json:"external,omitempty"`
+
+	// Set marks a tile that is a whole collection in one torrent, and carries
+	// the size. Same field and same meaning as a search card's, because
+	// tileAction reads one property and must not have to know which endpoint
+	// built the item -- that is precisely the bug b71f7ad found when
+	// itemFromDiscover dropped `external`.
+	//
+	// Absent on everything else, which is what makes omitempty right: a nil
+	// here is the positive statement that this tile is one work.
+	Set *setInfo `json:"set,omitempty"`
 }
 
 type discoverCache struct {
