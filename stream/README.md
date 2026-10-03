@@ -42,12 +42,13 @@ browser instead of a faked single stream.
 |---|---|---|
 | `torrent` | magnet, 40-char info hash | playable — wraps `StreamEngine` unchanged |
 | `embed` | YouTube, Vimeo | playable, official iframe only — never extraction |
+| `webmulator` | public `/games/<system>/<game>/mobile` page | playable, official hosted EmulatorJS iframe — hidden ROM URL is never extracted |
 | `playlist` | `.m3u`, `.m3u8` | collection, or a playable when the body is an HLS manifest |
 | `flash` | `.swf` | playable, `canvas` — Ruffle (vendored, dual MIT/Apache) |
 | `game` | ROM (`.nes`, `.smc`, `.gba`, `.z64`, `.md`, …) | playable, `canvas` — EmulatorJS |
 | `url` | direct media URL | playable, `render` chosen by sniffed content-type |
 
-Registration order is `torrent, embed, flash, game, playlist, url`. `url` is the catch-all and
+Registration order is `torrent, link, embed, webmulator, archive, flash, game, playlist, url`. `url` is the catch-all and
 must stay last: a YouTube link and an `.m3u8` link are both http(s) URLs, so the
 specific resolvers need first refusal.
 

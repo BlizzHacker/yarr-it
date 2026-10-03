@@ -31,7 +31,7 @@ Everything below is running, not planned:
 
 | | |
 |---|---|
-| **Search** | torrent indexers via your own Prowlarr, plus archive.org |
+| **Search** | torrent indexers via your own Prowlarr; Archive.org, Vimm's Lair, The ROM Depot, Webmulator, Retrostic, EmuParadise and RomuLation; browser-captured CoolROM/CDRomance metadata |
 | **Domains** | video, music, games, books, comics, images |
 | **Watch** | in-browser streaming from a torrent, with seeking and subtitles |
 | **Shelf** | watchlist and resume points, shared across your devices |
@@ -43,6 +43,12 @@ request routing, Live TV with a real programme guide, and the in-app readers.
 Those are being built against the provider contract in
 [`stream/search/provider.go`](stream/search/provider.go); this README will say
 so when each is proven against real hardware, and not before.
+
+ROM providers keep their real capabilities separate. Webmulator and Retrostic
+open their public hosted players; Vimm, Archive and The ROM Depot expose only
+the download controls they actually publish; EmuParadise is discovery-only;
+RomuLation says when a paid signed-in browser is required. Yarr.It never turns
+an iframe's hidden ROM path or a per-session token into a download URL.
 
 ## It is not tied to one server
 

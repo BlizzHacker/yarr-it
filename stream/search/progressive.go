@@ -331,6 +331,7 @@ func (j *searchJob) run(s *server) {
 	// property to lose. See vimm.go.
 	j.vimmStage(s)
 	j.depotStage(s)
+	j.romCatalogStage(s)
 
 	// archive.org is the fast half and the only thing the first paint waits
 	// for. It is a public metadata query with no queue behind it: measured
@@ -369,6 +370,32 @@ func (j *searchJob) run(s *server) {
 		defer wg.Done()
 		j.indexerStage(ctx, s)
 	}()
+
+	// The other ROMarr providers expose their own public search forms. They run
+	// beside (never in front of) Archive and the torrent tier, so a slow or
+	// refusing ROM site cannot delay the first paint or hide working sources.
+	if s != nil && s.romSources != nil && (j.kind == "" || sameDomain(j.kind, domainGame)) {
+		for _, provider := range s.romSources.providers {
+			provider := provider
+			j.mark(provider.id, stagePending)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				cards, err := provider.search(ctx, j.query, romProviderCardLimit)
+				if err != nil {
+					log.Printf("job %s %s %q: %v", j.id, provider.name, j.query, err)
+					j.mark(provider.id, stageFailed)
+					return
+				}
+				j.add(cards)
+				j.mark(provider.id, stageOK)
+			}()
+		}
+	} else if s != nil && s.romSources != nil {
+		for _, provider := range s.romSources.providers {
+			j.mark(provider.id, stageNone)
+		}
+	}
 
 	wg.Wait()
 	j.enrichArt(ctx, s)
@@ -484,6 +511,19 @@ func (j *searchJob) depotStage(s *server) {
 		j.add(cards)
 	}
 	j.mark("theromdepot", stageOK)
+}
+
+func (j *searchJob) romCatalogStage(s *server) {
+	if j.kind != "" && !sameDomain(j.kind, domainGame) {
+		j.mark("romarr-catalog", stageNone)
+		return
+	}
+	if s == nil || s.romCatalog == nil || s.romCatalog.count() == 0 {
+		j.mark("romarr-catalog", stageNotConfigured)
+		return
+	}
+	j.add(s.romCatalog.search(j.query, j.kind, nil, romProviderCardLimit))
+	j.mark("romarr-catalog", stageOK)
 }
 
 // indexerStage runs the torrent fan-out and records what happened to it, in

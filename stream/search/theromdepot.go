@@ -90,7 +90,11 @@ func loadDepotStore(filename string) (*depotStore, error) {
 		if !ok || title == "" || strings.TrimSpace(item.Platform) == "" {
 			continue
 		}
-		searchText := strings.Join([]string{title, item.Name, item.Platform, item.Region}, " ")
+		// Some directories carry the emulated machine only in the path (for
+		// example Virtual Console/Nintendo Wii/.../Nintendo 64/...). Include the
+		// validated catalogue ID so a platform-qualified query does not discard
+		// an otherwise exact item before grouping and ranking can see it.
+		searchText := strings.Join([]string{title, item.Name, item.Platform, item.Region, item.ID}, " ")
 		rows = append(rows, depotRow{
 			depotItem: item,
 			title:     title,
