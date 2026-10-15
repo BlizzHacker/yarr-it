@@ -761,10 +761,19 @@ func (s *server) gameRow(ctx context.Context, key string, src rowSource, limit, 
 		}
 		log.Printf("browse %s: archive.org unavailable, serving %d catalogue entries: %v",
 			key, len(fromVimm), err)
-		return discoverRow{Title: src.title, Key: key, Items: fromVimm}, errArchiveDegraded
+		return s.attachMinervaSets(key,
+			discoverRow{Title: src.title, Key: key, Items: fromVimm}), errArchiveDegraded
 	}
 	row.Items = interleave(row.Items, fromVimm)
-	return row, nil
+	// The sets band, last, after the grid is finished and interleaved. It hangs
+	// off its own field rather than joining Items -- see minerva_browse.go for
+	// why a whole-collection torrent must never be laid into a grid of games,
+	// and why nothing above this line is allowed to see it.
+	//
+	// Attached on the degraded path above as well. A set is held in memory and
+	// owes nothing to archive.org, so an outage that empties the grid is no
+	// reason to also remove the one thing on the page that still works.
+	return s.attachMinervaSets(key, row), nil
 }
 
 // errArchiveDegraded marks a row that is real but incomplete. It never reaches

@@ -187,7 +187,13 @@ func (s *server) deepenBySystem(ctx context.Context, q, kind string, f filters, 
 	// it here means every one of the four response paths gets it, rather than
 	// three of them getting it and the fourth quietly returning less. Unlike
 	// the call above it touches no network. See vimmDeepen in vimm.go.
-	return s.vimmDeepen(q, kind, f, cards)
+	//
+	// Minerva is deepened alongside it and for the same reason. Its cap is
+	// tighter (40 cards, at most 3 per collection), so narrowing afterwards
+	// loses proportionally more: a filter for `snes` against an unnarrowed
+	// slice returns whichever of the top forty happened to be SNES, which for
+	// a broad query is frequently none of them. See minervaDeepen.
+	return s.minervaDeepen(q, kind, f, s.vimmDeepen(q, kind, f, cards))
 }
 
 // What counts as a playable game.

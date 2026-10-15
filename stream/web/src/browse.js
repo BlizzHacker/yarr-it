@@ -198,6 +198,25 @@ const CSS = `
   background:linear-gradient(100deg,var(--panel) 30%,var(--panel-2) 50%,var(--panel) 70%);
   background-size:220% 100%; animation:sheen 1.3s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .bsk-t { animation:none; } }
+/* The sets band. Deliberately does NOT look like the grid above it: it is a
+   list of containers, not a shelf of games, and a person must be able to tell
+   at a glance that these are a different kind of thing. */
+.bsets { margin:30px 0 0; padding-top:18px; border-top:1px solid var(--line); }
+.bsets-t { font-size:13px; color:var(--dim); margin:0 0 12px; }
+.bset { display:flex; align-items:baseline; justify-content:space-between; gap:14px;
+  padding:11px 13px; margin-bottom:7px; border:1px solid var(--line); border-radius:var(--r);
+  background:var(--panel); color:var(--fg); text-decoration:none; font-size:13px; }
+.bset:hover { border-color:var(--accent-dim); color:var(--accent); }
+.bset .bset-n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  margin-right:auto; }
+/* Who published it. Every other result on this site names its origin --
+   archive.org, Vimm's Lair, The ROM Depot -- and this band was the one
+   surface rendering Minerva at all while saying nothing about where these
+   came from. Dimmer than the name and quieter than the size, because it is
+   the least of the three facts on the row. */
+.bset .bset-o { flex:none; color:var(--muted); }
+/* The size is the decision, so it never wraps away and never shrinks. */
+.bset .bset-s { flex:none; color:var(--dim); font-variant-numeric:tabular-nums; }
 @media (max-width:720px) {
   .bitems, .bsk { grid-template-columns:repeat(auto-fill,minmax(132px,1fr)); gap:16px 12px; }
   .bhead { font-size:22px; }
@@ -235,7 +254,8 @@ export function mountBrowse({
   // Everything the site normally shows on the landing page. A browse page
   // replaces it and puts it back on the way out, so this module never has to be
   // wired into main.js's own show/hide logic.
-  const siteSections = ['#tv', '#intro', '#get', '#discover', '#resultbar', '#grid', '#saved-library', '#library']
+  const siteSections = ['#tv', '#intro', '#get', '#discover', '#resultbar', '#grid', '#sets',
+    '#saved-library', '#library']
     .map((sel) => doc.querySelector(sel)).filter(Boolean);
 
   const links = el('section');
@@ -478,6 +498,62 @@ export function mountBrowse({
     more.hidden = true;
     page.append(more);
 
+    // Below everything, including "Load more", because it is not part of the
+    // paged list. The grid pages; this does not, and putting it between the two
+    // would make it look like it did.
+    const sets = el('section', 'bsets');
+    sets.hidden = true;
+    page.append(sets);
+
+    /**
+     * The whole-collection torrents for this machine.
+     *
+     * Rendered here rather than through the injected `renderTile`, which is a
+     * departure from this module's rule that it never decides what an item
+     * looks like — and the reason is that these are not items. A set is a
+     * container of the things in the grid above, `renderTile` builds a button
+     * routed through the tile handlers, and a magnet in a button is one
+     * refactor from being handed to the player. Anchors say where they go and
+     * cannot be routed anywhere.
+     *
+     * Painted once. The server sends every set it has for this machine in the
+     * first response and there is no second page of them, which is also why
+     * `hasMore` above is left completely alone: a band that shows all it has
+     * can never be the reason "Load more" appears or fails to.
+     */
+    function paintSets(row) {
+      if (!sets.hidden) return;
+      const list = row?.sets || [];
+      if (!list.length) return;
+      sets.replaceChildren();
+      // The server writes the note because only the server knows the size range
+      // in it, and the range is the point: it is the price on the invitation.
+      if (row.setsNote) sets.append(el('p', 'bsets-t', row.setsNote));
+      for (const it of list) {
+        if (!it?.set || !it.play) continue;
+        const a = el('a', 'bset');
+        a.href = it.play;
+        a.append(el('span', 'bset-n', it.title || it.set.name || ''));
+        // WHO PUBLISHED IT. The server has always sent this and this band was
+        // the one place that dropped it -- which mattered more here than
+        // anywhere, because until the search page grew its own band this was
+        // the ONLY surface rendering Minerva at all. An archive.org tile and a
+        // Vimm tile both name their origin; these named nobody.
+        if (it.source) a.append(el('span', 'bset-o', it.source));
+        // Never a seeder count. Nobody has measured these swarms recently
+        // enough to publish one, and a zero would read as "this is dead".
+        a.append(el('span', 'bset-s', it.set.sizeHuman || ''));
+        a.setAttribute('aria-label', [
+          `${it.title || it.set.name} — the whole set in one torrent`,
+          it.source,
+          it.set.sizeHuman,
+        ].filter(Boolean).join(', '));
+        a.title = a.getAttribute('aria-label');
+        sets.append(a);
+      }
+      sets.hidden = false;
+    }
+
     let total = known?.cat.count || 0;
     let first = true;
     const perPage = 60;
@@ -512,6 +588,7 @@ export function mountBrowse({
         if (!res.ok) throw new Error(String(res.status));
         const body = await res.json();
         const items = body?.row?.items || [];
+        paintSets(body?.row);
         if (body?.total) total = body.total;
         if (first) {
           grid.replaceChildren();
