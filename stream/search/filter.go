@@ -31,7 +31,11 @@ type filters struct {
 	// is a torrent that depends on whoever is seeding. They behave so
 	// differently -- one always plays, one might not -- that mixing them with
 	// no way to choose makes the result list harder to reason about.
-	Source string // "" (both) | instant | swarm
+	//
+	// "sets" is a third kind and not a subdivision of the other two: a whole
+	// curated collection in one torrent, where the question before clicking is
+	// not "will it play" but "how big is it".
+	Source string // "" (all) | instant | swarm | sets
 
 	// Lang is the language a result must be in, as a two-letter code, or "" for
 	// no constraint. Music defaults it to English; see music.go, which holds the
@@ -195,11 +199,26 @@ func (f filters) apply(cards []card) []card {
 		if f.Source == "instant" && !c.Instant && c.External == nil {
 			continue
 		}
+		// "Sets" means a whole curated collection in one torrent. Its own chip,
+		// because it is its own answer to "what am I about to get" and neither
+		// of the two below describes it: it is not hosted, and while it IS a
+		// swarm, somebody who picks this chip is asking for the containers
+		// specifically rather than for everything with peers.
+		if f.Source == "sets" && c.Set == nil {
+			continue
+		}
 		// "Swarm" means a torrent. A result that lives on somebody else's
 		// website is neither hosted here nor seeded by anyone, so it belongs to
 		// neither chip -- and letting it fall through to "swarm" merely because
 		// it is not Instant would put an off-site link under a filter whose
 		// whole meaning is "things with peers".
+		//
+		// A SET IS DELIBERATELY KEPT by this chip. It has no Instant and no
+		// External, so it already falls through -- but that is worth saying out
+		// loud, because it is the opposite of the decision above it and for a
+		// good reason: an off-site link has no peers at all, while a Minerva
+		// set is precisely a swarm and hiding 1,049 torrents from the chip that
+		// means "things with peers" would be a defect.
 		if f.Source == "swarm" && (c.Instant || c.External != nil) {
 			continue
 		}
@@ -220,7 +239,16 @@ func (f filters) apply(cards []card) []card {
 			// An off-site catalogue entry has no swarm either, so the seeder
 			// floor is skipped for it for the same reason -- but its size is a
 			// real number Vimm publishes, so that stays filterable.
-			if !c.Instant && c.External == nil {
+			//
+			// A SET IS A SWARM and yet is also skipped, on a different and
+			// narrower ground: nobody has counted its peers recently enough to
+			// say so. Seeders is 0 on every one of them because it is UNKNOWN,
+			// not because it is zero, and applying the default one-seeder floor
+			// to an unknown would silently delete all 1,049. The moment
+			// somebody scrapes the trackers and PeersKnown becomes true, these
+			// rows join the floor like any other torrent, with no change here.
+			unknownPeers := c.Set != nil && !c.Set.PeersKnown
+			if !c.Instant && c.External == nil && !unknownPeers {
 				if s.Seeders < f.MinSeeders {
 					continue
 				}
