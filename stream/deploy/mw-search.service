@@ -63,6 +63,7 @@ PrivateTmp=yes
 # one, chowns it to User=, and makes it writable inside the sandbox.
 StateDirectory=mw-search
 Environment=LIBRARY_PATH=/var/lib/mw-search/library.json
+Environment=SEARCH_CACHE_DIR=/var/lib/mw-search/search-cache
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

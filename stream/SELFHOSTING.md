@@ -252,3 +252,17 @@ stores nothing on any server of ours — running it yourself means it stores
 nothing on anyone's server but your own. It is a client for public indexes and
 peer-to-peer networks the way a browser is a client for websites. You are
 responsible for complying with the laws where you live.
+
+## Persistent search metadata
+
+Set SEARCH_CACHE_DIR to a private writable directory to retain successful
+public search results across process restarts. The supplied systemd unit uses
+/var/lib/mw-search/search-cache. Store this directory on your server's data
+volume and monitor free space: history grows as new queries and sources arrive.
+It contains search metadata and magnets, not downloaded media.
+
+The 45-minute TTL controls freshness, not disk retention. The latest successful
+answer is served as fresh within the TTL; older discoveries remain available
+as stale fallback when upstreams fail. Owner-library cards are filtered before
+saving. Disabled or unwritable disk caching leaves the memory cache working.
+To reset retained searches, stop the service and move this directory aside.
