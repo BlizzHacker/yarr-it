@@ -313,6 +313,10 @@ type server struct {
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
 
+	// Persistent public search metadata; media bytes are never stored here.
+	cacheDir string
+	diskMu   sync.Mutex
+
 	// inflight collapses concurrent identical calls to one upstream source into
 	// a single request. Without it, a keystroke's type-ahead and the search it
 	// precedes both ask archive.org the same question at the same moment.
@@ -487,6 +491,7 @@ func main() {
 		apiKey:      key,
 		ttl:         *ttl,
 		cache:       make(map[string]cacheEntry),
+		cacheDir:    os.Getenv("SEARCH_CACHE_DIR"),
 		inflight:    make(map[string]chan struct{}),
 		tmdb:        newTMDB(os.Getenv("TMDB_API_KEY")),
 		// Reuses the RomM installation's IGDB credentials. That is the part of
@@ -1326,8 +1331,11 @@ func (s *server) release(k string) {
 
 func (s *server) getCached(k string) ([]card, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	e, ok := s.cache[k]
+	s.mu.RUnlock()
+	if !ok {
+		e, ok = s.readDiskCache(k, false)
+	}
 	if !ok || time.Now().After(e.expires) {
 		return nil, false
 	}
@@ -1338,12 +1346,12 @@ func (s *server) getCached(k string) ([]card, bool) {
 // upstream has failed, where stale results beat an error page.
 func (s *server) getAny(k string) ([]card, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	e, ok := s.cache[k]
+	s.mu.RUnlock()
 	if !ok || len(e.cards) == 0 {
-		return nil, false
+		e, ok = s.readDiskCache(k, true)
 	}
-	return e.cards, true
+	return e.cards, ok && len(e.cards) > 0
 }
 
 func (s *server) putCached(k string, cards []card) {
@@ -1356,7 +1364,6 @@ func (s *server) putCached(k string, cards []card) {
 	cards = dropOwnerCards(cards)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.cache == nil {
 		s.cache = map[string]cacheEntry{}
 	}
@@ -1364,7 +1371,12 @@ func (s *server) putCached(k string, cards []card) {
 	if ttl <= 0 {
 		ttl = defaultTTL
 	}
-	s.cache[k] = cacheEntry{cards: cards, expires: time.Now().Add(ttl)}
+	entry := cacheEntry{cards: cards, expires: time.Now().Add(ttl)}
+	s.cache[k] = entry
+	s.mu.Unlock()
+	if len(cards) > 0 {
+		s.writeDiskCache(k, entry)
+	}
 }
 
 func (s *server) evictLoop() {
