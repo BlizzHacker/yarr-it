@@ -37,9 +37,15 @@ Everything below is running, not planned:
 | **Shelf** | watchlist and resume points, shared across your devices |
 | **TV** | a Roku channel, pointed at your own server |
 | **Self-host** | `curl -fsSL https://yarrit.com/selfhost.sh \| bash` |
+| **Engine** | Yarr.It's own media manager: monitored films and series, any Torznab/Newznab indexer, quality scoring, qBittorrent, filing into your library, season packs — no Radarr, Sonarr or Prowlarr needed |
+| **Requests** | anyone signed in asks, the owner approves — alongside Seerr and GG Requestz, in one queue |
+| **Your stack** | Radarr, Sonarr, Lidarr, Prowlarr, ROMarr, Seerr, GG Requestz, Cinephage: each optional, each preferred over the engine for the job it does |
 
-**In progress, and not yet claimed:** Radarr / Sonarr / Lidarr / ROMarr
-request routing, Live TV with a real programme guide, and the in-app readers.
+**Standalone or with what you run:** see [engine/README.md](engine/README.md) for the
+one-command install and how the engine and an existing *arr stack share the work, and
+[docs/parity/cinephage.md](docs/parity/cinephage.md) for where Yarr.It stands against Cinephage.
+
+**In progress, and not yet claimed:** Live TV with a real programme guide, and the in-app readers.
 Those are being built against the provider contract in
 [`stream/search/provider.go`](stream/search/provider.go); this README will say
 so when each is proven against real hardware, and not before.

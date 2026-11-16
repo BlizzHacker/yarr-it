@@ -1058,6 +1058,25 @@
   a.brand { text-decoration: none; color: inherit; cursor: pointer; }
   a.brand:hover .wordmark { opacity: .85; }
   a.brand:focus-visible { outline: 2px solid var(--accent, #5eead4); outline-offset: 4px; border-radius: 8px; }
+
+  /* Stack pane */
+  .stk-table { display: grid; gap: 8px; margin: 8px 0; }
+  .stk-row { display: grid; grid-template-columns: minmax(7em, auto) 1fr; gap: 4px 12px; align-items: baseline; }
+  .stk-req { grid-column: 2; opacity: .85; }
+  .stk-m { margin-right: 6px; }
+  .stk-eng { opacity: .7; }
+  .stk-none { opacity: .6; font-style: italic; }
+  .stk-rq { padding: 8px 0; border-top: 1px solid rgba(127,127,127,.18); }
+  .stk-rq-top { display: flex; gap: 8px; justify-content: space-between; align-items: baseline; }
+  .stk-st { font-size: .8em; opacity: .85; white-space: nowrap; }
+  .stk-st.st-pending { font-weight: 600; }
+  .stk-meta, .stk-why { display: block; opacity: .75; margin-top: 2px; }
+
+  .eng-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14em, 1fr)); gap: 6px; margin: 6px 0; }
+  .eng-results { display: grid; gap: 4px; margin-top: 4px; }
+  .eng-rel { display: grid; gap: 2px; padding: 4px 0; border-top: 1px dashed rgba(127,127,127,.2); }
+  .eng-rel.off { opacity: .6; }
+  .set-check { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
 </style>
 </head>
 <body>
@@ -1308,6 +1327,7 @@
       <button class="chip" role="tab" type="button" data-pane="watch" aria-selected="false">Playback</button>
       <button class="chip" role="tab" type="button" data-pane="find" aria-selected="false">Search</button>
       <button class="chip" role="tab" type="button" data-pane="services" aria-selected="false">Services</button>
+      <button class="chip" role="tab" type="button" data-pane="stack" aria-selected="false">Stack</button>
       <button class="chip" role="tab" type="button" data-pane="account" aria-selected="false">Account</button>
       <button class="chip" role="tab" type="button" data-pane="data" aria-selected="false">Your data</button>
     </div>
@@ -1538,6 +1558,18 @@
         <button class="btn btn-ghost" id="svc-cancel" type="button">Cancel</button>
       </div>
       </form>
+    </div>
+
+    <!-- ---------------------------------------------------------- stack -->
+    <div class="set-pane" id="pane-stack" role="tabpanel" hidden>
+      <p class="set-lede">
+        This server's own stack. Yarr.It runs on its own — its engine finds, grabs and
+        files films and series — or on top of the Radarr, Sonarr, Seerr and GG Requestz
+        you already run, or both. Everything people have asked for is in one queue.
+      </p>
+      <div id="stack-host"></div>
+      <div class="set-sep"></div>
+      <div id="engine-host"></div>
     </div>
 
     <!-- -------------------------------------------------------- account -->

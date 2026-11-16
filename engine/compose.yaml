@@ -1,0 +1,79 @@
+# Yarr.It, standalone: one `docker compose up` and the whole stack is there.
+#
+#   cp engine/env.example engine/.env           # set paths; everything else is optional
+#   docker compose --env-file engine/versions.env --env-file engine/.env \
+#     -f engine/compose.yaml up -d
+#
+# Yarr.It's own engine finds, grabs and files films and series; ROMarr does
+# games; Yarr.It is the front door for searching, streaming, playing and
+# requesting. Add `--profile downloader` to run a qBittorrent alongside.
+#
+# Already run Radarr / Sonarr / Prowlarr / Seerr / GG Requestz? Put their
+# addresses in engine/.env too. Services you bring are preferred for the same
+# job; the engine covers whatever they do not.
+
+services:
+  yarrit:
+    build:
+      context: ..
+      dockerfile: engine/yarrit.Dockerfile
+    image: yarrit:local
+    restart: unless-stopped
+    ports:
+      - "${YARRIT_PORT:-8800}:8800"
+    env_file: .env
+    environment:
+      YARRIT_BUNDLED: romarr
+      ROMARR_URL: http://romarr:6868
+      # First-boot engine settings (editable later in Settings → Stack).
+      ENGINE_MOVIE_ROOT: /media/movies
+      ENGINE_SERIES_ROOT: /media/tv
+      ENGINE_DOWNLOAD_PATH: /downloads
+      ENGINE_REMOTE_DOWNLOAD_PATH: ${ENGINE_REMOTE_DOWNLOAD_PATH:-/downloads}
+    volumes:
+      - ./data/yarrit:/data
+      - ./data/state:/state:ro
+      # Same paths as the download client, so finished downloads hardlink
+      # straight into the library.
+      - ${MEDIA_DIR:-./media}:/media
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+    depends_on:
+      link:
+        condition: service_completed_successfully
+
+  romarr:
+    image: ${ROMARR_IMAGE:-ghcr.io/blizzhacker/romarr:latest}
+    restart: unless-stopped
+    volumes:
+      - ./data/romarr:/config
+      - ${ROMS_DIR:-./roms}:/roms
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+
+  qbittorrent:
+    profiles: ["downloader"]
+    image: lscr.io/linuxserver/qbittorrent:${QBITTORRENT_VERSION:-5.0.1}
+    restart: unless-stopped
+    environment:
+      WEBUI_PORT: "8080"
+      TZ: ${TZ:-Etc/UTC}
+    ports:
+      - "${QBITTORRENT_PORT:-8080}:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    volumes:
+      - ./data/qbittorrent:/config
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+
+  link:
+    image: alpine:3.20
+    restart: "no"
+    command: ["sh", "-c", "apk add --no-cache curl jq >/dev/null && sh /link-engines.sh"]
+    environment:
+      ROMARR_URL: http://romarr:6868
+      ROMARR_CONF: /romarr/romarr.json
+    volumes:
+      - ./link-engines.sh:/link-engines.sh:ro
+      - ./data/state:/state
+      - ./data/romarr:/romarr:ro
+    depends_on:
+      - romarr

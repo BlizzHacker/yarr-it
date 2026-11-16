@@ -1,0 +1,41 @@
+# The unified image's front door: one origin for the web client, the API and
+# the peer bridge. Plain HTTP on :8800 -- put your own TLS proxy in front, the
+# same way yarrit.com terminates TLS at Traefik.
+{
+	auto_https off
+	admin off
+}
+:8800 {
+	encode zstd gzip
+	handle /bridge* {
+		reverse_proxy 127.0.0.1:8801
+	}
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8802
+	}
+	handle /auth/* {
+		reverse_proxy 127.0.0.1:8802
+	}
+	handle /play/* {
+		header {
+			Cross-Origin-Opener-Policy "same-origin"
+			Cross-Origin-Embedder-Policy "require-corp"
+			Cache-Control "no-cache, must-revalidate"
+		}
+		root * /srv/www
+		rewrite * /play.html
+		file_server
+	}
+	@html path / /index.html
+	header @html Cache-Control "no-cache, must-revalidate"
+	handle {
+		root * /srv/www
+		try_files {path} /index.html
+		file_server
+	}
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Cross-Origin-Opener-Policy "same-origin"
+	}
+}

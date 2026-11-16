@@ -100,6 +100,52 @@ export const SERVICE_TYPES = {
       version: (b) => b?.version || '',
     },
   },
+  cinephage: {
+    label: 'Cinephage',
+    domains: ['video'],
+    roles: ['discovery', 'acquisition', 'library'],
+    capabilities: ['health', 'search', 'details', 'library', 'libraryStatus', 'request', 'activity'],
+    credential: 'API key',
+    credentialHint: 'Settings → API Keys (and turn on Settings → System → General → Radarr/Sonarr compatibility)',
+    probe: {
+      // Cinephage's Radarr persona. instanceName is the marker: a real Radarr
+      // answers the same path with its own name.
+      path: '/api/radarr/api/v3/system/status',
+      auth: 'header', header: 'X-Api-Key',
+      marker: (b) => b?.instanceName === 'Cinephage',
+      version: (b) => b?.version || '',
+    },
+  },
+  seerr: {
+    label: 'Seerr (Overseerr / Jellyseerr)',
+    domains: ['video'],
+    roles: ['requests'],
+    capabilities: ['health', 'requestQueue', 'requestDecide'],
+    credential: 'API key',
+    credentialHint: 'Settings → General → API Key',
+    probe: {
+      // Not /api/v1/status: that one is public, so a wrong key would pass.
+      path: '/api/v1/settings/about',
+      auth: 'header', header: 'X-Api-Key',
+      marker: (b) => typeof b?.version === 'string',
+      version: (b) => b?.version || '',
+    },
+  },
+  ggrequestz: {
+    label: 'GG Requestz',
+    domains: ['game'],
+    roles: ['requests'],
+    capabilities: ['health', 'requestQueue'],
+    credential: 'API key',
+    credentialHint: 'Admin → API Keys, with the requests:read scope',
+    probe: {
+      path: '/api/request',
+      query: { limit: '1' },
+      auth: 'header', header: 'Authorization', value: (k) => `Bearer ${k}`,
+      marker: (b) => b?.success === true && Array.isArray(b?.requests),
+      version: () => '',
+    },
+  },
   readarr: {
     label: 'Readarr-compatible',
     domains: ['literature'],

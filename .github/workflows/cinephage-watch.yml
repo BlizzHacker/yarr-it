@@ -1,0 +1,44 @@
+# Weekly: has Cinephage shipped something we have not reviewed?
+#
+# Yarr.It competes with Cinephage. A new release becomes an issue with its
+# notes and a PR adding an unticked line to docs/parity/cinephage.md, so
+# every upstream feature is either matched in Yarr.It or knowingly declined.
+name: cinephage-watch
+
+on:
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Look for new Cinephage releases
+        id: watch
+        run: |
+          out=$(engine/cinephage-watch.sh)
+          echo "$out"
+          if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          printf '%s\n' "$out" | grep '^NEW:' > /tmp/new.txt || true
+      - name: Open the review
+        if: steps.watch.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="parity/cinephage-$(date +%Y%m%d)"
+          git config user.name "yarrit-parity-watch"
+          git config user.email "yarrit-parity-watch@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "docs(parity): flag new Cinephage release(s) for review"
+          git push -f origin "$branch"
+          body=$(printf 'Cinephage shipped:\n\n%s\n\nRead the notes; match each feature in Yarr.It or decline it, then tick the line in docs/parity/cinephage.md. Match behaviour only: Cinephage is GPL-3.0.' "$(cat /tmp/new.txt)")
+          gh issue create --title "Parity review: new Cinephage release" --body "$body" || true
+          gh pr view "$branch" >/dev/null 2>&1 || gh pr create --base "${{ github.event.repository.default_branch }}" \
+            --head "$branch" --title "docs(parity): new Cinephage release(s) to review" --body "$body"

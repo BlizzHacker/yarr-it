@@ -19,3 +19,7 @@ stream/web/dist/ruffle/
 
 # Built by stream/deploy/provision.sh; rebuilt on demand, never committed.
 stream/deploy/bin/
+
+# Unified install: local secrets and engine state, never committed.
+engine/.env
+engine/data/
