@@ -22,7 +22,18 @@ const (
 	engineMissingGrace = 30 * time.Minute
 	// engineMetaRefresh is how often a monitored series' episode list is re-read.
 	engineMetaRefresh = 24 * time.Hour
+	// engineMetaRetry holds back a series whose refresh failed.
+	engineMetaRetry = time.Hour
+	// engineRequestWait bounds how long a requested search waits for a search
+	// already running on the same title.
+	engineRequestWait = 10 * time.Minute
 )
+
+// errSearchBusy: a search for this title is already running.
+var errSearchBusy = errors.New("already searching")
+
+// searchBusyRetry is how often a waiting requested search tries again.
+var searchBusyRetry = 2 * time.Second
 
 type engine struct {
 	store *engineStore
@@ -111,6 +122,13 @@ func (e *engine) canResolve(ref arrRef) bool {
 
 // Add puts a title in the library (monitored), or returns it if present.
 func (e *engine) Add(ctx context.Context, ref arrRef, by string) (engineItem, bool, error) {
+	return e.AddWith(ctx, ref, by, true)
+}
+
+// AddWith is Add with the initial monitoring state set in the same commit,
+// so the scheduler never sees a title monitored that was not meant to be.
+// An existing title is returned unchanged.
+func (e *engine) AddWith(ctx context.Context, ref arrRef, by string, monitored bool) (engineItem, bool, error) {
 	kind, imdb, err := e.resolveRef(ctx, ref)
 	if err != nil {
 		return engineItem{}, false, err
@@ -126,7 +144,7 @@ func (e *engine) Add(ctx context.Context, ref arrRef, by string) (engineItem, bo
 	}
 	it := engineItem{
 		ID: id, Kind: kind, IMDb: imdb, Title: d.Title, Year: d.Year, Poster: d.Poster,
-		Overview: d.Overview, Monitored: true, Added: e.stamp(), Episodes: d.Episodes, RequestedBy: by,
+		Overview: d.Overview, Monitored: monitored, Added: e.stamp(), Episodes: d.Episodes, RequestedBy: by,
 	}
 	created := false
 	err = e.store.update(func(st *engineState) error {
@@ -326,7 +344,7 @@ func (e *engine) grab(ctx context.Context, st engineState, id string, r scoredRe
 	}
 	g := engineGrab{
 		ItemID: id, Release: r.Title, Indexer: r.Indexer, Hash: strings.ToLower(r.InfoHash),
-		ClientID: cfg.ID, Season: r.Season, Episode: r.Episode, Quality: r.Quality,
+		ClientID: cfg.ID, Category: qc.category(), Season: r.Season, Episode: r.Episode, Quality: r.Quality,
 		Grabbed: e.stamp(), State: "downloading",
 	}
 	if r.Pack {
@@ -342,7 +360,10 @@ func (e *engine) grab(ctx context.Context, st engineState, id string, r scoredRe
 // wanted lists what an item still needs: (0,0) for a film, else episodes
 // that have aired and have no file, grouped so a season with two or more
 // missing is tried as a pack first.
-type wantSlot struct{ Season, Episode int }
+type wantSlot struct {
+	Season  int `json:"season"`
+	Episode int `json:"episode"`
+}
 
 func (e *engine) wanted(it engineItem, grabs []engineGrab, prof engineProfile) []wantSlot {
 	if it.Kind == "movie" {
@@ -350,6 +371,14 @@ func (e *engine) wanted(it engineItem, grabs []engineGrab, prof engineProfile) [
 			return nil
 		}
 		return []wantSlot{{}}
+	}
+	// A pack would download again any episode already in flight, so a season
+	// with a download running is fetched episode by episode instead.
+	busy := map[int]bool{}
+	for _, g := range grabs {
+		if g.ItemID == it.ID && g.State == "downloading" {
+			busy[g.Season] = true
+		}
 	}
 	perSeason := map[int][]int{}
 	var order []int
@@ -361,7 +390,7 @@ func (e *engine) wanted(it engineItem, grabs []engineGrab, prof engineProfile) [
 	}
 	var out []wantSlot
 	for _, s := range order {
-		if len(perSeason[s]) >= 2 {
+		if len(perSeason[s]) >= 2 && !busy[s] {
 			out = append(out, wantSlot{Season: s})
 			continue
 		}
@@ -413,7 +442,7 @@ func (e *engine) autoSearch(ctx context.Context, id string, only *wantSlot) (int
 	e.mu.Lock()
 	if e.searching[id] {
 		e.mu.Unlock()
-		return 0, errors.New("already searching")
+		return 0, errSearchBusy
 	}
 	e.searching[id] = true
 	e.mu.Unlock()
@@ -490,6 +519,33 @@ func (e *engine) autoSearch(ctx context.Context, id string, only *wantSlot) (int
 	return grabbed, lastErr
 }
 
+// searchSoon runs a requested search in the background. A search already
+// running on the same title is waited out, not dropped: it may cover other
+// episodes, and an unmonitored title gets no scheduler pass to catch up.
+func (e *engine) searchSoon(id string, season, episode int, scoped bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), engineRequestWait)
+	defer cancel()
+	for {
+		sctx, scancel := context.WithTimeout(ctx, 3*time.Minute)
+		var err error
+		if scoped {
+			_, err = e.AutoSearchEpisode(sctx, id, season, episode)
+		} else {
+			_, err = e.AutoSearch(sctx, id)
+		}
+		scancel()
+		if !errors.Is(err, errSearchBusy) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			log.Printf("engine: requested search for %s gave up waiting for a running search", id)
+			return
+		case <-time.After(searchBusyRetry):
+		}
+	}
+}
+
 // backoff: 1h, 2h, 4h ... capped at a week, on top of the search interval.
 func searchDue(it engineItem, now time.Time, intervalHours int) bool {
 	if !it.Monitored {
@@ -543,16 +599,34 @@ func (e *engine) Reconcile(ctx context.Context) error {
 func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID string) error {
 	qc, _, err := e.clientByID(st, clientID)
 	if err != nil {
-		e.noteGrabs(clientID, err.Error())
+		e.clientGone(clientID, err.Error())
 		return err
 	}
-	ts, err := qc.torrents(ctx)
+	// Known hashes are looked up across every category, so changing the
+	// client's category never hides a running grab. A grab without a hash is
+	// matched by name only within the category it was submitted under.
+	all, err := qc.torrentsIn(ctx, "")
 	if err != nil {
 		return err
 	}
 	byHash := map[string]qbitTorrent{}
-	for _, t := range ts {
+	for _, t := range all {
 		byHash[strings.ToLower(t.Hash)] = t
+	}
+	byCategory := map[string][]qbitTorrent{}
+	for _, g := range st.Grabs {
+		if g.State != "downloading" || g.ClientID != clientID || g.Hash != "" {
+			continue
+		}
+		cat := grabCategory(g, qc)
+		if _, ok := byCategory[cat]; ok {
+			continue
+		}
+		ts, err := qc.torrentsIn(ctx, cat)
+		if err != nil {
+			return err
+		}
+		byCategory[cat] = ts
 	}
 
 	// Phase 1, under the lock and quick: progress, failures, and which grabs
@@ -570,11 +644,14 @@ func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID s
 			if g.State != "downloading" || g.ClientID != clientID {
 				continue
 			}
+			if g.ClientGone != "" {
+				g.ClientGone, changed = "", true // the client is back
+			}
 			t, ok := byHash[g.Hash]
-			if !ok {
+			if !ok && g.Hash == "" {
 				// A .torrent URL grab has no hash until the client fetches it;
 				// match it by name once, then remember the hash.
-				for _, cand := range ts {
+				for _, cand := range byCategory[grabCategory(*g, qc)] {
 					if strings.EqualFold(cand.Name, g.Release) {
 						t, ok, g.Hash = cand, true, strings.ToLower(cand.Hash)
 						changed = true
@@ -620,6 +697,7 @@ func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID s
 		st := e.store.view()
 		it := st.item(d.grab.ItemID)
 		state, detail := "downloading", ""
+		unplaced := d.grab.Unplaced
 		var placed *engineItem
 		switch {
 		case it == nil:
@@ -634,22 +712,17 @@ func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID s
 			res, err := importDownload(local, &copyIt, d.grab, st.Settings)
 			if err != nil {
 				detail = err.Error()
+				unplaced = mergeSlots(unplaced, res.FailedSlots)
 				break
 			}
 			placed = &copyIt
-			if len(res.Failed) > 0 {
-				// Keep what landed; stay downloading so the failed episodes
-				// are retried from this download once storage is fixed.
-				detail = "placed " + strings.Join(res.Placed, "; ") + "; will retry: " + strings.Join(res.Failed, "; ")
-			} else {
-				state, detail = "imported", strings.Join(res.Placed, "; ")
-			}
+			state, detail, unplaced = settleImport(d.grab.Unplaced, &copyIt, res)
 		}
 		_ = e.store.update(func(st *engineState) error {
 			for i := range st.Grabs {
 				g := &st.Grabs[i]
 				if g.Hash == d.grab.Hash && g.ItemID == d.grab.ItemID && g.State == "downloading" {
-					g.State, g.Detail = state, detail
+					g.State, g.Detail, g.Unplaced = state, detail, unplaced
 				}
 			}
 			if placed != nil {
@@ -670,14 +743,87 @@ func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID s
 	return nil
 }
 
-// noteGrabs records why a client's grabs cannot be checked, once.
-func (e *engine) noteGrabs(clientID, why string) {
+// grabCategory is the category a grab was submitted under; grabs recorded
+// before categories were kept use the client's current one.
+func grabCategory(g engineGrab, qc *qbitClient) string {
+	if g.Category != "" {
+		return g.Category
+	}
+	return qc.category()
+}
+
+// settleImport decides what a successful import attempt means for its grab.
+// Episodes that failed placement stay owed (prev) until they are placed: if
+// one is no longer in the download, the grab fails so it is searched again
+// instead of being marked imported and forgotten.
+func settleImport(prev []wantSlot, it *engineItem, res importResult) (string, string, []wantSlot) {
+	var gone []wantSlot
+	for _, s := range prev {
+		if ep := findEpisode(it, s.Season, s.Episode); ep != nil && !ep.HasFile && !hasSlot(res.FailedSlots, s) {
+			gone = append(gone, s)
+		}
+	}
+	placed := strings.Join(res.Placed, "; ")
+	switch {
+	case len(res.Failed) > 0:
+		// Keep what landed; stay downloading so the failed episodes are
+		// retried from this download once storage is fixed.
+		return "downloading", "placed " + placed + "; will retry: " + strings.Join(res.Failed, "; "),
+			mergeSlots(res.FailedSlots, gone)
+	case len(gone) > 0:
+		return "failed", "placed " + placed + "; " + slotNames(gone) +
+			" no longer in the download, searching again", nil
+	}
+	return "imported", placed, nil
+}
+
+func hasSlot(l []wantSlot, s wantSlot) bool {
+	for _, x := range l {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeSlots(a, b []wantSlot) []wantSlot {
+	out := append([]wantSlot(nil), a...)
+	for _, s := range b {
+		if !hasSlot(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func slotNames(l []wantSlot) string {
+	names := make([]string, len(l))
+	for i, s := range l {
+		names[i] = "S" + pad2(s.Season) + "E" + pad2(s.Episode)
+	}
+	return strings.Join(names, ", ")
+}
+
+// clientGone handles grabs whose download client was removed or disabled.
+// They keep their slot for a grace period -- the owner may be re-adding the
+// client -- then fail, so they stop blocking a replacement.
+func (e *engine) clientGone(clientID, why string) {
+	now := e.now()
 	_ = e.store.update(func(st *engineState) error {
 		changed := false
 		for i := range st.Grabs {
 			g := &st.Grabs[i]
-			if g.State == "downloading" && g.ClientID == clientID && g.Detail != why {
-				g.Detail, changed = why, true
+			if g.State != "downloading" || g.ClientID != clientID {
+				continue
+			}
+			if g.ClientGone == "" {
+				g.ClientGone, g.Detail, changed = now.UTC().Format(time.RFC3339), why, true
+				continue
+			}
+			since, err := time.Parse(time.RFC3339, g.ClientGone)
+			if err != nil || now.Sub(since) > engineMissingGrace {
+				g.State, g.Detail, changed = "failed", why+"; searching again", true
+				st.logEvent(now, g.ItemID, "failed", g.Release+": "+why)
 			}
 		}
 		if !changed {
@@ -695,6 +841,9 @@ func metaRefreshDue(it engineItem, now time.Time) bool {
 	stamp := it.MetaRefreshed
 	if stamp == "" {
 		stamp = it.Added
+	}
+	if retry, err := time.Parse(time.RFC3339, it.MetaRetry); err == nil && now.Before(retry) {
+		return false
 	}
 	last, err := time.Parse(time.RFC3339, stamp)
 	return err != nil || now.Sub(last) >= engineMetaRefresh
@@ -729,30 +878,60 @@ func (e *engine) refreshEpisodes(ctx context.Context, it engineItem) error {
 			a, b := cur.Episodes[i], cur.Episodes[j]
 			return a.Season < b.Season || (a.Season == b.Season && a.Episode < b.Episode)
 		})
-		cur.MetaRefreshed = e.stamp()
+		cur.MetaRefreshed, cur.MetaRetry = e.stamp(), ""
 		return nil
 	})
 }
 
+// refreshDue refreshes every series that is due, one at a time. It runs on
+// its own loop, so slow metadata lookups never hold up reconciliation, and a
+// failure holds that series back for engineMetaRetry.
+func (e *engine) refreshDue(ctx context.Context) {
+	for _, it := range e.store.view().Items {
+		if ctx.Err() != nil {
+			return
+		}
+		if !metaRefreshDue(it, e.now()) {
+			continue
+		}
+		mctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := e.refreshEpisodes(mctx, it)
+		cancel()
+		if err == nil {
+			continue
+		}
+		log.Printf("engine: refresh episodes %s: %v", it.Title, err)
+		retry := e.now().Add(engineMetaRetry).UTC().Format(time.RFC3339)
+		_ = e.store.update(func(st *engineState) error {
+			if cur := st.item(it.ID); cur != nil {
+				cur.MetaRetry = retry
+			}
+			return nil
+		})
+	}
+}
+
+func (e *engine) metaLoop(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		e.refreshDue(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 // Run is the scheduler: reconcile every minute, search what is due.
 func (e *engine) Run(ctx context.Context) {
+	go e.metaLoop(ctx)
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	for {
 		if err := e.Reconcile(ctx); err != nil && !strings.HasPrefix(err.Error(), "no download client") {
 			log.Printf("engine: reconcile: %v", err)
-		}
-		for _, it := range e.store.view().Items {
-			if ctx.Err() != nil {
-				return
-			}
-			if metaRefreshDue(it, e.now()) {
-				mctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				if err := e.refreshEpisodes(mctx, it); err != nil {
-					log.Printf("engine: refresh episodes %s: %v", it.Title, err)
-				}
-				cancel()
-			}
 		}
 		st := e.store.view()
 		for _, it := range st.Items {

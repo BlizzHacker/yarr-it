@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -151,7 +152,7 @@ func linkOrCopy(src, dst string) error {
 	}
 	defer in.Close()
 	// One temp file per attempt: an interrupted copy can never block a retry.
-	out, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".partial-*")
+	out, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+enginePartial+"*")
 	if err != nil {
 		return err
 	}
@@ -176,14 +177,34 @@ func linkOrCopy(src, dst string) error {
 // copy (an active copy rewrites its mtime continuously).
 const staleCopyAge = time.Hour
 
+// enginePartial marks the engine's own temp copies. Cleanup removes only
+// names it could have created, never a neighbour such as "x.mkv.partial-backup".
+const enginePartial = ".yarrit-partial-"
+
+func isEnginePartial(name, base string) bool {
+	if name == base+".partial" { // the name an earlier build used
+		return true
+	}
+	rest, ok := strings.CutPrefix(name, base+enginePartial)
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func removeStalePartials(dst string) {
-	dir, base := filepath.Dir(dst), filepath.Base(dst)+".partial"
+	dir, base := filepath.Dir(dst), filepath.Base(dst)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), base) {
+		if e.IsDir() || !isEnginePartial(e.Name(), base) {
 			continue
 		}
 		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > staleCopyAge {
@@ -193,7 +214,7 @@ func removeStalePartials(dst string) {
 }
 
 // samePlacement reports whether dst is src already placed: the same file
-// (a hardlink) or a byte-identical copy (size plus first and last MiB).
+// (a hardlink) or a byte-for-byte identical copy.
 func samePlacement(src, dst string, dstInfo os.FileInfo) bool {
 	srcInfo, err := os.Stat(src)
 	if err != nil {
@@ -205,11 +226,12 @@ func samePlacement(src, dst string, dstInfo os.FileInfo) bool {
 	if srcInfo.Size() != dstInfo.Size() {
 		return false
 	}
-	return sameEdges(src, dst, srcInfo.Size())
+	return sameContents(src, dst)
 }
 
-func sameEdges(a, b string, size int64) bool {
-	const span = 1 << 20
+// sameContents compares two files in full, a MiB at a time. Any read error
+// counts as different: a replay is accepted only on proof.
+func sameContents(a, b string) bool {
 	fa, err := os.Open(a)
 	if err != nil {
 		return false
@@ -220,23 +242,30 @@ func sameEdges(a, b string, size int64) bool {
 		return false
 	}
 	defer fb.Close()
-	read := func(f *os.File, off int64, n int) []byte {
-		buf := make([]byte, n)
-		got, _ := f.ReadAt(buf, off)
-		return buf[:got]
+	const chunk = 1 << 20
+	ba, bb := make([]byte, chunk), make([]byte, chunk)
+	end := func(err error) bool { return err == io.EOF || err == io.ErrUnexpectedEOF }
+	for {
+		na, ea := io.ReadFull(fa, ba)
+		nb, eb := io.ReadFull(fb, bb)
+		if (ea != nil && !end(ea)) || (eb != nil && !end(eb)) {
+			return false
+		}
+		if na != nb || !bytes.Equal(ba[:na], bb[:nb]) {
+			return false
+		}
+		if end(ea) || end(eb) {
+			return end(ea) && end(eb)
+		}
 	}
-	n := int(min(int64(span), size))
-	if string(read(fa, 0, n)) != string(read(fb, 0, n)) {
-		return false
-	}
-	off := max(int64(0), size-int64(span))
-	return string(read(fa, off, n)) == string(read(fb, off, n))
 }
 
 type importResult struct {
 	Placed  []string
 	Skipped []string // files that matched no episode
 	Failed  []string // matched episodes whose placement failed: retried later
+	// FailedSlots are the episodes behind Failed.
+	FailedSlots []wantSlot
 }
 
 // importDownload files one completed download for one library item. For a
@@ -280,6 +309,7 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 			dst := episodeDest(set.SeriesRoot, *it, season, episode, grab.Quality, strings.ToLower(filepath.Ext(f.Path)))
 			if err := linkOrCopy(f.Path, dst); err != nil {
 				res.Failed = append(res.Failed, filepath.Base(f.Path)+": "+err.Error())
+				res.FailedSlots = append(res.FailedSlots, wantSlot{Season: season, Episode: episode})
 				continue
 			}
 			ep.HasFile, ep.File, ep.Quality = true, dst, grab.Quality

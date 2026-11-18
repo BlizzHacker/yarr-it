@@ -72,6 +72,8 @@ type fakeQbit struct {
 	torrents []qbitTorrent
 	addBody  string
 	logins   int
+	// filterCategory makes torrents/info honour ?category= as qBittorrent does.
+	filterCategory bool
 }
 
 func newFakeQbit(t *testing.T) *fakeQbit {
@@ -104,7 +106,16 @@ func newFakeQbit(t *testing.T) *fakeQbit {
 			f.added = append(f.added, r.PostForm.Get("urls"))
 			_, _ = w.Write([]byte(f.addBody))
 		case "/api/v2/torrents/info":
-			_ = json.NewEncoder(w).Encode(f.torrents)
+			out := f.torrents
+			if q := r.URL.Query(); f.filterCategory && q.Has("category") {
+				out = nil
+				for _, t := range f.torrents {
+					if t.Category == q.Get("category") {
+						out = append(out, t)
+					}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(out)
 		default:
 			w.WriteHeader(404)
 		}

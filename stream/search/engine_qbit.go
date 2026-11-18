@@ -173,7 +173,17 @@ func (c *qbitClient) add(ctx context.Context, link, savePath string) error {
 }
 
 func (c *qbitClient) torrents(ctx context.Context) ([]qbitTorrent, error) {
-	b, err := c.call(ctx, http.MethodGet, "/api/v2/torrents/info", url.Values{"category": {c.category()}})
+	return c.torrentsIn(ctx, c.category())
+}
+
+// torrentsIn lists one category's torrents, or every torrent for "" (the
+// parameter is omitted: an empty category means "uncategorised" to qBittorrent).
+func (c *qbitClient) torrentsIn(ctx context.Context, category string) ([]qbitTorrent, error) {
+	var q url.Values
+	if category != "" {
+		q = url.Values{"category": {category}}
+	}
+	b, err := c.call(ctx, http.MethodGet, "/api/v2/torrents/info", q)
 	if err != nil {
 		return nil, err
 	}

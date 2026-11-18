@@ -42,7 +42,7 @@ func TestLinkOrCopyIsNotBlockedByAnAbandonedPartial(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatal("an abandoned partial copy should be cleaned up")
 	}
-	fresh := dst + ".partial-123"
+	fresh := dst + ".yarrit-partial-123"
 	_ = os.WriteFile(fresh, []byte("active"), 0o644)
 	removeStalePartials(dst)
 	if _, err := os.Stat(fresh); err != nil {
@@ -122,8 +122,7 @@ func TestEpisodeMetadataRefreshAddsNewEpisodesAndKeepsFiles(t *testing.T) {
 	if err := e.refreshEpisodes(ctxT(t), it); err != nil {
 		t.Fatal(err)
 	}
-	view := e.store.view()
-	cur := view.item(it.ID)
+	cur := viewItem(e, it.ID)
 	if findEpisode(cur, 1, 2) == nil {
 		t.Fatal("a newly announced episode was not added")
 	}

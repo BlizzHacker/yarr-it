@@ -61,6 +61,8 @@ type engineItem struct {
 	// MetaRefreshed is when a series' episode list was last re-read, so
 	// episodes announced after it was added are still searched for.
 	MetaRefreshed string `json:"metaRefreshed,omitempty"`
+	// MetaRetry holds back another refresh after a failed one.
+	MetaRetry string `json:"metaRetry,omitempty"`
 }
 
 type engineIndexer struct {
@@ -122,6 +124,15 @@ type engineGrab struct {
 	State    string  `json:"state"` // downloading | imported | failed
 	Detail   string  `json:"detail,omitempty"`
 	Progress float64 `json:"progress,omitempty"`
+	// Category is the qBittorrent category the grab was submitted under, so a
+	// later change to the client's category never hides it from reconcile.
+	Category string `json:"category,omitempty"`
+	// Unplaced lists episodes of this download whose placement failed; they
+	// stay owed until placed, or the grab fails so they are searched again.
+	Unplaced []wantSlot `json:"unplaced,omitempty"`
+	// ClientGone is when reconcile first found the grab's client removed or
+	// disabled; past the grace period the grab fails and stops blocking.
+	ClientGone string `json:"clientGone,omitempty"`
 }
 
 type engineEvent struct {

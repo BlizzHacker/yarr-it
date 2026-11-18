@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -114,6 +115,10 @@ func (p *engineProvider) LibraryStatus(ctx context.Context, canonicalID string) 
 
 func (p *engineProvider) CanRequest(ref arrRef) bool { return p.e.canResolve(ref) }
 
+// episodeScoped: the request names one episode. Season 0 holds specials, so
+// it is a real season; episode 0 means the whole title.
+func episodeScoped(opts RequestOptions) bool { return opts.Episode > 0 && opts.Season >= 0 }
+
 // Request adds the title and starts a search in the background: an indexer
 // round can take half a minute, and the person who clicked must not wait.
 func (p *engineProvider) Request(ctx context.Context, item MediaItem, opts RequestOptions) (RequestResult, error) {
@@ -121,30 +126,22 @@ func (p *engineProvider) Request(ctx context.Context, item MediaItem, opts Reque
 	if err != nil {
 		return RequestResult{}, err
 	}
-	it, created, err := p.e.Add(ctx, ref, "")
+	// An episode request fetches that episode only. Monitoring the whole
+	// series would make the scheduler search every other episode too, so a
+	// new title is created with the monitoring state it should have.
+	scoped := episodeScoped(opts)
+	it, created, err := p.e.AddWith(ctx, ref, "", opts.Monitor && !scoped)
 	if err != nil {
 		return RequestResult{}, err
 	}
-	// An episode request fetches that episode only. Monitoring the whole
-	// series would make the scheduler search every other episode too.
-	episodeScoped := opts.Season > 0 && opts.Episode > 0
-	switch {
-	case created && (!opts.Monitor || episodeScoped):
-		_ = p.e.SetMonitored(it.ID, false)
-	case !created && opts.Monitor && !episodeScoped && !it.Monitored:
+	if !created && opts.Monitor && !scoped && !it.Monitored {
 		// As Radarr and Sonarr do: asking to monitor something already in
 		// the library turns monitoring on, so a failed search is retried.
-		_ = p.e.SetMonitored(it.ID, true)
-	}
-	go func(id string, season, episode int) {
-		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		if season > 0 && episode > 0 {
-			_, _ = p.e.AutoSearchEpisode(sctx, id, season, episode)
-			return
+		if err := p.e.SetMonitored(it.ID, true); err != nil {
+			return RequestResult{}, err
 		}
-		_, _ = p.e.AutoSearch(sctx, id)
-	}(it.ID, opts.Season, opts.Episode)
+	}
+	go p.e.searchSoon(it.ID, opts.Season, opts.Episode, scoped)
 	verb := "added"
 	if !created {
 		verb = "already in the library"
@@ -186,6 +183,80 @@ func (p *engineProvider) Activity(ctx context.Context) ([]ActivityItem, error) {
 type nativeRequests struct {
 	e     *engine
 	route func(ctx context.Context, canonicalID string) (RequestResult, string, error)
+
+	mu sync.Mutex
+	// routing: approvals this process is routing now. A request stored as
+	// "routing" that is not in here was left by a restart mid-approval.
+	routing map[int]bool
+	// unsaved: decisions whose final write failed, kept so the next decision
+	// on that request saves them instead of calling the provider again.
+	unsaved map[int]requestOutcome
+}
+
+type requestOutcome struct{ status, detail, canonicalID, title string }
+
+func (n *nativeRequests) setRouting(id int, on bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.routing == nil {
+		n.routing = map[int]bool{}
+	}
+	if on {
+		n.routing[id] = true
+	} else {
+		delete(n.routing, id)
+	}
+}
+
+func (n *nativeRequests) isRouting(id int) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.routing[id]
+}
+
+// finish writes a decision's outcome onto a request still marked routing,
+// retrying briefly: a transient write failure must not strand the request.
+func (n *nativeRequests) finish(id int, o requestOutcome) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		err = n.e.store.update(func(st *engineState) error {
+			for i := range st.Requests {
+				if st.Requests[i].ID == id && st.Requests[i].Status == "routing" {
+					st.Requests[i].Status, st.Requests[i].Detail = o.status, o.detail
+				}
+			}
+			if o.status == "approved" {
+				st.logEvent(n.e.now(), o.canonicalID, "decided", o.title+": approved")
+			}
+			return nil
+		})
+		if err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// flushUnsaved saves an earlier outcome that could not be written. After
+// it, the request is either approved (the provider is not asked again) or
+// pending, and the new decision proceeds normally.
+func (n *nativeRequests) flushUnsaved(id int) error {
+	n.mu.Lock()
+	o, ok := n.unsaved[id]
+	n.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	if err := n.finish(id, o); err != nil {
+		return fmt.Errorf("an earlier decision on this request still cannot be saved: %w", err)
+	}
+	n.mu.Lock()
+	delete(n.unsaved, id)
+	n.mu.Unlock()
+	return nil
 }
 
 func (n *nativeRequests) ID() string        { return "yarrit-requests" }
@@ -211,7 +282,7 @@ func (n *nativeRequests) Ask(ctx context.Context, canonicalID, title string, yea
 	var out engineRequest
 	err = n.e.store.update(func(st *engineState) error {
 		for _, r := range st.Requests {
-			if r.CanonicalID == canonicalID && r.Status == "pending" {
+			if r.CanonicalID == canonicalID && (r.Status == "pending" || r.Status == "routing") {
 				return fmt.Errorf("%q is already waiting for approval", r.Title)
 			}
 		}
@@ -252,15 +323,22 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 	if err != nil {
 		return &arrHTTPError{Status: 400, Method: "POST", Path: "requests", Body: "request ids are numbers"}
 	}
+	if err := n.flushUnsaved(id); err != nil {
+		return err
+	}
 	// Reserve the decision atomically: a decline commits here, and an
 	// approval moves the request to "routing" before it is routed, so a
 	// competing decision sees it already taken instead of overwriting it.
 	var req engineRequest
+	reserved := false
 	err = n.e.store.update(func(st *engineState) error {
 		for i := range st.Requests {
 			r := &st.Requests[i]
 			if r.ID != id {
 				continue
+			}
+			if r.Status == "routing" && !n.isRouting(id) {
+				r.Status = "pending" // left by a restart mid-approval: decide again
 			}
 			if r.Status != "pending" {
 				return &arrHTTPError{Status: 409, Method: "POST", Path: "requests", Body: "already decided"}
@@ -268,6 +346,8 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 			req = *r
 			if approve {
 				r.Status, r.Detail = "routing", "being approved"
+				n.setRouting(id, true)
+				reserved = true
 			} else {
 				r.Status, r.Detail = "declined", ""
 				st.logEvent(n.e.now(), r.CanonicalID, "decided", r.Title+": declined")
@@ -276,6 +356,9 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 		}
 		return &arrHTTPError{Status: 404, Method: "POST", Path: "requests", Body: "no such request"}
 	})
+	if reserved {
+		defer n.setRouting(id, false)
+	}
 	if err != nil || !approve {
 		return err
 	}
@@ -290,19 +373,16 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 		// Back to pending, with the reason, so the owner can retry or decline.
 		status, detail = "pending", rerr.Error()
 	}
-	uerr := n.e.store.update(func(st *engineState) error {
-		for i := range st.Requests {
-			if st.Requests[i].ID == id && st.Requests[i].Status == "routing" {
-				st.Requests[i].Status, st.Requests[i].Detail = status, detail
-			}
+	o := requestOutcome{status: status, detail: detail, canonicalID: req.CanonicalID, title: req.Title}
+	if uerr := n.finish(id, o); uerr != nil {
+		n.mu.Lock()
+		if n.unsaved == nil {
+			n.unsaved = map[int]requestOutcome{}
 		}
-		if status == "approved" {
-			st.logEvent(n.e.now(), req.CanonicalID, "decided", req.Title+": approved")
-		}
-		return nil
-	})
-	if rerr != nil {
-		return rerr
+		n.unsaved[id] = o
+		n.mu.Unlock()
+		uerr = fmt.Errorf("the decision could not be saved yet; it is saved on the next decision for this request: %w", uerr)
+		return errors.Join(rerr, uerr)
 	}
-	return uerr
+	return rerr
 }
