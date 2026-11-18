@@ -34,5 +34,12 @@ done
 mkdir -p "$OUT/.well-known" "$OUT/roms"
 cp -f well-known/* "$OUT/.well-known/"
 cp -f dist/roms/* "$OUT/roms/"
-[ -d dist/ruffle ] && cp -rf dist/ruffle "$OUT/"
+# The Flash resolver has no CDN fallback, so a build without Ruffle would ship a
+# client whose SWF playback silently fails. ALLOW_NO_RUFFLE=1 opts out knowingly.
+if [ -f dist/ruffle/ruffle.js ]; then
+  cp -rf dist/ruffle "$OUT/"
+elif [ "${ALLOW_NO_RUFFLE:-0}" != "1" ]; then
+  echo "dist/ruffle/ruffle.js is missing: run stream/web/fetch-vendor.sh first (or ALLOW_NO_RUFFLE=1)" >&2
+  exit 1
+fi
 echo "built $OUT (app $HASH, player $PLAYHASH)"

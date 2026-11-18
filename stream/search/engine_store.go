@@ -58,6 +58,9 @@ type engineItem struct {
 	LastSearch  string `json:"lastSearch,omitempty"`
 	Attempts    int    `json:"attempts,omitempty"`
 	RequestedBy string `json:"requestedBy,omitempty"`
+	// MetaRefreshed is when a series' episode list was last re-read, so
+	// episodes announced after it was added are still searched for.
+	MetaRefreshed string `json:"metaRefreshed,omitempty"`
 }
 
 type engineIndexer struct {

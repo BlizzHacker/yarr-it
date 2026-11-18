@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Filing a finished download into the library.
@@ -129,7 +130,12 @@ func episodeDest(root string, it engineItem, season, episode int, quality, ext s
 // linkOrCopy places src at dst. An existing dst is left alone: a file already
 // in the library is never overwritten by an import.
 func linkOrCopy(src, dst string) error {
-	if _, err := os.Stat(dst); err == nil {
+	if info, err := os.Stat(dst); err == nil {
+		// A replay of a placement that already finished (the process stopped
+		// before the state commit) is recognised, not refused.
+		if samePlacement(src, dst, info) {
+			return nil
+		}
 		return fmt.Errorf("%s already exists", dst)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -138,16 +144,18 @@ func linkOrCopy(src, dst string) error {
 	if err := os.Link(src, dst); err == nil {
 		return nil
 	}
+	removeStalePartials(dst)
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	tmp := dst + ".partial"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	// One temp file per attempt: an interrupted copy can never block a retry.
+	out, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".partial-*")
 	if err != nil {
 		return err
 	}
+	tmp := out.Name()
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
 		os.Remove(tmp)
@@ -157,12 +165,78 @@ func linkOrCopy(src, dst string) error {
 		os.Remove(tmp)
 		return err
 	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		os.Remove(tmp)
+		return err
+	}
 	return os.Rename(tmp, dst)
+}
+
+// staleCopyAge: a partial file untouched this long belongs to an abandoned
+// copy (an active copy rewrites its mtime continuously).
+const staleCopyAge = time.Hour
+
+func removeStalePartials(dst string) {
+	dir, base := filepath.Dir(dst), filepath.Base(dst)+".partial"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), base) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > staleCopyAge {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// samePlacement reports whether dst is src already placed: the same file
+// (a hardlink) or a byte-identical copy (size plus first and last MiB).
+func samePlacement(src, dst string, dstInfo os.FileInfo) bool {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return false
+	}
+	if os.SameFile(srcInfo, dstInfo) {
+		return true
+	}
+	if srcInfo.Size() != dstInfo.Size() {
+		return false
+	}
+	return sameEdges(src, dst, srcInfo.Size())
+}
+
+func sameEdges(a, b string, size int64) bool {
+	const span = 1 << 20
+	fa, err := os.Open(a)
+	if err != nil {
+		return false
+	}
+	defer fa.Close()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false
+	}
+	defer fb.Close()
+	read := func(f *os.File, off int64, n int) []byte {
+		buf := make([]byte, n)
+		got, _ := f.ReadAt(buf, off)
+		return buf[:got]
+	}
+	n := int(min(int64(span), size))
+	if string(read(fa, 0, n)) != string(read(fb, 0, n)) {
+		return false
+	}
+	off := max(int64(0), size-int64(span))
+	return string(read(fa, off, n)) == string(read(fb, off, n))
 }
 
 type importResult struct {
 	Placed  []string
-	Skipped []string
+	Skipped []string // files that matched no episode
+	Failed  []string // matched episodes whose placement failed: retried later
 }
 
 // importDownload files one completed download for one library item. For a
@@ -205,11 +279,14 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 			}
 			dst := episodeDest(set.SeriesRoot, *it, season, episode, grab.Quality, strings.ToLower(filepath.Ext(f.Path)))
 			if err := linkOrCopy(f.Path, dst); err != nil {
-				res.Skipped = append(res.Skipped, filepath.Base(f.Path)+": "+err.Error())
+				res.Failed = append(res.Failed, filepath.Base(f.Path)+": "+err.Error())
 				continue
 			}
 			ep.HasFile, ep.File, ep.Quality = true, dst, grab.Quality
 			res.Placed = append(res.Placed, dst)
+		}
+		if len(res.Placed) == 0 && len(res.Failed) > 0 {
+			return res, fmt.Errorf("could not place any episode: %s", strings.Join(res.Failed, "; "))
 		}
 		if len(res.Placed) == 0 {
 			return res, fmt.Errorf("no episode in the download matched the series (%d skipped)", len(res.Skipped))

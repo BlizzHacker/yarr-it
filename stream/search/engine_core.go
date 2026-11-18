@@ -8,9 +8,20 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	// engineMissingGrace is how long a grab may be absent from its download
+	// client before it is failed. qBittorrent answers "Ok." to a .torrent URL
+	// before fetching it, so a short absence is normal; a long one means the
+	// fetch failed or the torrent was removed, and a replacement may be sought.
+	engineMissingGrace = 30 * time.Minute
+	// engineMetaRefresh is how often a monitored series' episode list is re-read.
+	engineMetaRefresh = 24 * time.Hour
 )
 
 type engine struct {
@@ -255,24 +266,38 @@ func (e *engine) candidates(ctx context.Context, st engineState, it engineItem, 
 
 func (e *engine) client(st engineState) (*qbitClient, engineClient, error) {
 	for _, c := range st.Clients {
-		if !c.Enabled {
-			continue
+		if c.Enabled && (c.Kind == "" || c.Kind == "qbittorrent") {
+			return e.qbitFor(c), c, nil
 		}
-		if c.Kind != "" && c.Kind != "qbittorrent" {
-			continue
-		}
-		e.mu.Lock()
-		// One cached client per configured client; an edit replaces it, so a
-		// changed password or address never leaves a stale session behind.
-		qc, ok := e.qbits[c.ID]
-		if !ok || qc.cfg != c {
-			qc = newQbitClient(c, e.hc)
-			e.qbits[c.ID] = qc
-		}
-		e.mu.Unlock()
-		return qc, c, nil
 	}
 	return nil, engineClient{}, errors.New("no download client yet — add qBittorrent under Settings → Stack")
+}
+
+// clientByID is the download client a grab was handed to. A grab recorded
+// before client ids existed (empty id) falls back to the first enabled one.
+func (e *engine) clientByID(st engineState, id string) (*qbitClient, engineClient, error) {
+	if id == "" {
+		return e.client(st)
+	}
+	for _, c := range st.Clients {
+		if c.ID == id && c.Enabled && (c.Kind == "" || c.Kind == "qbittorrent") {
+			return e.qbitFor(c), c, nil
+		}
+	}
+	return nil, engineClient{}, fmt.Errorf("download client %s is unavailable (removed or disabled)", id)
+}
+
+func (e *engine) qbitFor(c engineClient) *qbitClient {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// One cached client per configured client; an edit replaces it, so a
+	// changed password or address never leaves a stale session behind.
+	qc, ok := e.qbits[c.ID]
+	if !ok || qc.cfg != c {
+		qc = newQbitClient(c, e.hc)
+		e.qbits[c.ID] = qc
+	}
+	return qc
 }
 
 // Grab hands one release to the download client and records it.
@@ -320,28 +345,15 @@ func (e *engine) grab(ctx context.Context, st engineState, id string, r scoredRe
 type wantSlot struct{ Season, Episode int }
 
 func (e *engine) wanted(it engineItem, grabs []engineGrab, prof engineProfile) []wantSlot {
-	inFlight := func(s, ep int) bool {
-		for _, g := range grabs {
-			if g.ItemID == it.ID && g.State == "downloading" &&
-				(it.Kind == "movie" || (g.Season == s && (g.Episode == ep || g.Episode == 0))) {
-				return true
-			}
-		}
-		return false
-	}
 	if it.Kind == "movie" {
-		if (it.HasFile && !isUpgrade(it.Quality, prof.Qualities[0], prof)) || inFlight(0, 0) {
+		if (it.HasFile && !isUpgrade(it.Quality, prof.Qualities[0], prof)) || inFlight(it, grabs, 0, 0) {
 			return nil
 		}
 		return []wantSlot{{}}
 	}
-	today := e.now().UTC().Format("2006-01-02")
 	perSeason := map[int][]int{}
 	var order []int
-	for _, ep := range it.Episodes {
-		if ep.HasFile || (ep.Aired != "" && ep.Aired[:min(10, len(ep.Aired))] > today) || inFlight(ep.Season, ep.Episode) {
-			continue
-		}
+	for _, ep := range e.eligibleEpisodes(it, grabs) {
 		if _, ok := perSeason[ep.Season]; !ok {
 			order = append(order, ep.Season)
 		}
@@ -360,9 +372,44 @@ func (e *engine) wanted(it engineItem, grabs []engineGrab, prof engineProfile) [
 	return out
 }
 
+// inFlight reports whether a grab already downloading covers this slot.
+func inFlight(it engineItem, grabs []engineGrab, s, ep int) bool {
+	for _, g := range grabs {
+		if g.ItemID == it.ID && g.State == "downloading" &&
+			(it.Kind == "movie" || (g.Season == s && (g.Episode == ep || g.Episode == 0))) {
+			return true
+		}
+	}
+	return false
+}
+
+// eligibleEpisodes is every episode that has aired, has no file and is not
+// already downloading -- the only episodes any search may grab.
+func (e *engine) eligibleEpisodes(it engineItem, grabs []engineGrab) []wantSlot {
+	today := e.now().UTC().Format("2006-01-02")
+	var out []wantSlot
+	for _, ep := range it.Episodes {
+		if ep.HasFile || (ep.Aired != "" && ep.Aired[:min(10, len(ep.Aired))] > today) || inFlight(it, grabs, ep.Season, ep.Episode) {
+			continue
+		}
+		out = append(out, wantSlot{Season: ep.Season, Episode: ep.Episode})
+	}
+	return out
+}
+
 // AutoSearch searches for whatever the item is missing and grabs the best fit
 // for each slot. Returns how many grabs it made.
 func (e *engine) AutoSearch(ctx context.Context, id string) (int, error) {
+	return e.autoSearch(ctx, id, nil)
+}
+
+// AutoSearchEpisode searches for one episode only: an episode request must
+// never start downloads for the rest of the series.
+func (e *engine) AutoSearchEpisode(ctx context.Context, id string, season, episode int) (int, error) {
+	return e.autoSearch(ctx, id, &wantSlot{Season: season, Episode: episode})
+}
+
+func (e *engine) autoSearch(ctx context.Context, id string, only *wantSlot) (int, error) {
 	e.mu.Lock()
 	if e.searching[id] {
 		e.mu.Unlock()
@@ -379,7 +426,16 @@ func (e *engine) AutoSearch(ctx context.Context, id string) (int, error) {
 	}
 	grabbed := 0
 	var lastErr error
-	for _, slot := range e.wanted(*it, st.Grabs, st.Settings.Profile) {
+	slots := e.wanted(*it, st.Grabs, st.Settings.Profile)
+	if only != nil {
+		slots = nil
+		for _, ep := range e.eligibleEpisodes(*it, st.Grabs) {
+			if ep == *only {
+				slots = []wantSlot{ep}
+			}
+		}
+	}
+	for _, slot := range slots {
 		res, err := e.candidates(ctx, st, *it, slot.Season, slot.Episode)
 		if err != nil {
 			lastErr = err
@@ -398,9 +454,10 @@ func (e *engine) AutoSearch(ctx context.Context, id string) (int, error) {
 			break
 		}
 		if pick == nil && slot.Season > 0 && slot.Episode == 0 {
-			// No pack: fall back to the season's episodes one by one.
-			for _, ep := range it.Episodes {
-				if ep.Season == slot.Season && !ep.HasFile {
+			// No pack: fall back to the season's episodes one by one -- only
+			// those a search may grab (aired, missing, not already downloading).
+			for _, ep := range e.eligibleEpisodes(*it, st.Grabs) {
+				if ep.Season == slot.Season {
 					res, err := e.candidates(ctx, st, *it, ep.Season, ep.Episode)
 					if err == nil && len(res.Releases) > 0 && len(res.Releases[0].Rejected) == 0 {
 						if e.grab(ctx, st, id, res.Releases[0]) == nil {
@@ -458,17 +515,35 @@ func searchDue(it engineItem, now time.Time, intervalHours int) bool {
 // Reconcile matches grabs against the client and imports what has finished.
 func (e *engine) Reconcile(ctx context.Context) error {
 	st := e.store.view()
-	open := 0
+	open := map[string]bool{}
 	for _, g := range st.Grabs {
 		if g.State == "downloading" {
-			open++
+			open[g.ClientID] = true
 		}
 	}
-	if open == 0 {
+	if len(open) == 0 {
 		return nil
 	}
-	qc, _, err := e.client(st)
+	// Each grab is checked against the client it was handed to, so changing
+	// which client is first never strands another client's downloads.
+	ids := make([]string, 0, len(open))
+	for id := range open {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var firstErr error
+	for _, cid := range ids {
+		if err := e.reconcileClient(ctx, st, cid); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID string) error {
+	qc, _, err := e.clientByID(st, clientID)
 	if err != nil {
+		e.noteGrabs(clientID, err.Error())
 		return err
 	}
 	ts, err := qc.torrents(ctx)
@@ -487,11 +562,12 @@ func (e *engine) Reconcile(ctx context.Context) error {
 		content string
 	}
 	var done []ready
+	now := e.now()
 	err = e.store.update(func(st *engineState) error {
 		changed := false
 		for i := range st.Grabs {
 			g := &st.Grabs[i]
-			if g.State != "downloading" {
+			if g.State != "downloading" || g.ClientID != clientID {
 				continue
 			}
 			t, ok := byHash[g.Hash]
@@ -507,6 +583,14 @@ func (e *engine) Reconcile(ctx context.Context) error {
 				}
 			}
 			if !ok {
+				// Absent past the grace period: the client never fetched it, or
+				// it was removed. Fail it so a replacement can be searched.
+				if grabbed, perr := time.Parse(time.RFC3339, g.Grabbed); perr == nil && now.Sub(grabbed) > engineMissingGrace {
+					g.State = "failed"
+					g.Detail = "never appeared in the download client (the torrent fetch failed or it was removed)"
+					st.logEvent(now, g.ItemID, "failed", g.Release+": "+g.Detail)
+					changed = true
+				}
 				continue
 			}
 			if g.Progress != t.Progress {
@@ -552,7 +636,14 @@ func (e *engine) Reconcile(ctx context.Context) error {
 				detail = err.Error()
 				break
 			}
-			state, detail, placed = "imported", strings.Join(res.Placed, "; "), &copyIt
+			placed = &copyIt
+			if len(res.Failed) > 0 {
+				// Keep what landed; stay downloading so the failed episodes
+				// are retried from this download once storage is fixed.
+				detail = "placed " + strings.Join(res.Placed, "; ") + "; will retry: " + strings.Join(res.Failed, "; ")
+			} else {
+				state, detail = "imported", strings.Join(res.Placed, "; ")
+			}
 		}
 		_ = e.store.update(func(st *engineState) error {
 			for i := range st.Grabs {
@@ -579,6 +670,70 @@ func (e *engine) Reconcile(ctx context.Context) error {
 	return nil
 }
 
+// noteGrabs records why a client's grabs cannot be checked, once.
+func (e *engine) noteGrabs(clientID, why string) {
+	_ = e.store.update(func(st *engineState) error {
+		changed := false
+		for i := range st.Grabs {
+			g := &st.Grabs[i]
+			if g.State == "downloading" && g.ClientID == clientID && g.Detail != why {
+				g.Detail, changed = why, true
+			}
+		}
+		if !changed {
+			return errNoChange
+		}
+		return nil
+	})
+}
+
+// metaRefreshDue: monitored series re-read their episode list daily.
+func metaRefreshDue(it engineItem, now time.Time) bool {
+	if it.Kind != "series" || !it.Monitored {
+		return false
+	}
+	stamp := it.MetaRefreshed
+	if stamp == "" {
+		stamp = it.Added
+	}
+	last, err := time.Parse(time.RFC3339, stamp)
+	return err != nil || now.Sub(last) >= engineMetaRefresh
+}
+
+// refreshEpisodes merges the current episode list into a series, keeping the
+// file fields of episodes already on disk.
+func (e *engine) refreshEpisodes(ctx context.Context, it engineItem) error {
+	d, err := e.meta.Lookup(ctx, it.IMDb, it.Kind)
+	if err != nil {
+		return err
+	}
+	return e.store.update(func(st *engineState) error {
+		cur := st.item(it.ID)
+		if cur == nil {
+			return errNoChange
+		}
+		for _, ne := range d.Episodes {
+			if ep := findEpisode(cur, ne.Season, ne.Episode); ep != nil {
+				if ne.Title != "" {
+					ep.Title = ne.Title
+				}
+				if ne.Aired != "" {
+					ep.Aired = ne.Aired
+				}
+				continue
+			}
+			cur.Episodes = append(cur.Episodes, engineEpisode{
+				Season: ne.Season, Episode: ne.Episode, Title: ne.Title, Aired: ne.Aired})
+		}
+		sort.SliceStable(cur.Episodes, func(i, j int) bool {
+			a, b := cur.Episodes[i], cur.Episodes[j]
+			return a.Season < b.Season || (a.Season == b.Season && a.Episode < b.Episode)
+		})
+		cur.MetaRefreshed = e.stamp()
+		return nil
+	})
+}
+
 // Run is the scheduler: reconcile every minute, search what is due.
 func (e *engine) Run(ctx context.Context) {
 	t := time.NewTicker(time.Minute)
@@ -586,6 +741,18 @@ func (e *engine) Run(ctx context.Context) {
 	for {
 		if err := e.Reconcile(ctx); err != nil && !strings.HasPrefix(err.Error(), "no download client") {
 			log.Printf("engine: reconcile: %v", err)
+		}
+		for _, it := range e.store.view().Items {
+			if ctx.Err() != nil {
+				return
+			}
+			if metaRefreshDue(it, e.now()) {
+				mctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				if err := e.refreshEpisodes(mctx, it); err != nil {
+					log.Printf("engine: refresh episodes %s: %v", it.Title, err)
+				}
+				cancel()
+			}
 		}
 		st := e.store.view()
 		for _, it := range st.Items {

@@ -125,14 +125,26 @@ func (p *engineProvider) Request(ctx context.Context, item MediaItem, opts Reque
 	if err != nil {
 		return RequestResult{}, err
 	}
-	if !opts.Monitor && created {
+	// An episode request fetches that episode only. Monitoring the whole
+	// series would make the scheduler search every other episode too.
+	episodeScoped := opts.Season > 0 && opts.Episode > 0
+	switch {
+	case created && (!opts.Monitor || episodeScoped):
 		_ = p.e.SetMonitored(it.ID, false)
+	case !created && opts.Monitor && !episodeScoped && !it.Monitored:
+		// As Radarr and Sonarr do: asking to monitor something already in
+		// the library turns monitoring on, so a failed search is retried.
+		_ = p.e.SetMonitored(it.ID, true)
 	}
-	go func(id string) {
+	go func(id string, season, episode int) {
 		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
+		if season > 0 && episode > 0 {
+			_, _ = p.e.AutoSearchEpisode(sctx, id, season, episode)
+			return
+		}
 		_, _ = p.e.AutoSearch(sctx, id)
-	}(it.ID)
+	}(it.ID, opts.Season, opts.Episode)
 	verb := "added"
 	if !created {
 		verb = "already in the library"
@@ -240,37 +252,57 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 	if err != nil {
 		return &arrHTTPError{Status: 400, Method: "POST", Path: "requests", Body: "request ids are numbers"}
 	}
+	// Reserve the decision atomically: a decline commits here, and an
+	// approval moves the request to "routing" before it is routed, so a
+	// competing decision sees it already taken instead of overwriting it.
 	var req engineRequest
 	err = n.e.store.update(func(st *engineState) error {
 		for i := range st.Requests {
-			if st.Requests[i].ID == id {
-				if st.Requests[i].Status != "pending" {
-					return &arrHTTPError{Status: 409, Method: "POST", Path: "requests", Body: "already decided"}
-				}
-				req = st.Requests[i]
-				return nil
+			r := &st.Requests[i]
+			if r.ID != id {
+				continue
 			}
+			if r.Status != "pending" {
+				return &arrHTTPError{Status: 409, Method: "POST", Path: "requests", Body: "already decided"}
+			}
+			req = *r
+			if approve {
+				r.Status, r.Detail = "routing", "being approved"
+			} else {
+				r.Status, r.Detail = "declined", ""
+				st.logEvent(n.e.now(), r.CanonicalID, "decided", r.Title+": declined")
+			}
+			return nil
 		}
 		return &arrHTTPError{Status: 404, Method: "POST", Path: "requests", Body: "no such request"}
 	})
-	if err != nil {
+	if err != nil || !approve {
 		return err
 	}
-	status, detail := "declined", ""
-	if approve {
-		res, providerID, err := n.route(ctx, req.CanonicalID)
-		if err != nil {
-			return err // stays pending; the owner can retry or decline
-		}
-		status, detail = "approved", strings.TrimSpace(providerID+": "+res.Detail)
+	res, providerID, rerr := n.route(ctx, req.CanonicalID)
+	if rerr == nil && !res.Accepted {
+		// A provider that declines answers Accepted=false with no error.
+		rerr = &arrHTTPError{Status: 409, Method: "POST", Path: "requests",
+			Body: "not accepted: " + strings.TrimSpace(providerID+" "+res.Detail)}
 	}
-	return n.e.store.update(func(st *engineState) error {
+	status, detail := "approved", strings.TrimSpace(providerID+": "+res.Detail)
+	if rerr != nil {
+		// Back to pending, with the reason, so the owner can retry or decline.
+		status, detail = "pending", rerr.Error()
+	}
+	uerr := n.e.store.update(func(st *engineState) error {
 		for i := range st.Requests {
-			if st.Requests[i].ID == id {
+			if st.Requests[i].ID == id && st.Requests[i].Status == "routing" {
 				st.Requests[i].Status, st.Requests[i].Detail = status, detail
 			}
 		}
-		st.logEvent(n.e.now(), req.CanonicalID, "decided", req.Title+": "+status)
+		if status == "approved" {
+			st.logEvent(n.e.now(), req.CanonicalID, "decided", req.Title+": approved")
+		}
 		return nil
 	})
+	if rerr != nil {
+		return rerr
+	}
+	return uerr
 }

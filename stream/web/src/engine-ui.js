@@ -153,6 +153,8 @@ export async function renderEngine(host) {
           id: c.id, name: 'qBittorrent', kind: 'qbittorrent', url: url.value,
           username: user.value, password: pass.value, category: cat.value, enabled: true,
         });
+        // Later saves from this panel must update this client, not add another.
+        c.id = saved.id;
         const t = await call('/api/engine/test', 'POST', { client: saved.id });
         msg.textContent = t.detail;
       } catch (e) { msg.textContent = e.message; }
