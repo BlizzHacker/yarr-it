@@ -390,7 +390,8 @@ func (e *engine) wanted(it engineItem, grabs []engineGrab, prof engineProfile) [
 	}
 	var out []wantSlot
 	for _, s := range order {
-		if len(perSeason[s]) >= 2 && !busy[s] {
+		// Specials are never packed: {Season: 0} would be the whole-title slot.
+		if len(perSeason[s]) >= 2 && !busy[s] && s > 0 {
 			out = append(out, wantSlot{Season: s})
 			continue
 		}
@@ -602,6 +603,7 @@ func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID s
 		e.clientGone(clientID, err.Error())
 		return err
 	}
+	e.clientBack(clientID)
 	// Known hashes are looked up across every category, so changing the
 	// client's category never hides a running grab. A grab without a hash is
 	// matched by name only within the category it was submitted under.
@@ -643,9 +645,6 @@ func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID s
 			g := &st.Grabs[i]
 			if g.State != "downloading" || g.ClientID != clientID {
 				continue
-			}
-			if g.ClientGone != "" {
-				g.ClientGone, changed = "", true // the client is back
 			}
 			t, ok := byHash[g.Hash]
 			if !ok && g.Hash == "" {
@@ -802,6 +801,24 @@ func slotNames(l []wantSlot) string {
 		names[i] = "S" + pad2(s.Season) + "E" + pad2(s.Episode)
 	}
 	return strings.Join(names, ", ")
+}
+
+// clientBack clears the removed-client stamp once the client is configured
+// again, so a later removal gets a fresh grace period.
+func (e *engine) clientBack(clientID string) {
+	_ = e.store.update(func(st *engineState) error {
+		changed := false
+		for i := range st.Grabs {
+			g := &st.Grabs[i]
+			if g.State == "downloading" && g.ClientID == clientID && g.ClientGone != "" {
+				g.ClientGone, g.Detail, changed = "", "", true
+			}
+		}
+		if !changed {
+			return errNoChange
+		}
+		return nil
+	})
 }
 
 // clientGone handles grabs whose download client was removed or disabled.

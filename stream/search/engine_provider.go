@@ -216,20 +216,26 @@ func (n *nativeRequests) isRouting(id int) bool {
 
 // finish writes a decision's outcome onto a request still marked routing,
 // retrying briefly: a transient write failure must not strand the request.
-func (n *nativeRequests) finish(id int, o requestOutcome) error {
+//
+// A flush (stale) outcome never overwrites a request this process is
+// routing right now: that reservation belongs to a newer decision.
+func (n *nativeRequests) finish(id int, o requestOutcome, stale bool) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
 		err = n.e.store.update(func(st *engineState) error {
+			if stale && n.isRouting(id) {
+				return errNoChange
+			}
 			for i := range st.Requests {
 				if st.Requests[i].ID == id && st.Requests[i].Status == "routing" {
 					st.Requests[i].Status, st.Requests[i].Detail = o.status, o.detail
+					if o.status == "approved" {
+						st.logEvent(n.e.now(), o.canonicalID, "decided", o.title+": approved")
+					}
 				}
-			}
-			if o.status == "approved" {
-				st.logEvent(n.e.now(), o.canonicalID, "decided", o.title+": approved")
 			}
 			return nil
 		})
@@ -246,17 +252,41 @@ func (n *nativeRequests) finish(id int, o requestOutcome) error {
 func (n *nativeRequests) flushUnsaved(id int) error {
 	n.mu.Lock()
 	o, ok := n.unsaved[id]
+	delete(n.unsaved, id) // taken: a concurrent decision cannot flush it too
 	n.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	if err := n.finish(id, o); err != nil {
+	if err := n.finish(id, o, true); err != nil {
+		n.keepUnsaved(id, o)
 		return fmt.Errorf("an earlier decision on this request still cannot be saved: %w", err)
 	}
-	n.mu.Lock()
-	delete(n.unsaved, id)
-	n.mu.Unlock()
 	return nil
+}
+
+func (n *nativeRequests) keepUnsaved(id int, o requestOutcome) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.unsaved == nil {
+		n.unsaved = map[int]requestOutcome{}
+	}
+	if _, newer := n.unsaved[id]; !newer {
+		n.unsaved[id] = o
+	}
+}
+
+// flushAll retries every held outcome; the request list calls it, so a held
+// decision is saved as soon as the owner looks at the queue.
+func (n *nativeRequests) flushAll() {
+	n.mu.Lock()
+	ids := make([]int, 0, len(n.unsaved))
+	for id := range n.unsaved {
+		ids = append(ids, id)
+	}
+	n.mu.Unlock()
+	for _, id := range ids {
+		_ = n.flushUnsaved(id)
+	}
 }
 
 func (n *nativeRequests) ID() string        { return "yarrit-requests" }
@@ -299,6 +329,7 @@ func (n *nativeRequests) Ask(ctx context.Context, canonicalID, title string, yea
 }
 
 func (n *nativeRequests) Requests(ctx context.Context, status RequestStatus, limit int) ([]QueuedRequest, error) {
+	n.flushAll()
 	st := n.e.store.view()
 	out := []QueuedRequest{}
 	for i := len(st.Requests) - 1; i >= 0 && len(out) < limit; i-- {
@@ -374,13 +405,8 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 		status, detail = "pending", rerr.Error()
 	}
 	o := requestOutcome{status: status, detail: detail, canonicalID: req.CanonicalID, title: req.Title}
-	if uerr := n.finish(id, o); uerr != nil {
-		n.mu.Lock()
-		if n.unsaved == nil {
-			n.unsaved = map[int]requestOutcome{}
-		}
-		n.unsaved[id] = o
-		n.mu.Unlock()
+	if uerr := n.finish(id, o, false); uerr != nil {
+		n.keepUnsaved(id, o)
 		uerr = fmt.Errorf("the decision could not be saved yet; it is saved on the next decision for this request: %w", uerr)
 		return errors.Join(rerr, uerr)
 	}

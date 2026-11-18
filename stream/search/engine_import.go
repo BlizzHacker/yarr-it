@@ -298,7 +298,7 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 		for _, f := range files {
 			p := parseRelease(filepath.Base(f.Path))
 			season, episode := p.Season, p.Episode
-			if season == 0 && grab.Season > 0 && grab.Episode > 0 && len(files) == 1 {
+			if season == 0 && grab.Episode > 0 && len(files) == 1 {
 				season, episode = grab.Season, grab.Episode
 			}
 			ep := findEpisode(it, season, episode)
@@ -307,6 +307,14 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 				continue
 			}
 			dst := episodeDest(set.SeriesRoot, *it, season, episode, grab.Quality, strings.ToLower(filepath.Ext(f.Path)))
+			if ep.HasFile && ep.File == dst {
+				// Placed on an earlier attempt and recorded: no need to read
+				// both files again while a sibling episode is being retried.
+				if _, err := os.Stat(dst); err == nil {
+					res.Placed = append(res.Placed, dst)
+					continue
+				}
+			}
 			if err := linkOrCopy(f.Path, dst); err != nil {
 				res.Failed = append(res.Failed, filepath.Base(f.Path)+": "+err.Error())
 				res.FailedSlots = append(res.FailedSlots, wantSlot{Season: season, Episode: episode})
