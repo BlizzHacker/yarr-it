@@ -693,6 +693,18 @@ func main() {
 			log.Printf("provider %s: %v", p.ID(), err)
 		}
 	}
+	// Third-party services beyond the classic *arrs: an existing Cinephage
+	// (through its Radarr/Sonarr-compatible API), and the request queues of
+	// Seerr and GG Requestz.
+	for _, group := range [][]Provider{
+		cinephageProvidersFromEnv(), seerrProvidersFromEnv(), ggrProvidersFromEnv(),
+	} {
+		for _, p := range group {
+			if err := s.providers.Add(p); err != nil {
+				log.Printf("provider %s: %v", p.ID(), err)
+			}
+		}
+	}
 
 	// Registered individually rather than through registerArrRoutes, and now
 	// all five behind the owner boundary rather than two of them open.
@@ -718,6 +730,26 @@ func main() {
 	// Requesting also spends the owner's disk and bandwidth, which is a second
 	// reason on top of the first.
 	mux.HandleFunc("/api/arr/request", auth.requireOwner(arr.handleRequest))
+
+	// The household's request queues (Seerr, GG Requestz) as one, and the
+	// unified-or-bring-your-own topology. Owner only: who asked for what is
+	// personal, and the topology names every service on the estate.
+	reqs := &requestsAPI{reg: s.providers}
+	mux.HandleFunc("/api/requests", auth.requireOwner(reqs.handleList))
+	mux.HandleFunc("/api/requests/decide", auth.requireOwner(reqs.handleDecide))
+	mux.HandleFunc("/api/stack", auth.requireOwner(s.handleStack))
+
+	// The built-in engine: Yarr.It as a whole media manager on its own --
+	// indexers, scoring, download client, library, imports, requests.
+	if eng, err := engineFromEnv(s.tmdb); err != nil {
+		log.Printf("engine: %v (the engine is off until this is fixed)", err)
+	} else if eng != nil {
+		registerEngineRoutes(mux, auth, s.providers, eng)
+		go eng.Run(context.Background())
+		log.Printf("engine: on, state in %s", eng.store.path)
+	} else {
+		log.Printf("engine: off (set YARRIT_ENGINE_STATE or LIBRARY_PATH to turn it on)")
+	}
 
 	// Whether an archive.org item can actually be played here, and how. Public
 	// and CORS-open: it describes a public item and holds nothing personal.

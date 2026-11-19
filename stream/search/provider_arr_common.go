@@ -91,6 +91,10 @@ type arrConfig struct {
 	QualityProfileID  int
 	MetadataProfileID int // Lidarr only.
 
+	// SeriesRootFolder is Cinephage only: one address, two personas, and the
+	// films and series go to different roots.
+	SeriesRootFolder string
+
 	// SeriesType forces what a Sonarr instance files new shows as: "standard",
 	// "anime" or "daily". Left empty, whatever Sonarr's own metadata says wins,
 	// which is right almost always -- it already knows a show is anime. It is
@@ -1211,19 +1215,17 @@ func (a *arrAPI) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var target Requester
 	var targetID string
 	want := canonicalDomain(ref.Type)
-	for _, p := range a.providers() {
-		if body.ProviderID != "" && p.ID() != body.ProviderID {
-			continue
+	if body.ProviderID != "" {
+		// Named explicitly: honour it, and let the provider explain if it
+		// cannot obtain this.
+		for _, p := range a.providers() {
+			if rq, ok := p.(Requester); ok && p.ID() == body.ProviderID {
+				target, targetID = rq, p.ID()
+				break
+			}
 		}
-		rq, ok := p.(Requester)
-		if !ok {
-			continue
-		}
-		if body.ProviderID == "" && !containsDomain(p.Domains(), want) {
-			continue
-		}
-		target, targetID = rq, p.ID()
-		break
+	} else if ts := requestTargets(a.providers(), ref); len(ts) > 0 {
+		target, targetID = ts[0].(Requester), ts[0].ID()
 	}
 	if target == nil {
 		writeJSON(w, 404, map[string]string{

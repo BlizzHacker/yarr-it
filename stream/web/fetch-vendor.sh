@@ -29,7 +29,8 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 curl -sL --fail -o "$TMP/ruffle.zip" "$URL"
 
-python - "$TMP/ruffle.zip" "$OUT" <<'PY'
+PYTHON=$(command -v python3 || command -v python)
+"$PYTHON" - "$TMP/ruffle.zip" "$OUT" <<'PY'
 import os, shutil, sys, zipfile
 
 src, out = sys.argv[1], sys.argv[2]

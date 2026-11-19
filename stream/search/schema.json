@@ -59,13 +59,15 @@
     "play": "Launches something interactive.",
     "linear-tv": "Presents continuously running channels.",
     "epg": "Supplies schedule data for channels.",
-    "indexer": "Returns raw downloadable releases rather than canonical works."
+    "indexer": "Returns raw downloadable releases rather than canonical works.",
+    "requests": "Holds what other people have asked for, waiting for a decision."
   },
 
   "$comment_capabilities": "Optional methods. A provider advertises only what it implements; callers must check rather than assume, so Radarr is never asked for a guide.",
   "capabilities": [
     "health", "search", "details", "library", "libraryStatus",
-    "request", "activity", "stream", "guide", "channels", "recordings"
+    "request", "activity", "stream", "guide", "channels", "recordings",
+    "requestQueue", "requestDecide"
   ],
 
   "$comment_health": "Distinct states, deliberately not collapsed into 'down'. Each implies a different fix: not_configured needs a key, unreachable needs a network, auth_failed needs a correct key, incompatible needs a version.",

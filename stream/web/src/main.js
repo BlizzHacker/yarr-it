@@ -45,6 +45,8 @@ import {
   SERVICE_TYPES, allServiceTypes, createServiceStore, probeService,
   routeAdvice, describeService, healthLabel, normaliseServiceURL,
 } from './services.js';
+import { renderStack } from './stack.js';
+import { renderEngine } from './engine-ui.js';
 import { TRANSPORT, extensionAvailable } from './transport.js';
 import { runSearch, sleeper, describeProgress, cardKey } from './progressive.js';
 import { createSuggester, suggestKey, suggestionHint } from './suggest.js';
@@ -3104,6 +3106,14 @@ function wireSettingsTabs() {
       t.setAttribute('aria-selected', on ? 'true' : 'false');
       const pane = document.querySelector(`#pane-${t.dataset.pane}`);
       if (pane) pane.hidden = !on;
+    }
+    // The Stack pane asks the server each time it opens: a request approved a
+    // minute ago in Seerr must not still show a button here.
+    if (name === 'stack') {
+      const host = document.querySelector('#stack-host');
+      if (host) renderStack(host);
+      const eng = document.querySelector('#engine-host');
+      if (eng) renderEngine(eng);
     }
     // A pane opened after a scroll down another one starts halfway down.
     const sheet = document.querySelector('.set-sheet');
