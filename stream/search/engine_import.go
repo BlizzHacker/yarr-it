@@ -61,6 +61,9 @@ func videoFiles(root string) ([]importFile, error) {
 	var all []importFile
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if p == root {
+				return err // the download itself could not be read: not "empty"
+			}
 			return nil
 		}
 		if d.IsDir() || !videoExt[strings.ToLower(filepath.Ext(p))] {
@@ -260,6 +263,13 @@ func sameContents(a, b string) bool {
 	}
 }
 
+// errNoVideo and errNoEpisodeMatch mean the download was read and holds
+// nothing to place -- unlike an error reading it, which is worth retrying.
+var (
+	errNoVideo        = errors.New("no video files in the download")
+	errNoEpisodeMatch = errors.New("no episode in the download matched the series")
+)
+
 type importResult struct {
 	Placed  []string
 	Skipped []string // files that matched no episode
@@ -277,7 +287,7 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 		return res, err
 	}
 	if len(files) == 0 {
-		return res, errors.New("no video files in the download")
+		return res, errNoVideo
 	}
 	switch it.Kind {
 	case "movie":
@@ -298,7 +308,9 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 		for _, f := range files {
 			p := parseRelease(filepath.Base(f.Path))
 			season, episode := p.Season, p.Episode
-			if season == 0 && grab.Episode > 0 && len(files) == 1 {
+			// Only a file with no SxxEyy marker takes the grab's numbers; an
+			// explicit S00E05 is a real special and keeps its own.
+			if !p.IsSeries && grab.Episode > 0 && len(files) == 1 {
 				season, episode = grab.Season, grab.Episode
 			}
 			ep := findEpisode(it, season, episode)
@@ -327,7 +339,7 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 			return res, fmt.Errorf("could not place any episode: %s", strings.Join(res.Failed, "; "))
 		}
 		if len(res.Placed) == 0 {
-			return res, fmt.Errorf("no episode in the download matched the series (%d skipped)", len(res.Skipped))
+			return res, fmt.Errorf("%w (%d skipped)", errNoEpisodeMatch, len(res.Skipped))
 		}
 	}
 	return res, nil

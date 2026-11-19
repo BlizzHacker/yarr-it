@@ -53,23 +53,32 @@ func TestAnEpisodePlacedEarlierIsNotReplacedOrReread(t *testing.T) {
 	}
 }
 
-func TestAHeldOutcomeNeverOverwritesALiveReservation(t *testing.T) {
+func TestAHeldOutcomeWaitsWhileItsRequestIsBeingDecided(t *testing.T) {
 	e := testEngine(t, nil, nil)
 	n := &nativeRequests{e: e}
 	if _, err := n.Ask(ctxT(t), "imdb:movie:tt0133093", "The Matrix", 1999, "", "kid"); err != nil {
 		t.Fatal(err)
 	}
 	_ = e.store.update(func(s *engineState) error { s.Requests[0].Status = "routing"; return nil })
-	n.setRouting(1, true) // a newer decision is routing it now
-	n.unsaved = map[int]requestOutcome{1: {status: "pending", detail: "old"}}
-	if err := n.flushUnsaved(1); err != nil {
-		t.Fatal(err)
+	n.keepUnsaved(1, requestOutcome{status: "approved", detail: "radarr:"})
+	unlock, ok := n.lockReq(1) // a decision on request 1 is in progress
+	if !ok {
+		t.Fatal("lock")
 	}
+	n.flushAll()
 	if r := e.store.view().Requests[0]; r.Status != "routing" {
-		t.Fatalf("the stale outcome overwrote a live reservation: %+v", r)
+		t.Fatalf("a flush must not interleave with a decision: %+v", r)
+	}
+	if err := n.Decide(ctxT(t), "1", true); err == nil {
+		t.Fatal("a second decision while one is in progress must be refused")
+	}
+	unlock()
+	n.flushAll()
+	if r := e.store.view().Requests[0]; r.Status != "approved" {
+		t.Fatalf("once free, the held approval is saved: %+v", r)
 	}
 	if _, held := n.unsaved[1]; held {
-		t.Fatal("a flushed outcome is taken, not left for another decision to flush")
+		t.Fatal("a saved outcome is no longer held")
 	}
 }
 

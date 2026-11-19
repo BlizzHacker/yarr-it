@@ -710,8 +710,7 @@ func (e *engine) reconcileClient(ctx context.Context, st engineState, clientID s
 			copyIt := *it
 			res, err := importDownload(local, &copyIt, d.grab, st.Settings)
 			if err != nil {
-				detail = err.Error()
-				unplaced = mergeSlots(unplaced, res.FailedSlots)
+				state, detail, unplaced = settleFailedImport(d.grab.Unplaced, res, err)
 				break
 			}
 			placed = &copyIt
@@ -774,6 +773,17 @@ func settleImport(prev []wantSlot, it *engineItem, res importResult) (string, st
 			" no longer in the download, searching again", nil
 	}
 	return "imported", placed, nil
+}
+
+// settleFailedImport handles an import attempt that placed nothing. If the
+// download was read and holds nothing to place while episodes are still
+// owed, those episodes are gone: fail the grab so they are searched again.
+// Anything else (an unreadable folder, a full disk) stays retryable.
+func settleFailedImport(prev []wantSlot, res importResult, err error) (string, string, []wantSlot) {
+	if len(prev) > 0 && (errors.Is(err, errNoVideo) || errors.Is(err, errNoEpisodeMatch)) {
+		return "failed", slotNames(prev) + " no longer in the download, searching again", nil
+	}
+	return "downloading", err.Error(), mergeSlots(prev, res.FailedSlots)
 }
 
 func hasSlot(l []wantSlot, s wantSlot) bool {

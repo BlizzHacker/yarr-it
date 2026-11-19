@@ -185,50 +185,44 @@ type nativeRequests struct {
 	route func(ctx context.Context, canonicalID string) (RequestResult, string, error)
 
 	mu sync.Mutex
-	// routing: approvals this process is routing now. A request stored as
-	// "routing" that is not in here was left by a restart mid-approval.
-	routing map[int]bool
-	// unsaved: decisions whose final write failed, kept so the next decision
-	// on that request saves them instead of calling the provider again.
+	// locks serialises everything that decides one request -- a decision and
+	// the saving of a held outcome -- so they can never interleave.
+	locks map[int]*sync.Mutex
+	// unsaved: decisions whose final write failed, kept so they are saved
+	// later instead of the provider being called again.
 	unsaved map[int]requestOutcome
 }
 
 type requestOutcome struct{ status, detail, canonicalID, title string }
 
-func (n *nativeRequests) setRouting(id int, on bool) {
+// lockReq takes the request's decision lock without waiting: a decision
+// already in progress makes a second one fail fast rather than queue.
+func (n *nativeRequests) lockReq(id int) (func(), bool) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.routing == nil {
-		n.routing = map[int]bool{}
+	if n.locks == nil {
+		n.locks = map[int]*sync.Mutex{}
 	}
-	if on {
-		n.routing[id] = true
-	} else {
-		delete(n.routing, id)
+	l, ok := n.locks[id]
+	if !ok {
+		l = &sync.Mutex{}
+		n.locks[id] = l
 	}
-}
-
-func (n *nativeRequests) isRouting(id int) bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.routing[id]
+	n.mu.Unlock()
+	if !l.TryLock() {
+		return nil, false
+	}
+	return l.Unlock, true
 }
 
 // finish writes a decision's outcome onto a request still marked routing,
 // retrying briefly: a transient write failure must not strand the request.
-//
-// A flush (stale) outcome never overwrites a request this process is
-// routing right now: that reservation belongs to a newer decision.
-func (n *nativeRequests) finish(id int, o requestOutcome, stale bool) error {
+func (n *nativeRequests) finish(id int, o requestOutcome) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
 		err = n.e.store.update(func(st *engineState) error {
-			if stale && n.isRouting(id) {
-				return errNoChange
-			}
 			for i := range st.Requests {
 				if st.Requests[i].ID == id && st.Requests[i].Status == "routing" {
 					st.Requests[i].Status, st.Requests[i].Detail = o.status, o.detail
@@ -246,21 +240,22 @@ func (n *nativeRequests) finish(id int, o requestOutcome, stale bool) error {
 	return err
 }
 
-// flushUnsaved saves an earlier outcome that could not be written. After
-// it, the request is either approved (the provider is not asked again) or
-// pending, and the new decision proceeds normally.
-func (n *nativeRequests) flushUnsaved(id int) error {
+// flushLocked saves a held outcome; the caller holds the request's lock.
+// After it the request is approved (the provider is not asked again) or
+// pending.
+func (n *nativeRequests) flushLocked(id int) error {
 	n.mu.Lock()
 	o, ok := n.unsaved[id]
-	delete(n.unsaved, id) // taken: a concurrent decision cannot flush it too
 	n.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	if err := n.finish(id, o, true); err != nil {
-		n.keepUnsaved(id, o)
+	if err := n.finish(id, o); err != nil {
 		return fmt.Errorf("an earlier decision on this request still cannot be saved: %w", err)
 	}
+	n.mu.Lock()
+	delete(n.unsaved, id)
+	n.mu.Unlock()
 	return nil
 }
 
@@ -270,13 +265,12 @@ func (n *nativeRequests) keepUnsaved(id int, o requestOutcome) {
 	if n.unsaved == nil {
 		n.unsaved = map[int]requestOutcome{}
 	}
-	if _, newer := n.unsaved[id]; !newer {
-		n.unsaved[id] = o
-	}
+	n.unsaved[id] = o
 }
 
-// flushAll retries every held outcome; the request list calls it, so a held
-// decision is saved as soon as the owner looks at the queue.
+// flushAll retries every held outcome whose request is not being decided
+// right now; the request list calls it, so a held decision is saved as soon
+// as the owner looks at the queue.
 func (n *nativeRequests) flushAll() {
 	n.mu.Lock()
 	ids := make([]int, 0, len(n.unsaved))
@@ -285,7 +279,12 @@ func (n *nativeRequests) flushAll() {
 	}
 	n.mu.Unlock()
 	for _, id := range ids {
-		_ = n.flushUnsaved(id)
+		unlock, ok := n.lockReq(id)
+		if !ok {
+			continue // its decision will flush it
+		}
+		_ = n.flushLocked(id)
+		unlock()
 	}
 }
 
@@ -354,22 +353,28 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 	if err != nil {
 		return &arrHTTPError{Status: 400, Method: "POST", Path: "requests", Body: "request ids are numbers"}
 	}
-	if err := n.flushUnsaved(id); err != nil {
+	unlock, ok := n.lockReq(id)
+	if !ok {
+		return &arrHTTPError{Status: 409, Method: "POST", Path: "requests", Body: "a decision on this request is already in progress"}
+	}
+	defer unlock()
+	if err := n.flushLocked(id); err != nil {
 		return err
 	}
 	// Reserve the decision atomically: a decline commits here, and an
 	// approval moves the request to "routing" before it is routed, so a
 	// competing decision sees it already taken instead of overwriting it.
 	var req engineRequest
-	reserved := false
 	err = n.e.store.update(func(st *engineState) error {
 		for i := range st.Requests {
 			r := &st.Requests[i]
 			if r.ID != id {
 				continue
 			}
-			if r.Status == "routing" && !n.isRouting(id) {
-				r.Status = "pending" // left by a restart mid-approval: decide again
+			if r.Status == "routing" {
+				// This decision holds the request's lock and held outcomes are
+				// flushed, so nothing is routing it: a restart left it here.
+				r.Status = "pending"
 			}
 			if r.Status != "pending" {
 				return &arrHTTPError{Status: 409, Method: "POST", Path: "requests", Body: "already decided"}
@@ -377,8 +382,6 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 			req = *r
 			if approve {
 				r.Status, r.Detail = "routing", "being approved"
-				n.setRouting(id, true)
-				reserved = true
 			} else {
 				r.Status, r.Detail = "declined", ""
 				st.logEvent(n.e.now(), r.CanonicalID, "decided", r.Title+": declined")
@@ -387,9 +390,6 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 		}
 		return &arrHTTPError{Status: 404, Method: "POST", Path: "requests", Body: "no such request"}
 	})
-	if reserved {
-		defer n.setRouting(id, false)
-	}
 	if err != nil || !approve {
 		return err
 	}
@@ -405,7 +405,7 @@ func (n *nativeRequests) Decide(ctx context.Context, backendID string, approve b
 		status, detail = "pending", rerr.Error()
 	}
 	o := requestOutcome{status: status, detail: detail, canonicalID: req.CanonicalID, title: req.Title}
-	if uerr := n.finish(id, o, false); uerr != nil {
+	if uerr := n.finish(id, o); uerr != nil {
 		n.keepUnsaved(id, o)
 		uerr = fmt.Errorf("the decision could not be saved yet; it is saved on the next decision for this request: %w", uerr)
 		return errors.Join(rerr, uerr)
