@@ -95,9 +95,9 @@ const (
 // a test that depends on the live Archive fails when a collection is reindexed
 // and passes when the assertion is wrong.
 var (
-	archiveLinearSearchAPI   = "https://archive.org/advancedsearch.php"
-	archiveLinearMetadataAPI = "https://archive.org/metadata/"
-	archiveLinearDownloadAPI = "https://archive.org/download/"
+	archiveLinearSearchAPI   = newEndpoint("https://archive.org/advancedsearch.php")
+	archiveLinearMetadataAPI = newEndpoint("https://archive.org/metadata/")
+	archiveLinearDownloadAPI = newEndpoint("https://archive.org/download/")
 )
 
 // --- what counts as public domain -------------------------------------------
@@ -704,7 +704,7 @@ func (l *archiveLinearLibrary) search(ctx context.Context) ([]archiveLinearDoc, 
 	params.Set("output", "json")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		archiveLinearSearchAPI+"?"+params.Encode(), nil)
+		archiveLinearSearchAPI.String()+"?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -835,7 +835,7 @@ func (l *archiveLinearLibrary) itemFor(ctx context.Context, d archiveLinearDoc) 
 
 func (l *archiveLinearLibrary) metadata(ctx context.Context, id string) (*archiveLinearMeta, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		archiveLinearMetadataAPI+url.PathEscape(id), nil)
+		archiveLinearMetadataAPI.String()+url.PathEscape(id), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -878,7 +878,7 @@ func newArchiveLinearResolver(client *http.Client) *archiveLinearResolver {
 }
 
 func archiveLinearURL(identifier, file string) string {
-	return archiveLinearDownloadAPI + url.PathEscape(identifier) + "/" + url.PathEscape(file)
+	return archiveLinearDownloadAPI.String() + url.PathEscape(identifier) + "/" + url.PathEscape(file)
 }
 
 // LinearResolve hands back the file, positioned.

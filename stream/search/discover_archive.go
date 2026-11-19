@@ -156,7 +156,7 @@ func fetchArchivePage(ctx context.Context, row archiveRow, limit, page int) (dis
 	params.Set("output", "json")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		archiveSearchAPI+"?"+params.Encode(), nil)
+		archiveSearchAPI.String()+"?"+params.Encode(), nil)
 	if err != nil {
 		return discoverRow{}, err
 	}

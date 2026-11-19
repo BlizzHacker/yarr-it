@@ -34,9 +34,7 @@ func TestArchiveDiscoverBoundsUpstreamConcurrency(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	oldAPI := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	defer func() { archiveSearchAPI = oldAPI }()
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

@@ -67,9 +67,7 @@ func stubArchive(t *testing.T, delay time.Duration, titles ...string) *httptest.
 	}))
 	t.Cleanup(srv.Close)
 
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	t.Cleanup(func() { archiveSearchAPI = old })
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 	return srv
 }
 
@@ -686,9 +684,7 @@ func TestTheArchiveCacheIsUsedOnTheSecondAsk(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	defer func() { archiveSearchAPI = old }()
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 
 	s := newTestServer()
 	if _, err := s.searchArchiveCached(t.Context(), "tetris", "game"); err != nil {

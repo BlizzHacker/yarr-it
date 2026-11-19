@@ -434,9 +434,7 @@ func stubMusicArchive(t *testing.T, seen *url.Values, docs ...musicDoc) {
 		_ = json.NewEncoder(w).Encode(out)
 	}))
 	t.Cleanup(srv.Close)
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	t.Cleanup(func() { archiveSearchAPI = old })
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 }
 
 func TestTheMusicSearchAsksForWhatACardNeeds(t *testing.T) {

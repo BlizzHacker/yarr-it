@@ -29,7 +29,7 @@ import (
 // now the source a person actually waits on, and "does the first paint carry
 // its results" is not a question that can be answered honestly by calling the
 // real archive.org from a test.
-var archiveSearchAPI = "https://archive.org/advancedsearch.php"
+var archiveSearchAPI = newEndpoint("https://archive.org/advancedsearch.php")
 
 // One client for the whole process, with a warm connection pool.
 //
@@ -63,7 +63,7 @@ var archiveClient = &http.Client{
 func warmArchiveConnection() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, archiveSearchAPI, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, archiveSearchAPI.String(), nil)
 	if err != nil {
 		return
 	}
@@ -639,7 +639,7 @@ func (s *server) searchArchiveOn(ctx context.Context, q, kind string, systems []
 	params.Add("sort[]", "downloads desc")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		archiveSearchAPI+"?"+params.Encode(), nil)
+		archiveSearchAPI.String()+"?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}

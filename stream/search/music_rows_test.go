@@ -151,9 +151,7 @@ func TestEveryMusicTileCarriesATarget(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(body)
 	}))
 	defer srv.Close()
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	defer func() { archiveSearchAPI = old }()
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 
 	for _, row := range musicRows {
 		got, err := fetchArchiveRow(context.Background(), row, 24)
