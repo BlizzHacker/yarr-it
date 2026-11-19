@@ -718,7 +718,7 @@ func archiveLookup(ctx context.Context, titles []string, scope string) ([]archiv
 	params.Add("sort[]", "downloads desc")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		archiveSearchAPI+"?"+params.Encode(), nil)
+		archiveSearchAPI.String()+"?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -28,9 +28,7 @@ func stubArchiveDocs(t *testing.T, docs []archiveDoc) *[]string {
 	}))
 	t.Cleanup(srv.Close)
 
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	t.Cleanup(func() { archiveSearchAPI = old })
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 	return &asked
 }
 
@@ -206,9 +204,7 @@ func TestAnUnreachableArchiveCostsTilesRatherThanThePage(t *testing.T) {
 		http.Error(w, "nope", http.StatusBadGateway)
 	}))
 	defer srv.Close()
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	defer func() { archiveSearchAPI = old }()
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 
 	s := newTestServer()
 	rows := s.resolveDiscoverRows(context.Background(), []discoverRow{
@@ -352,9 +348,7 @@ func TestNoMoreThanAFewQuestionsAtOnce(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	defer func() { archiveSearchAPI = old }()
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 
 	// Eight shelves of two batches each: sixteen questions if nothing bounds it.
 	rows := make([]discoverRow, 0, 8)
