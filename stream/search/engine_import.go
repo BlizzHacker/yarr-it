@@ -55,14 +55,33 @@ func mapDownloadPath(remote string, set engineSettings) (string, error) {
 	return local, nil
 }
 
+// incompleteScanError: part of the download could not be read. The files
+// that were read are still usable, but the scan proves nothing is missing.
+type incompleteScanError struct{ err error }
+
+func (e *incompleteScanError) Error() string {
+	return "part of the download could not be read: " + e.err.Error()
+}
+func (e *incompleteScanError) Unwrap() error { return e.err }
+
+// walkDir is filepath.WalkDir; tests swap it to simulate unreadable entries,
+// which permissions cannot produce when the suite runs as root.
+var walkDir = filepath.WalkDir
+
 // videoFiles lists playable files under root (a file or a folder), largest
-// first, without samples unless a sample is all there is.
+// first, without samples unless a sample is all there is. An unreadable root
+// is an error; an unreadable entry below it is reported as an
+// *incompleteScanError alongside the files that could be read.
 func videoFiles(root string) ([]importFile, error) {
 	var all []importFile
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	var unread error
+	err := walkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if p == root {
 				return err // the download itself could not be read: not "empty"
+			}
+			if unread == nil {
+				unread = err
 			}
 			return nil
 		}
@@ -71,6 +90,9 @@ func videoFiles(root string) ([]importFile, error) {
 		}
 		info, err := d.Info()
 		if err != nil {
+			if unread == nil {
+				unread = err
+			}
 			return nil
 		}
 		all = append(all, importFile{Path: p, Size: info.Size()})
@@ -89,6 +111,9 @@ func videoFiles(root string) ([]importFile, error) {
 		real = all
 	}
 	sort.Slice(real, func(i, j int) bool { return real[i].Size > real[j].Size })
+	if unread != nil {
+		return real, &incompleteScanError{unread}
+	}
 	return real, nil
 }
 
@@ -283,10 +308,14 @@ type importResult struct {
 func importDownload(local string, it *engineItem, grab engineGrab, set engineSettings) (importResult, error) {
 	var res importResult
 	files, err := videoFiles(local)
-	if err != nil {
+	var partial *incompleteScanError
+	if err != nil && !errors.As(err, &partial) {
 		return res, err
 	}
 	if len(files) == 0 {
+		if partial != nil {
+			return res, partial // not proof of an empty download: retry
+		}
 		return res, errNoVideo
 	}
 	switch it.Kind {
@@ -339,6 +368,9 @@ func importDownload(local string, it *engineItem, grab engineGrab, set engineSet
 			return res, fmt.Errorf("could not place any episode: %s", strings.Join(res.Failed, "; "))
 		}
 		if len(res.Placed) == 0 {
+			if partial != nil {
+				return res, partial // the episode may be in the unreadable part
+			}
 			return res, fmt.Errorf("%w (%d skipped)", errNoEpisodeMatch, len(res.Skipped))
 		}
 	}

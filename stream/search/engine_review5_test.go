@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,5 +47,40 @@ func TestAnExplicitlyNamedSpecialKeepsItsOwnNumber(t *testing.T) {
 	}
 	if it.Episodes[0].HasFile || !it.Episodes[1].HasFile {
 		t.Fatalf("S00E05 must be filed as S00E05: %+v", it.Episodes)
+	}
+}
+
+func TestAnUnreadableSubfolderIsNotProofOfAnEmptyDownload(t *testing.T) {
+	dl := t.TempDir()
+	sub := filepath.Join(dl, "Season 1")
+	_ = os.MkdirAll(sub, 0o755)
+	_ = os.WriteFile(filepath.Join(sub, "Severance.S01E02.mkv"), []byte("x"), 0o644)
+	walkDir = func(root string, fn fs.WalkDirFunc) error {
+		return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if p == sub {
+				// As an unreadable folder reports: an error, and nothing inside it.
+				if err := fn(p, d, os.ErrPermission); err != nil {
+					return err
+				}
+				return filepath.SkipDir
+			}
+			return fn(p, d, err)
+		})
+	}
+	t.Cleanup(func() { walkDir = filepath.WalkDir })
+	checkPartialScan(t, dl)
+}
+
+func checkPartialScan(t *testing.T, dl string) {
+	t.Helper()
+	it := engineItem{Kind: "series", Title: "Severance", Year: 2022,
+		Episodes: []engineEpisode{{Season: 1, Episode: 2}}}
+	_, err := importDownload(dl, &it, engineGrab{Season: 1}, engineSettings{SeriesRoot: t.TempDir()})
+	if err == nil || errors.Is(err, errNoVideo) || errors.Is(err, errNoEpisodeMatch) {
+		t.Fatalf("an incomplete scan must stay retryable, not prove absence: %v", err)
+	}
+	prev := []wantSlot{{Season: 1, Episode: 2}}
+	if state, _, _ := settleFailedImport(prev, importResult{}, err); state != "downloading" {
+		t.Fatalf("the owed episode may be in the unreadable part: %s", state)
 	}
 }
