@@ -31,9 +31,7 @@ func fakeArchiveShelf(t *testing.T, perPage int) {
 		})
 	}))
 	t.Cleanup(srv.Close)
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	t.Cleanup(func() { archiveSearchAPI = old })
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 }
 
 // deadArchive stands in for archive.org being down.
@@ -43,9 +41,7 @@ func deadArchive(t *testing.T) {
 		http.Error(w, "nope", http.StatusBadGateway)
 	}))
 	t.Cleanup(srv.Close)
-	old := archiveSearchAPI
-	archiveSearchAPI = srv.URL
-	t.Cleanup(func() { archiveSearchAPI = old })
+	useEndpoint(t, archiveSearchAPI, srv.URL)
 }
 
 // snesEntries builds n publishable SNES rows.

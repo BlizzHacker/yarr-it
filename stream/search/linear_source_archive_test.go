@@ -138,13 +138,9 @@ func newLinearFakeIA(t *testing.T, items []linearFakeIAItem) *linearFakeIA {
 	t.Cleanup(f.srv.Close)
 
 	// Point the source at the stub for the duration of the test.
-	oldSearch, oldMeta, oldDL := archiveLinearSearchAPI, archiveLinearMetadataAPI, archiveLinearDownloadAPI
-	archiveLinearSearchAPI = f.srv.URL + "/advancedsearch.php"
-	archiveLinearMetadataAPI = f.srv.URL + "/metadata/"
-	archiveLinearDownloadAPI = f.srv.URL + "/download/"
-	t.Cleanup(func() {
-		archiveLinearSearchAPI, archiveLinearMetadataAPI, archiveLinearDownloadAPI = oldSearch, oldMeta, oldDL
-	})
+	useEndpoint(t, archiveLinearSearchAPI, f.srv.URL+"/advancedsearch.php")
+	useEndpoint(t, archiveLinearMetadataAPI, f.srv.URL+"/metadata/")
+	useEndpoint(t, archiveLinearDownloadAPI, f.srv.URL+"/download/")
 	return f
 }
 
@@ -538,10 +534,8 @@ func TestArchiveLinearItemsNeverBlocksOrInheritsACallerDeadline(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	oldSearch, oldMeta := archiveLinearSearchAPI, archiveLinearMetadataAPI
-	archiveLinearSearchAPI = srv.URL + "/advancedsearch.php"
-	archiveLinearMetadataAPI = srv.URL + "/metadata/"
-	t.Cleanup(func() { archiveLinearSearchAPI, archiveLinearMetadataAPI = oldSearch, oldMeta })
+	useEndpoint(t, archiveLinearSearchAPI, srv.URL+"/advancedsearch.php")
+	useEndpoint(t, archiveLinearMetadataAPI, srv.URL+"/metadata/")
 
 	lib := archiveTestLibrary(t)
 
@@ -588,9 +582,7 @@ func TestArchiveLinearBacksOffAfterAFailure(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	oldSearch := archiveLinearSearchAPI
-	archiveLinearSearchAPI = srv.URL + "/advancedsearch.php"
-	t.Cleanup(func() { archiveLinearSearchAPI = oldSearch })
+	useEndpoint(t, archiveLinearSearchAPI, srv.URL+"/advancedsearch.php")
 
 	lib := archiveTestLibrary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -656,9 +648,7 @@ func TestArchiveLinearReportsWarmingWhileTheFirstPoolBuilds(t *testing.T) {
 		<-stalled
 	}))
 	t.Cleanup(srv.Close)
-	oldSearch := archiveLinearSearchAPI
-	archiveLinearSearchAPI = srv.URL + "/advancedsearch.php"
-	t.Cleanup(func() { archiveLinearSearchAPI = oldSearch })
+	useEndpoint(t, archiveLinearSearchAPI, srv.URL+"/advancedsearch.php")
 
 	lib := archiveTestLibrary(t)
 	items, err := lib.LinearItems(context.Background())
@@ -696,9 +686,7 @@ func TestArchiveLinearKeepsTheLastGoodPoolWhenARefreshFails(t *testing.T) {
 	_ = f
 
 	// Break the upstream, expire the cache, and read again.
-	oldSearch := archiveLinearSearchAPI
-	archiveLinearSearchAPI = "http://127.0.0.1:1/advancedsearch.php"
-	t.Cleanup(func() { archiveLinearSearchAPI = oldSearch })
+	useEndpoint(t, archiveLinearSearchAPI, "http://127.0.0.1:1/advancedsearch.php")
 
 	lib.mu.Lock()
 	lib.fetched = time.Now().Add(-2 * archiveLinearTTL)
